@@ -297,10 +297,22 @@ EVALUATION_RUBRIC_END = "第四步：提交数据"
 EVALUATION_SCORE_GUIDANCE = """严格使用下方评分表的 1～5 分制，对五个维度分别定档，不得改用十分制、百分制或自行换算。先根据本轮轨迹与产物确定最匹配档位，再填写该档整数；评分描述必须与分数一致，不得一边描述交付基本完整，一边给出 1 分。环境、网络或复核工具自身故障不能作为模型能力扣分依据。禁止照抄评分表，必须写本轮可核验实证。"""
 TASK_DIFFICULTY_GUIDANCE = """task_difficulty 必须在检查真实代码、验收结果和本轮轨迹后独立判定，不采用题面、自报或历史记录中的难度标签。简单表示改动集中、路径直接且验证成本低；中等表示跨模块完成一条工程链路并处理常见失败路径；困难表示存在较多状态不变量、恢复逻辑或复杂跨层协作；地狱只用于产物确实同时包含多组深层机制且实现与验证负担显著的情况。"""
 DEVELOPER_PROMPT_STYLE_GUIDANCE = """题面使用自然、简洁的开发交接口吻，像项目负责人结合当前场景向开发者说明下一步工作。按业务因果和操作流程组织内容，不把数据库、接口、页面、异常、测试等字段机械地逐项拼接，不连续堆叠“必须”“不得”“须”“需要”等命令句，不使用“新增某模块，使用户能够”“提供某接口并覆盖”等模板反复起句，也不在结尾集中罗列通用工程或测试清单。技术约束、失败现象、兼容边界和验收证据仍要具体，但应放在它们对应的业务行为附近。"""
-BUG_REPAIR_PROMPT_STYLE_GUIDANCE = """先根据本轮需求检查功能是否真的实现，再记录已经稳定复现的 Bug。每个 Bug 另写一条 customer_summary，系统会按原顺序把这些摘要逐行作为下一轮修复题面。每条摘要只写一行，用客户能看懂的口语说明什么情况下出现了什么错误以及正确结果应该怎样；不要写开场、标题、序号、项目符号、引号、Markdown、文件名、函数名、命令、测试框架、推测的根因或通用测试要求。每行控制在 12～90 个字符，最多使用一个逗号，尽量用一句话说清楚。内部的 reproduction、actual、expected 和 evidence 仍须完整填写，不能为了凑修复轮把风险或测试缺口写成 Bug。"""
+BUG_REPAIR_PROMPT_STYLE_GUIDANCE = """先根据本轮需求检查功能是否真的实现，再记录已经稳定复现的 Bug。每个 Bug 另写一条 customer_summary，系统会按原顺序为这些摘要加上自然的交接口吻和序号，再用中文分号拼成一整行作为下一轮修复题面。每条摘要本身不要带开场或序号，只用客户能看懂的口语说明什么情况下出现了什么错误以及正确结果应该怎样；不要写标题、项目符号、引号、Markdown、文件名、函数名、命令、测试框架、推测的根因或通用测试要求。每条摘要控制在 12～90 个字符，最多使用一个逗号，尽量用一句话说清楚。内部的 reproduction、actual、expected 和 evidence 仍须完整填写，不能为了凑修复轮把风险或测试缺口写成 Bug。"""
 BUG_CUSTOMER_SUMMARY_MIN_CHARS = 12
 BUG_CUSTOMER_SUMMARY_MAX_CHARS = 90
 BUG_CUSTOMER_SUMMARY_QUOTES = frozenset("\"'“”‘’「」『』")
+BUG_REPAIR_PROMPT_OPENINGS = (
+    ("复查时还发现了一个问题：", "复查时还发现了几个问题："),
+    ("这里还有一个地方需要修一下：", "这里还有几个地方需要修一下："),
+    ("接着处理这个问题：", "接着处理这几个问题："),
+    ("这一轮把这个问题修好：", "这一轮把这几处问题修好："),
+    ("目前还有一个问题需要解决：", "目前还有几个问题需要解决："),
+    ("再看一下这个实际问题：", "再看一下这几个实际问题："),
+    ("接下来把这个问题处理掉：", "接下来把这些问题一起处理掉："),
+    ("还有一处表现不对，需要修一下：", "还有几处表现不对，需要修一下："),
+    ("这次主要处理这个问题：", "这次主要处理这几个问题："),
+    ("再补一轮，把这个问题处理好：", "再补一轮，把这几个问题处理好："),
+)
 AUTO_API_RETRY_LIMIT = 2
 AUTO_API_RETRY_DELAY_SECONDS = 30
 RETRYABLE_API_STATUS_CODES = {408, 429, 500, 502, 503, 504}
@@ -5015,11 +5027,75 @@ def find_transcript(session_id: str) -> Optional[Path]:
     return max(matches, key=lambda path: path.stat().st_mtime) if matches else None
 
 
+def trace_prompt_matches(
+    events: List[Dict[str, Any]], prompt: str
+) -> List[Tuple[int, str]]:
+    """Locate a prompt, including legacy multiline pastes split by Claude's TUI."""
+    comparable_prompt = prompt.rstrip("\r\n")
+    prompt_lines = comparable_prompt.splitlines()
+    matches: List[Tuple[int, str]] = []
+    for index, event in enumerate(events):
+        if event.get("type") != "user":
+            continue
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        content = message.get("content")
+        prompt_id = str(event.get("promptId") or "")
+        if not isinstance(content, str) or not prompt_id:
+            continue
+        if content.rstrip("\r\n") == comparable_prompt:
+            matches.append((index, prompt_id))
+            continue
+        if len(prompt_lines) < 2 or content.rstrip("\r\n") != prompt_lines[0]:
+            continue
+
+        session_id = str(event.get("sessionId") or "")
+        start_timestamp = str(event.get("timestamp") or "")
+        try:
+            start_time = datetime.fromisoformat(start_timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            start_time = None
+        queued_parts: List[str] = []
+        attachment_parts: List[str] = []
+        for candidate in events:
+            candidate_session = str(candidate.get("sessionId") or "")
+            if session_id and candidate_session and candidate_session != session_id:
+                continue
+            candidate_timestamp = str(candidate.get("timestamp") or "")
+            try:
+                candidate_time = datetime.fromisoformat(
+                    candidate_timestamp.replace("Z", "+00:00")
+                )
+            except ValueError:
+                candidate_time = None
+            if start_time is not None and candidate_time is not None:
+                if abs((candidate_time - start_time).total_seconds()) > 5:
+                    continue
+            if (
+                candidate.get("type") == "queue-operation"
+                and candidate.get("operation") == "enqueue"
+                and isinstance(candidate.get("content"), str)
+            ):
+                queued_parts.append(str(candidate["content"]).rstrip("\r\n"))
+                continue
+            attachment = candidate.get("attachment")
+            if (
+                candidate.get("type") == "attachment"
+                and isinstance(attachment, dict)
+                and attachment.get("type") == "queued_command"
+                and isinstance(attachment.get("prompt"), str)
+            ):
+                attachment_parts.append(str(attachment["prompt"]).rstrip("\r\n"))
+        recorded_parts = queued_parts or attachment_parts
+        if recorded_parts == prompt_lines[1:]:
+            matches.append((index, prompt_id))
+    return matches
+
+
 def extract_prompt_id(session_id: str, prompt: str) -> Optional[str]:
     path = find_transcript(session_id)
     if not path:
         return None
-    found: Optional[str] = None
+    events: List[Dict[str, Any]] = []
     try:
         with path.open("r", encoding="utf-8") as source:
             for line in source:
@@ -5027,14 +5103,12 @@ def extract_prompt_id(session_id: str, prompt: str) -> Optional[str]:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event.get("type") != "user":
-                    continue
-                message = event.get("message", {})
-                if message.get("content") == prompt and event.get("promptId"):
-                    found = str(event["promptId"])
+                if isinstance(event, dict):
+                    events.append(event)
     except OSError:
         return None
-    return found
+    matches = trace_prompt_matches(events, prompt)
+    return matches[-1][1] if matches else None
 
 
 def transcript_excerpt(session_id: str, prompt_id: Optional[str], max_chars: int = 180_000) -> str:
@@ -5064,6 +5138,10 @@ def transcript_excerpt_from_path(
                 content = message.get("content")
                 event_prompt_id = str(event.get("promptId") or "")
                 if event_type == "user" and isinstance(content, str):
+                    human_text = trace_human_prompt_text(event)
+                    if human_text is None:
+                        continue
+                    content = human_text
                     if not started:
                         if prompt_id and event_prompt_id == prompt_id:
                             started = True
@@ -6129,6 +6207,8 @@ def trace_human_prompt_text(event: Dict[str, Any]) -> Optional[str]:
     message = event.get("message") if isinstance(event.get("message"), dict) else {}
     content = message.get("content")
     if isinstance(content, str):
+        if content.lstrip().startswith("<task-notification>"):
+            return None
         return content
     if not isinstance(content, list) or any(
         isinstance(block, dict) and block.get("type") == "tool_result"
@@ -6239,8 +6319,9 @@ def completed_turn_preflight(row: Dict[str, Any]) -> Dict[str, Any]:
             block("同一会话内存在重复 PromptID")
 
         matches = [
-            item for item in human_prompts
-            if item[1] == prompt_id and item[2] == prompt
+            (index, matched_prompt_id, prompt)
+            for index, matched_prompt_id in trace_prompt_matches(events, prompt)
+            if matched_prompt_id == prompt_id
         ]
         checks["prompt_matches"] = len(matches) == 1
         if not checks["prompt_matches"]:
@@ -7002,20 +7083,10 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
                         events.append(event)
         except OSError:
             continue
-        start_index: Optional[int] = None
-        prompt_id = ""
-        for index, event in enumerate(events):
-            message = event.get("message") if isinstance(event.get("message"), dict) else {}
-            content = message.get("content")
-            if (
-                event.get("type") == "user"
-                and isinstance(content, str)
-                and content.rstrip("\r\n") == comparable_prompt
-            ):
-                start_index = index
-                prompt_id = str(event.get("promptId") or "")
-        if start_index is None or not prompt_id:
+        prompt_matches = trace_prompt_matches(events, comparable_prompt)
+        if not prompt_matches:
             continue
+        start_index, prompt_id = prompt_matches[-1]
         final_text = ""
         final_index: Optional[int] = None
         api_error = ""
@@ -7523,24 +7594,16 @@ def write_trace_through_turn(source: Path, destination: Path, prompt: str) -> Pa
                 event = None
             records.append((raw, event if isinstance(event, dict) else None))
 
-    start_index: Optional[int] = None
-    for index, (_, event) in enumerate(records):
-        if not event or event.get("type") != "user":
-            continue
-        message = event.get("message") if isinstance(event.get("message"), dict) else {}
-        content = message.get("content")
-        if isinstance(content, str) and content.rstrip("\r\n") == comparable_prompt:
-            start_index = index
-    if start_index is None:
+    trace_events = [event or {} for _, event in records]
+    prompt_matches = trace_prompt_matches(trace_events, comparable_prompt)
+    if not prompt_matches:
         raise WorkflowError("轨迹中没有找到本轮 Prompt，未生成检查点")
+    start_index = prompt_matches[-1][0]
 
     next_prompt_index = len(records)
     for index in range(start_index + 1, len(records)):
         event = records[index][1]
-        if not event or event.get("type") != "user":
-            continue
-        message = event.get("message") if isinstance(event.get("message"), dict) else {}
-        if isinstance(message.get("content"), str):
+        if event and trace_human_prompt_text(event) is not None:
             next_prompt_index = index
             break
 
@@ -8062,11 +8125,28 @@ def normalize_bugs(value: Any) -> List[Dict[str, str]]:
     return normalized
 
 
-def bug_repair_prompt(bugs: List[Dict[str, str]]) -> str:
-    """Build the customer-readable follow-up prompt with one confirmed bug per line."""
+def bug_repair_prompt(
+    bugs: List[Dict[str, str]], variation_key: str = ""
+) -> str:
+    """Build a stable, naturally varied, single-line follow-up repair prompt."""
     if not bugs:
         return ""
-    return "\n".join(bug["customer_summary"] for bug in bugs)
+    summaries = [
+        bug["customer_summary"].rstrip("。！？!?；;：: ")
+        for bug in bugs
+    ]
+    seed = "\x1f".join([variation_key, *summaries])
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    singular_opening, plural_opening = BUG_REPAIR_PROMPT_OPENINGS[
+        int.from_bytes(digest[:8], "big") % len(BUG_REPAIR_PROMPT_OPENINGS)
+    ]
+    if len(summaries) == 1:
+        return f"{singular_opening}{summaries[0]}。"
+    items = "；".join(
+        f"{index}）{summary}"
+        for index, summary in enumerate(summaries, start=1)
+    )
+    return f"{plural_opening}{items}。"
 
 
 def normalize_quality_gaps(value: Any) -> List[Dict[str, str]]:
@@ -8152,6 +8232,7 @@ def run_codex_review(
     original_prompt: str,
     verification: List[Dict[str, Any]],
     trajectory: str = "",
+    repair_prompt_key: str = "",
 ) -> Dict[str, Any]:
     schema = {
         "type": "object",
@@ -8202,7 +8283,9 @@ def run_codex_review(
     if result.get("next_action") == "bugfix":
         if not result["bugs"]:
             raise WorkflowError("自动检查要求进入第二轮，但没有提供可核验问题")
-        result["repair_prompt"] = bug_repair_prompt(result["bugs"])
+        result["repair_prompt"] = bug_repair_prompt(
+            result["bugs"], repair_prompt_key or original_prompt
+        )
     else:
         if result["bugs"]:
             raise WorkflowError("自动检查结果矛盾：已发现问题但标记为完成")
@@ -8217,6 +8300,7 @@ def run_codex_final_review(
     second_prompt: str,
     verification: List[Dict[str, Any]],
     trajectory: str,
+    repair_prompt_key: str = "",
 ) -> Dict[str, Any]:
     schema = {
         "type": "object",
@@ -8270,7 +8354,10 @@ def run_codex_final_review(
     if result.get("next_action") == "bugfix":
         if not result["remaining_bugs"]:
             raise WorkflowError("本轮检查要求继续修复，但没有提供可核验问题")
-        result["repair_prompt"] = bug_repair_prompt(result["remaining_bugs"])
+        result["repair_prompt"] = bug_repair_prompt(
+            result["remaining_bugs"],
+            repair_prompt_key or f"{original_prompt}\x1e{second_prompt}",
+        )
     else:
         if result["remaining_bugs"]:
             raise WorkflowError("本轮检查结果矛盾：已发现问题但标记为完成")
@@ -8614,6 +8701,7 @@ def review_worker(run_id: str) -> None:
                     str(row["first_prompt"] or ""),
                     checks,
                     trajectory,
+                    repair_prompt_key=f"{run_id}:2",
                 )
         else:
             result = run_codex_review(
@@ -8621,6 +8709,7 @@ def review_worker(run_id: str) -> None:
                 str(row["first_prompt"] or ""),
                 checks,
                 trajectory,
+                repair_prompt_key=f"{run_id}:2",
             )
         if str(run_row(run_id)["phase"] or "") != "review_running":
             return
@@ -8782,6 +8871,7 @@ def final_review_worker(run_id: str) -> None:
                     str(turn["prompt"] or ""),
                     checks,
                     trajectory,
+                    repair_prompt_key=f"{run_id}:{turn_number + 1}",
                 )
         else:
             result = run_codex_final_review(
@@ -8790,6 +8880,7 @@ def final_review_worker(run_id: str) -> None:
                 str(turn["prompt"] or ""),
                 checks,
                 trajectory,
+                repair_prompt_key=f"{run_id}:{turn_number + 1}",
             )
         if str(run_row(run_id)["phase"] or "") != "final_review_running":
             return

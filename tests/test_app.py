@@ -382,6 +382,47 @@ class ParsingTests(unittest.TestCase):
                 self.assertEqual(app.extract_prompt_id("session", "完整需求"), "p1")
                 self.assertEqual(app.extract_prompt_id("session", "修复问题"), "p2")
 
+    def test_extract_prompt_id_recovers_legacy_multiline_terminal_paste(self):
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / "session.jsonl"
+            transcript.write_text(
+                "\n".join(
+                    json.dumps(event, ensure_ascii=False)
+                    for event in [
+                        {
+                            "type": "user",
+                            "sessionId": "session",
+                            "timestamp": "2026-09-10T09:14:52.500Z",
+                            "promptId": "p-split",
+                            "message": {"content": "修复第一个问题"},
+                        },
+                        {
+                            "type": "queue-operation",
+                            "operation": "enqueue",
+                            "sessionId": "session",
+                            "timestamp": "2026-09-10T09:14:53.000Z",
+                            "content": "修复第二个问题",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(app, "find_transcript", return_value=transcript):
+                prompt_id = app.extract_prompt_id(
+                    "session", "修复第一个问题\n修复第二个问题"
+                )
+
+        self.assertEqual(prompt_id, "p-split")
+
+    def test_trace_human_prompt_text_ignores_internal_task_notifications(self):
+        event = {
+            "type": "user",
+            "promptId": "internal",
+            "message": {"content": "<task-notification>\ncompleted\n</task-notification>"},
+        }
+
+        self.assertIsNone(app.trace_human_prompt_text(event))
+
     def test_parse_agents_json_with_prefix(self):
         value = app.parse_json_output('warning\n[{"id":"abc","status":"busy"}]')
         self.assertEqual(value[0]["id"], "abc")
@@ -481,6 +522,48 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(state["session_id"], "session-duration")
         self.assertEqual(state["prompt_id"], "prompt-duration")
         self.assertEqual(state["result"], "实现和测试均已完成。")
+        self.assertTrue(state["complete"])
+
+    def test_container_trace_completes_legacy_multiline_terminal_paste(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_root = Path(directory)
+            transcript = trace_root / "project" / "session-split.jsonl"
+            transcript.parent.mkdir()
+            events = [
+                {
+                    "type": "user",
+                    "sessionId": "session-split",
+                    "timestamp": "2026-09-10T09:14:52.500Z",
+                    "promptId": "prompt-split",
+                    "message": {"content": "修复第一个问题"},
+                },
+                {
+                    "type": "queue-operation",
+                    "operation": "enqueue",
+                    "sessionId": "session-split",
+                    "timestamp": "2026-09-10T09:14:53.000Z",
+                    "content": "修复第二个问题",
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "两个问题都已修复。"}],
+                    },
+                },
+                {"type": "system", "subtype": "turn_duration"},
+            ]
+            transcript.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events),
+                encoding="utf-8",
+            )
+
+            state = app.trace_turn_state(
+                trace_root, "修复第一个问题\n修复第二个问题"
+            )
+
+        self.assertEqual(state["prompt_id"], "prompt-split")
+        self.assertEqual(state["result"], "两个问题都已修复。")
         self.assertTrue(state["complete"])
 
     def test_completed_docker_turn_becomes_idle_while_container_is_kept(self):
@@ -907,9 +990,17 @@ class ReviewTests(unittest.TestCase):
                 result = app.run_codex_review(repo, "原始题面", [])
 
             self.assertEqual(result["bugs"][0]["severity"], "高")
-            self.assertEqual(
-                result["repair_prompt"],
-                "同一业务键同时提交会生成两条记录，正确结果只能保留一条",
+            self.assertNotIn("\n", result["repair_prompt"])
+            self.assertTrue(
+                any(
+                    result["repair_prompt"].startswith(singular)
+                    for singular, _ in app.BUG_REPAIR_PROMPT_OPENINGS
+                )
+            )
+            self.assertTrue(
+                result["repair_prompt"].endswith(
+                    "同一业务键同时提交会生成两条记录，正确结果只能保留一条。"
+                )
             )
 
     def test_followup_bug_prompt_uses_the_same_natural_style_guidance(self):
@@ -941,7 +1032,7 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("与本次范围无关的历史问题", prompt)
         self.assertIn("不得要求修改相应代码", prompt)
 
-    def test_bug_repair_prompt_uses_one_plain_customer_line_per_bug(self):
+    def test_bug_repair_prompt_uses_stable_natural_single_line(self):
         bugs = app.normalize_bugs([
             {
                 "severity": "高",
@@ -965,11 +1056,27 @@ class ReviewTests(unittest.TestCase):
             },
         ])
 
-        self.assertEqual(
-            app.bug_repair_prompt(bugs),
-            "两人同时确认会让容器移动两次，正确结果只能移动一次\n"
-            "交接超时后旧接收码仍能使用，应该提示过期并保持原位置",
+        prompt = app.bug_repair_prompt(bugs, "run-123:2")
+        self.assertNotIn("\n", prompt)
+        self.assertTrue(
+            any(prompt.startswith(plural) for _, plural in app.BUG_REPAIR_PROMPT_OPENINGS)
         )
+        self.assertTrue(
+            prompt.endswith(
+                "1）两人同时确认会让容器移动两次，正确结果只能移动一次；"
+                "2）交接超时后旧接收码仍能使用，应该提示过期并保持原位置。"
+            )
+        )
+        self.assertEqual(prompt, app.bug_repair_prompt(bugs, "run-123:2"))
+        openings = {
+            next(
+                plural
+                for _, plural in app.BUG_REPAIR_PROMPT_OPENINGS
+                if app.bug_repair_prompt(bugs, f"run-{index}:2").startswith(plural)
+            )
+            for index in range(20)
+        }
+        self.assertGreater(len(openings), 1)
 
     def test_bug_customer_summary_rejects_ai_style_formatting(self):
         bug = {
@@ -1592,6 +1699,47 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(manifest["turns"][0]["commit_sha"], "c" * 40)
         self.assertEqual(manifest["turns"][0]["turn_id"], "p1")
         self.assertEqual(len(turn["trajectory_sha256"]), 64)
+
+    def test_trace_checkpoint_accepts_legacy_multiline_terminal_paste(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "full.jsonl"
+            destination = root / "turn-02.jsonl"
+            events = [
+                {
+                    "type": "user",
+                    "sessionId": "session-split",
+                    "timestamp": "2026-09-10T09:14:52.500Z",
+                    "promptId": "prompt-split",
+                    "message": {"content": "修复第一个问题"},
+                },
+                {
+                    "type": "queue-operation",
+                    "operation": "enqueue",
+                    "sessionId": "session-split",
+                    "timestamp": "2026-09-10T09:14:53.000Z",
+                    "content": "修复第二个问题",
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "两个问题都已修复。"}],
+                    },
+                },
+                {"type": "system", "subtype": "turn_duration"},
+            ]
+            source.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            app.write_trace_through_turn(
+                source, destination, "修复第一个问题\n修复第二个问题"
+            )
+            content = destination.read_text(encoding="utf-8")
+
+        self.assertIn("两个问题都已修复", content)
 
     def test_trace_is_exported_before_container_conversation_is_closed(self):
         with tempfile.TemporaryDirectory() as directory:

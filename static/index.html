@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Claude Eval Console</title>
+    <link rel="stylesheet" href="/styles.css?v=29" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="app-header">
+        <div class="app-header-inner">
+          <div class="brand">
+            <div class="brand-mark">C</div>
+            <div>
+              <strong>Eval Console</strong>
+              <span>Project evaluation runner</span>
+            </div>
+          </div>
+          <div class="header-tools">
+            <div class="model-chip parallel-chip"><span></span><b id="parallel-status">并行 0 / 4</b></div>
+            <form class="model-switcher" id="model-form">
+              <label for="global-model">全局模型</label>
+              <select id="global-model" name="model" aria-label="全局模型" required>
+                <option value="default">Default（推荐）</option>
+                <option value="opus[1m]">Opus（1M 上下文）</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="sonnet[1m]">Sonnet 5（1M 上下文）</option>
+                <option value="haiku">Haiku</option>
+                <option value="auto_model/urm" selected>auto_model/urm（自定义网关）</option>
+              </select>
+              <button id="model-submit" type="submit">应用</button>
+              <small>新任务和未启动容器的排队任务使用；已开始的对话不中途切换</small>
+            </form>
+            <div class="environment-card" id="environment-card">
+              <span class="status-dot checking"></span>
+              <div>
+                <strong>正在检查本机环境</strong>
+                <small>Docker · Terminal · GitHub</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">LOCAL AUTOMATION</div>
+            <h1 id="page-title">开发任务自动化</h1>
+            <p id="page-description">查看任务状态、当前轮次和使用的技术信息。</p>
+          </div>
+          <div class="quick-create">
+            <label for="project-directory">保存到</label>
+            <div class="quick-directory">
+              <span>/Users/zhangxinyu/claude code /</span>
+              <input id="project-directory" list="project-directory-options" autocomplete="off" value="zzzz" aria-label="本地保存目录" />
+              <datalist id="project-directory-options"><option value="zzzz"></option></datalist>
+            </div>
+            <button class="new-run-button" id="new-run-button" type="button"><span>＋</span> 新建任务</button>
+            <small id="directory-preview">项目文件夹编号会自动递增，难度由完成后的轨迹和产物评定。</small>
+          </div>
+          <div class="auto-refill-row" id="auto-refill-row">
+            <div class="auto-refill-copy">
+              <span class="auto-refill-indicator" aria-hidden="true"></span>
+              <div>
+                <strong>自动补题</strong>
+                <small id="auto-refill-detail">并行不足 4 时优先续作；每链最多 6 轮，默认按 Feature、Bug 修复和完整模块混合安排。</small>
+                <small class="auto-refill-deadline hidden" id="auto-refill-deadline"></small>
+              </div>
+            </div>
+            <div class="auto-refill-controls">
+              <div class="auto-refill-timer-controls hidden" id="auto-refill-timer-controls">
+                <label class="auto-refill-hours" for="auto-refill-hours">
+                  <input id="auto-refill-hours" type="number" min="0.5" max="168" step="0.5" value="4" inputmode="decimal" aria-label="自动关闭小时数" />
+                  <span>小时后关闭</span>
+                </label>
+                <button class="auto-refill-schedule" id="auto-refill-schedule" type="button">开启并定时关闭</button>
+                <button class="auto-refill-clear hidden" id="auto-refill-clear" type="button">取消定时</button>
+              </div>
+              <button class="auto-refill-toggle" id="auto-refill-toggle" type="button" aria-pressed="false">自动补题：关闭</button>
+            </div>
+          </div>
+        </header>
+
+        <div id="notice" class="notice hidden" role="status"></div>
+
+        <section class="view records-section" id="records-view">
+          <div class="records-heading">
+            <div>
+              <div><h2>运行记录</h2><p>点击一条记录进入独立详情页，查看完整会话和执行结果。</p></div>
+            </div>
+            <div class="records-heading-actions">
+              <span id="record-count">0 条记录</span>
+              <button class="secondary-button" id="open-import-baseline" type="button" disabled>导入现有 0-1 基线</button>
+              <button class="secondary-button" id="open-export-page" type="button">导出完成轮次</button>
+            </div>
+          </div>
+          <form class="records-filters" id="run-filters">
+            <label>
+              <span>编号或关键词</span>
+              <input id="run-filter-query" type="search" autocomplete="off" placeholder="编号、项目名、Run ID、框架或模型" />
+            </label>
+            <label>
+              <span>任务类型</span>
+              <select id="run-filter-task-type">
+                <option value="">全部任务类型</option>
+                <option value="0-1 代码生成">0-1 代码生成</option>
+                <option value="Feature 迭代">Feature 迭代</option>
+                <option value="Bug 修复">Bug 修复</option>
+                <option value="代码理解">代码理解</option>
+                <option value="代码重构">代码重构</option>
+                <option value="工程化">工程化</option>
+                <option value="代码测试">代码测试</option>
+              </select>
+            </label>
+            <label>
+              <span>项目类别</span>
+              <select id="run-filter-category">
+                <option value="">全部类别</option>
+                <option value="纯前端">纯前端</option>
+                <option value="纯后端">纯后端</option>
+                <option value="全栈">全栈</option>
+              </select>
+            </label>
+            <label>
+              <span>状态</span>
+              <select id="run-filter-status">
+                <option value="">全部状态</option>
+                <option value="active">进行中</option>
+                <option value="complete">已完成</option>
+                <option value="attention">已中断或失败</option>
+              </select>
+            </label>
+            <button class="filter-reset" id="reset-run-filters" type="button">清除筛选</button>
+          </form>
+          <div class="records-table-wrap">
+            <table class="records-table">
+              <thead>
+                <tr>
+                  <th><button class="sort-button" type="button" data-sort-key="project_number">编号 <span>↕</span></button></th>
+                  <th>项目 / 仓库</th>
+                  <th><button class="sort-button" type="button" data-sort-key="current_turn">当前对话轮次 <span>↕</span></button></th>
+                  <th>任务类型</th>
+                  <th>语言 / 框架</th>
+                  <th>模型</th>
+                  <th>当前状态</th>
+                  <th><button class="sort-button active" type="button" data-sort-key="updated_at">更新时间 <span>↓</span></button></th>
+                  <th><span class="sr-only">操作</span></th>
+                </tr>
+              </thead>
+              <tbody id="run-list">
+                <tr><td colspan="9" class="table-empty">还没有运行记录</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="export-view" class="view export-view hidden">
+          <div class="detail-navigation">
+            <button class="back-button" id="export-back-to-list" type="button">← 返回运行记录</button>
+            <span>轮次导出</span>
+          </div>
+          <div class="export-card">
+            <div class="export-heading">
+              <div>
+                <span>COMPLETED TURNS</span>
+                <h2>导出已完成轮次</h2>
+                <p>每个已完成轮次占一行；不能导出的轮次会在状态下方直接列出缺失资料。</p>
+              </div>
+              <div class="export-actions">
+                <b id="export-selection-count">已选 0 项</b>
+                <button class="danger-button" id="delete-selected-export-turns" type="button" disabled>删除所选</button>
+                <button class="secondary-button" id="preflight-export" type="button">提交前检查</button>
+                <button class="secondary-button" id="select-preflight-passed" type="button" disabled>只选择检查通过项</button>
+                <button class="primary-button" id="download-export" type="button" disabled>导出 Excel</button>
+              </div>
+            </div>
+            <form class="export-filters" id="export-filters">
+              <label>
+                <span>编号或关键词</span>
+                <input id="export-filter-query" type="search" autocomplete="off" placeholder="编号、项目名或 Run ID" />
+              </label>
+              <label>
+                <span>任务类型</span>
+                <select id="export-filter-task-type">
+                  <option value="">全部任务类型</option>
+                  <option value="0-1 代码生成">0-1 代码生成</option>
+                  <option value="Feature 迭代">Feature 迭代</option>
+                  <option value="Bug 修复">Bug 修复</option>
+                  <option value="代码理解">代码理解</option>
+                  <option value="代码重构">代码重构</option>
+                  <option value="工程化">工程化</option>
+                  <option value="代码测试">代码测试</option>
+                </select>
+              </label>
+              <label>
+                <span>任务难度</span>
+                <select id="export-filter-difficulty">
+                  <option value="">全部难度</option>
+                  <option value="简单">简单</option>
+                  <option value="中等">中等</option>
+                  <option value="困难">困难</option>
+                  <option value="未记录">未记录</option>
+                </select>
+              </label>
+              <label>
+                <span>资料状态</span>
+                <select id="export-filter-readiness">
+                  <option value="">全部资料状态</option>
+                  <option value="ready">可导出</option>
+                  <option value="blocked">待补资料</option>
+                </select>
+              </label>
+              <label>
+                <span>SOLO-QA 状态</span>
+                <select id="export-filter-solo-qa">
+                  <option value="">全部提交状态</option>
+                  <option value="not_submitted">未提交</option>
+                  <option value="qc_pending">质检中</option>
+                  <option value="qc_passed">质检通过</option>
+                  <option value="needs_fix">需要返修</option>
+                  <option value="discarded">已废弃</option>
+                  <option value="failed">提交失败</option>
+                  <option value="remote_missing">远端未找到</option>
+                  <option value="local_changed">本地数据已变化</option>
+                  <option value="not_ready">待补资料</option>
+                </select>
+              </label>
+              <label>
+                <span>完成日期从</span>
+                <input id="export-filter-date-from" type="date" />
+              </label>
+              <label>
+                <span>完成日期到</span>
+                <input id="export-filter-date-to" type="date" />
+              </label>
+              <button class="filter-reset" id="reset-export-filters" type="button">清除筛选</button>
+            </form>
+            <div class="export-preflight-panel" id="export-preflight-panel">
+              <strong>尚未执行提交前检查</strong>
+              <span>未勾选时检查列表中的全部完成轮次；勾选后只检查所选轮次。</span>
+            </div>
+            <div class="solo-qa-panel">
+              <div class="solo-qa-copy">
+                <div class="solo-qa-title-row">
+                  <strong>提交到 SOLO-QA</strong>
+                  <span class="solo-qa-bridge-status disconnected" id="solo-qa-bridge-status">提交助手未连接</span>
+                </div>
+                <p id="solo-qa-status-detail">安装一次 Chrome 提交助手后，可同步历史提交并自动上传轨迹。</p>
+                <details>
+                  <summary>首次安装说明</summary>
+                  <p>打开 <code>chrome://extensions</code>，开启开发者模式，选择“加载已解压的扩展程序”，然后选择：</p>
+                  <div class="solo-qa-helper-path"><code id="solo-qa-helper-path">正在读取路径…</code><button class="text-button" id="copy-solo-qa-helper-path" type="button">复制路径</button></div>
+                  <p>安装后刷新本页。助手只连接本机评测台与 SOLO-QA，不保存登录信息。</p>
+                </details>
+              </div>
+              <div class="solo-qa-actions">
+                <a class="secondary-button" href="https://solo2.jzxhnh.com/app/submissions" target="_blank" rel="noopener noreferrer">打开我的提交</a>
+                <button class="secondary-button" id="solo-qa-sync" type="button" disabled>同步我的提交</button>
+                <button class="primary-button" id="solo-qa-submit" type="button" disabled>提交所选轮次</button>
+              </div>
+            </div>
+            <div class="records-table-wrap">
+              <table class="export-table">
+                <thead>
+                  <tr>
+                    <th><input id="select-all-export-turns" type="checkbox" aria-label="选择全部已完成轮次" /></th>
+                    <th>编号</th>
+                    <th>项目 / 仓库</th>
+                    <th>轮次</th>
+                    <th>任务类型</th>
+                    <th>难度</th>
+                    <th>资料 / 提交前检查</th>
+                    <th>SOLO-QA</th>
+                    <th>完成时间</th>
+                    <th><span class="sr-only">操作</span></th>
+                  </tr>
+                </thead>
+                <tbody id="export-turn-list">
+                  <tr><td colspan="10" class="table-empty">正在读取已完成轮次…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="detail-view" class="view detail-view hidden"></section>
+      </main>
+    </div>
+
+    <template id="empty-detail-template">
+      <div class="empty-state"><div>⌁</div><h2>选择一条运行记录</h2><p>查看仓库、会话和逐轮执行结果。</p></div>
+    </template>
+
+    <dialog class="import-dialog" id="import-baseline-dialog">
+      <form id="import-baseline-form">
+        <div class="import-dialog-heading">
+          <div><span>IMPORTED BASELINE</span><h2>导入现有 0-1 项目</h2></div>
+          <button class="dialog-close" id="close-import-baseline" type="button" aria-label="关闭">×</button>
+        </div>
+        <p class="import-help">只填写一个或多个编号，控制台会从所选分组寻找对应目录，自动读取 README、技术栈、GitHub main 和 Docker Compose。导入只登记基线，不创建 Claude 会话或伪造轨迹。</p>
+        <div class="import-fields">
+          <label class="wide"><span>项目编号</span><input id="import-project-numbers" required autocomplete="off" inputmode="numeric" placeholder="例如：3000, 3001" /></label>
+          <label><span>保存分组</span><input id="import-project-directory" required value="zzzz" autocomplete="off" /></label>
+          <div class="import-auto-fields"><b>自动读取</b><span>目录、README、项目类别、语言/框架、GitHub commit、Compose 验收入口</span></div>
+        </div>
+        <div class="import-preview" id="import-baseline-preview">正在计算导入编号…</div>
+        <div class="import-dialog-actions">
+          <button class="secondary-button" id="cancel-import-baseline" type="button">取消</button>
+          <button class="primary-button" id="submit-import-baseline" type="submit">校验并导入</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="/app.js?v=46" defer></script>
+  </body>
+</html>

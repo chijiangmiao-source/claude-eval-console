@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Eval → SOLO-QA",
+  "version": "1.1.0",
+  "description": "将本地 Claude Eval Console 的完成轮次提交到 SOLO-QA，并同步质检状态。",
+  "permissions": [
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "https://solo2.jzxhnh.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1:8765/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

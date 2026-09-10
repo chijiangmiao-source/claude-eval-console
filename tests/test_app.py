@@ -142,6 +142,18 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("deleteExportTurns", javascript)
         self.assertIn("/api/exports/turns/delete", javascript)
 
+    def test_export_page_can_expand_each_turn_prompt(self):
+        html = (app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        styles = (app.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("<th><span class=\"sr-only\">展开题面</span></th>", html)
+        self.assertIn("expandedExportPrompts: new Set()", javascript)
+        self.assertIn('data-export-prompt-key="${escapeHtml(turn.key)}"', javascript)
+        self.assertIn('class="export-prompt-row"', javascript)
+        self.assertIn("escapeHtml(turn.prompt", javascript)
+        self.assertIn(".export-prompt-toggle", styles)
+        self.assertIn(".export-prompt-content", styles)
+
     def test_export_page_exposes_solo_qa_bridge_controls(self):
         html = (app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
         javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -4193,6 +4205,7 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(summaries[0]["key"], "abc123abc123:1")
         self.assertEqual(summaries[0]["project_number"], "0007")
         self.assertEqual(summaries[0]["task_difficulty"], "困难")
+        self.assertEqual(summaries[0]["prompt"], "完成真实导出链路")
         self.assertTrue(summaries[0]["export_ready"])
         self.assertEqual(len(row), len(app.DELIVERY_EXPORT_COLUMNS))
         self.assertEqual(row[0], "0007")

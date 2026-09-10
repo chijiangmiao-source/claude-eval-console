@@ -1,4 +1,4 @@
-const UI_VERSION = "20260910.11";
+const UI_VERSION = "20260910.12";
 
 const state = {
   runs: [],
@@ -15,6 +15,7 @@ const state = {
   filters: { query: "", taskType: "", category: "", status: "" },
   completedTurns: [],
   selectedExportTurns: new Set(),
+  expandedExportPrompts: new Set(),
   exportFilters: {
     query: "",
     taskType: "",
@@ -1051,10 +1052,13 @@ async function loadCompletedTurns() {
     state.selectedExportTurns = new Set(
       [...state.selectedExportTurns].filter((key) => validKeys.has(key))
     );
+    state.expandedExportPrompts = new Set(
+      [...state.expandedExportPrompts].filter((key) => validKeys.has(key))
+    );
     renderExportPage();
   } catch (error) {
     showNotice(error.message);
-    $("#export-turn-list").innerHTML = '<tr><td colspan="10" class="table-empty">已完成轮次读取失败</td></tr>';
+    $("#export-turn-list").innerHTML = '<tr><td colspan="11" class="table-empty">已完成轮次读取失败</td></tr>';
   }
 }
 
@@ -1156,13 +1160,13 @@ async function selectedTurnsPassPreflight(turnKeys) {
 function renderExportPage() {
   const list = $("#export-turn-list");
   if (!state.completedTurns.length) {
-    list.innerHTML = '<tr><td colspan="10" class="table-empty">还没有已完成轮次</td></tr>';
+    list.innerHTML = '<tr><td colspan="11" class="table-empty">还没有已完成轮次</td></tr>';
     updateExportSelectionControls();
     return;
   }
   const visibleTurns = filteredCompletedTurns();
   if (!visibleTurns.length) {
-    list.innerHTML = '<tr><td colspan="10" class="table-empty">没有符合筛选条件的完成轮次</td></tr>';
+    list.innerHTML = '<tr><td colspan="11" class="table-empty">没有符合筛选条件的完成轮次</td></tr>';
     updateExportSelectionControls();
     return;
   }
@@ -1197,8 +1201,11 @@ function renderExportPage() {
     const readinessContent = preflight
       ? `<span class="preflight-result ${escapeHtml(preflightTone)}">${escapeHtml(preflightLabel)}</span>${preflightIssues.length ? `<span class="export-issues-inline">：${escapeHtml(preflightIssues.join("；"))}</span>` : ""}`
       : `<span class="export-readiness ${turn.export_ready ? "ready" : "blocked"}">${turn.export_ready ? "可导出 · 尚未深度检查" : `待补资料（${escapeHtml(exportIssues.length)}）`}</span>${exportIssueDetails}`;
+    const promptExpanded = state.expandedExportPrompts.has(turn.key);
+    const promptRowId = `export-prompt-${turn.run_id}-${turn.turn_number}`;
     return `
-    <tr>
+    <tr class="export-turn-row${promptExpanded ? " prompt-expanded" : ""}">
+      <td data-label="题面"><button class="export-prompt-toggle" type="button" data-export-prompt-key="${escapeHtml(turn.key)}" aria-expanded="${promptExpanded}" aria-controls="${escapeHtml(promptRowId)}" title="${promptExpanded ? "收起题面" : "展开题面"}"><span aria-hidden="true">›</span><span class="sr-only">${promptExpanded ? "收起" : "展开"} ${escapeHtml(turn.repo_name)} 第 ${escapeHtml(turn.turn_number)} 轮题面</span></button></td>
       <td data-label="选择"><input class="export-turn-checkbox" type="checkbox" data-export-key="${escapeHtml(turn.key)}" aria-label="选择 ${escapeHtml(turn.repo_name)} 第 ${escapeHtml(turn.turn_number)} 轮" ${state.selectedExportTurns.has(turn.key) ? "checked" : ""} /></td>
       <td data-label="编号"><span class="number-badge">${escapeHtml(turn.project_number || "—")}</span></td>
       <td data-label="项目 / 仓库"><button class="record-name export-run-link" type="button" data-export-run-id="${escapeHtml(turn.run_id)}">${escapeHtml(turn.repo_name)}</button><small>${escapeHtml(turn.run_id)}</small></td>
@@ -1209,7 +1216,8 @@ function renderExportPage() {
       <td data-label="SOLO-QA" class="solo-qa-cell" title="${escapeHtml(soloQaDetail)}"><span class="solo-qa-state ${escapeHtml(soloQaTone)}">${escapeHtml(soloQaLabel)}</span>${soloQaLink ? `<small>${soloQaLink}</small>` : ""}${soloQaDetail ? `<small>${escapeHtml(soloQaDetail)}</small>` : ""}</td>
       <td data-label="完成时间"><time>${escapeHtml(turn.completed_at || "")}</time></td>
       <td data-label="操作"><button class="record-delete export-turn-delete" type="button" data-export-delete-key="${escapeHtml(turn.key)}" ${state.exportDeleteBusy ? "disabled" : ""}>删除</button></td>
-    </tr>`;
+    </tr>
+    ${promptExpanded ? `<tr class="export-prompt-row" id="${escapeHtml(promptRowId)}"><td colspan="11"><div class="export-prompt-content"><strong>题面</strong><p>${escapeHtml(turn.prompt || "未记录题面")}</p></div></td></tr>` : ""}`;
   }).join("");
   updateExportSelectionControls();
 }
@@ -1887,6 +1895,14 @@ $("#export-turn-list").addEventListener("change", (event) => {
   updateExportSelectionControls();
 });
 $("#export-turn-list").addEventListener("click", (event) => {
+  const promptButton = event.target.closest("[data-export-prompt-key]");
+  if (promptButton) {
+    const key = promptButton.dataset.exportPromptKey;
+    if (state.expandedExportPrompts.has(key)) state.expandedExportPrompts.delete(key);
+    else state.expandedExportPrompts.add(key);
+    renderExportPage();
+    return;
+  }
   const deleteButton = event.target.closest("[data-export-delete-key]");
   if (deleteButton) {
     deleteExportTurns([deleteButton.dataset.exportDeleteKey]);

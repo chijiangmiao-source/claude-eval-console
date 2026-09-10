@@ -119,7 +119,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "张鑫宇").strip() or "张鑫宇"
-APP_VERSION = "20260910.11"
+APP_VERSION = "20260910.12"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -6069,6 +6069,7 @@ def completed_turns() -> List[Dict[str, Any]]:
             "project_number": run_project_number_label(row),
             "repo_name": row["repo_name"],
             "turn_number": turn_number,
+            "prompt": row.get("turn_prompt") or "",
             "task_type": evaluation.get("task_type") or row.get("intent_type") or "未记录",
             "task_difficulty": evaluation.get("task_difficulty") or fallback_difficulty or "未记录",
             "model": row.get("turn_model") or "未记录",

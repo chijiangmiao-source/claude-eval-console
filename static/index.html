@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <title>Claude Eval Console</title>
-    <link rel="stylesheet" href="/styles.css?v=29" />
+    <link rel="stylesheet" href="/styles.css?v=30" />
   </head>
   <body>
     <div class="shell">
@@ -266,6 +266,7 @@
               <table class="export-table">
                 <thead>
                   <tr>
+                    <th><span class="sr-only">展开题面</span></th>
                     <th><input id="select-all-export-turns" type="checkbox" aria-label="选择全部已完成轮次" /></th>
                     <th>编号</th>
                     <th>项目 / 仓库</th>
@@ -279,7 +280,7 @@
                   </tr>
                 </thead>
                 <tbody id="export-turn-list">
-                  <tr><td colspan="10" class="table-empty">正在读取已完成轮次…</td></tr>
+                  <tr><td colspan="11" class="table-empty">正在读取已完成轮次…</td></tr>
                 </tbody>
               </table>
             </div>
@@ -313,6 +314,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=46" defer></script>
+    <script src="/app.js?v=47" defer></script>
   </body>
 </html>

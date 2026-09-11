@@ -368,7 +368,15 @@ async function findRemoteMatch(bundle) {
   const response = await remoteJson(
     `/submissions?page=1&page_size=20&keyword=${encodeURIComponent(turnId)}`,
   );
-  const details = await remoteDetails(Array.isArray(response.items) ? response.items : []);
+  const items = Array.isArray(response.items) ? response.items : [];
+  const listed = items.map(compactRemote);
+  const listedMatch = listed.find(
+    (item) => item.session_id === sessionId && item.turn_id === turnId && Number(item.round_no) === roundNo,
+  );
+  if (listedMatch) return listedMatch;
+  const unresolved = items.filter((item) => !item.session_id || !item.turn_id);
+  if (!unresolved.length) return null;
+  const details = await remoteDetails(unresolved);
   return details.find(
     (item) => item.session_id === sessionId && item.turn_id === turnId && Number(item.round_no) === roundNo,
   ) || null;
@@ -391,15 +399,7 @@ async function uploadTrajectory(bundle, schema) {
   return remoteFile("/submissions/upload", blob, bundle.trajectory.name || "trajectory.jsonl");
 }
 
-async function refreshRemoteDetail(remoteId) {
-  try {
-    return compactRemote(await remoteJson(`/submissions/${encodeURIComponent(remoteId)}`));
-  } catch {
-    return null;
-  }
-}
-
-async function submitOne(turnKey) {
+async function submitOne(turnKey, loadFormSchema) {
   const bundle = await loadLocalBundle(turnKey);
   if (bundle.solo_qa?.remote_id && !["failed", "remote_missing", "not_submitted"].includes(bundle.solo_qa.state)) {
     return { turn_key: turnKey, outcome: "skipped", reason: "本地已记录为提交过" };
@@ -420,7 +420,7 @@ async function submitOne(turnKey) {
   }
   await recordLocal(bundle, { state: "submitting", error: "" });
   try {
-    const schema = await remoteJson("/submissions/form-schema");
+    const schema = await loadFormSchema();
     buildRemoteData(schema, bundle, { name: "pending", path: "pending", size: 0 });
     const uploaded = await uploadTrajectory(bundle, schema);
     const data = buildRemoteData(schema, bundle, uploaded);
@@ -430,7 +430,7 @@ async function submitOne(turnKey) {
     }));
     const remoteId = String(created.id || "");
     if (!remoteId) throw new Error("SOLO-QA 已响应，但没有返回提交 ID");
-    const detail = (await refreshRemoteDetail(remoteId)) || compactRemote(created);
+    const detail = compactRemote({ ...created, status: created.status || "SUBMITTED" });
     await recordLocal(bundle, {
       state: REMOTE_STATUS_TO_LOCAL[detail.status] || "qc_pending",
       remote_id: remoteId,
@@ -469,10 +469,15 @@ async function submitBatch(payload) {
     throw new Error("提交轮次列表格式不正确");
   }
   const results = [];
+  let schemaPromise = null;
+  const loadFormSchema = () => {
+    if (!schemaPromise) schemaPromise = remoteJson("/submissions/form-schema");
+    return schemaPromise;
+  };
   for (let index = 0; index < keys.length; index += 1) {
     const key = keys[index];
     try {
-      results.push(await submitOne(key));
+      results.push(await submitOne(key, loadFormSchema));
     } catch (error) {
       results.push({
         turn_key: key,

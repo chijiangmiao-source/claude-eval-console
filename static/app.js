@@ -1,4 +1,4 @@
-const UI_VERSION = "20260910.12";
+const UI_VERSION = "20260911.31";
 
 const state = {
   runs: [],
@@ -16,6 +16,8 @@ const state = {
   completedTurns: [],
   selectedExportTurns: new Set(),
   expandedExportPrompts: new Set(),
+  exportEvaluationDrafts: new Map(),
+  exportEvaluationBusy: new Set(),
   exportFilters: {
     query: "",
     taskType: "",
@@ -28,10 +30,14 @@ const state = {
   exportPreflight: null,
   exportPreflightBusy: false,
   exportDeleteBusy: false,
+  hourlyAnalytics: null,
+  analyticsDate: "",
+  analyticsChartType: "bar",
+  analyticsBusy: false,
+  analyticsLastLoadedAt: 0,
   soloQaBridgeReady: false,
   soloQaBridgeVersion: "",
   soloQaBusy: false,
-  soloQaAutoSyncStarted: false,
   soloQaLastMessage: "",
   soloQaRequests: new Map(),
   modelInputDirty: false,
@@ -43,6 +49,7 @@ const $ = (selector) => document.querySelector(selector);
 const recordsView = $("#records-view");
 const detailView = $("#detail-view");
 const exportView = $("#export-view");
+const analyticsView = $("#analytics-view");
 const pageTitle = $("#page-title");
 const pageDescription = $("#page-description");
 const newRunButton = $("#new-run-button");
@@ -51,6 +58,7 @@ const notice = $("#notice");
 const phaseInfo = {
   generation_queued: ["题目生成排队中", "running"],
   generation_running: ["题目生成中", "running"],
+  iteration_generation_running: ["题面生成中", "running"],
   queued: ["等待启动", "running"],
   first_retry_queued: ["等待重启第一轮", "running"],
   creating_repo: ["创建仓库", "running"],
@@ -68,6 +76,7 @@ const phaseInfo = {
   final_review_running: ["会话空闲／复查中", "running"],
   complete: ["任务已完成", "complete"],
   turn_limit: ["已到 10 轮上限", "warning"],
+  manual_review: ["待人工确认", "warning"],
   interrupted: ["会话已中断", "warning"],
   failed: ["运行失败", "failed"],
   stopped: ["已终止", "failed"],
@@ -120,6 +129,16 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function renderTableTimestamp(value, tone = "neutral") {
+  const text = String(value || "").trim();
+  if (!text) return '<span class="table-timestamp empty">—</span>';
+  const parts = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{2}:\d{2})(?::\d{2})?/);
+  if (!parts) {
+    return `<time class="table-timestamp ${escapeHtml(tone)}" title="${escapeHtml(text)}">${escapeHtml(text)}</time>`;
+  }
+  return `<time class="table-timestamp ${escapeHtml(tone)}" datetime="${escapeHtml(text)}" title="${escapeHtml(text)}" aria-label="${escapeHtml(parts[1])} ${escapeHtml(parts[2])}"><span class="timestamp-date">${escapeHtml(parts[1])}</span><strong class="timestamp-clock">${escapeHtml(parts[2])}</strong></time>`;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -143,7 +162,7 @@ function phaseLabel(phase) {
 }
 
 function isRunning(phase) {
-  return ["generation_queued", "generation_running", "queued", "first_retry_queued", "creating_repo", "first_starting", "first_running", "first_idle", "review_queued", "review_running", "awaiting_second", "second_queued", "second_starting", "second_running", "second_idle", "final_review_queued", "final_review_running"].includes(phase);
+  return ["generation_queued", "generation_running", "iteration_generation_running", "queued", "first_retry_queued", "creating_repo", "first_starting", "first_running", "first_idle", "review_queued", "review_running", "awaiting_second", "second_queued", "second_starting", "second_running", "second_idle", "final_review_queued", "final_review_running"].includes(phase);
 }
 
 function renderNewRunButtonState() {
@@ -158,7 +177,7 @@ function runMatchesStatus(run, status) {
   if (!status) return true;
   if (status === "active") return isRunning(run.phase);
   if (status === "complete") return run.phase === "complete";
-  if (status === "attention") return ["turn_limit", "interrupted", "failed", "stopped"].includes(run.phase);
+  if (status === "attention") return ["turn_limit", "manual_review", "interrupted", "failed", "stopped"].includes(run.phase);
   return true;
 }
 
@@ -299,26 +318,28 @@ function renderDirectoryPreview() {
 function renderRunList() {
   const list = $("#run-list");
   const visibleRuns = filteredRuns();
+  const backgroundCount = state.runs.filter((run) => run.background_generation).length;
+  const persistentCount = state.runs.length - backgroundCount;
   renderNewRunButtonState();
   $("#record-count").textContent = visibleRuns.length === state.runs.length
-    ? `${state.runs.length} 条记录`
-    : `${visibleRuns.length} / ${state.runs.length} 条记录`;
+    ? `${persistentCount} 条记录${backgroundCount ? ` · ${backgroundCount} 个后台生成` : ""}`
+    : `${visibleRuns.length} / ${state.runs.length} 项`;
   if (!state.runs.length) {
-    list.innerHTML = '<tr><td colspan="9" class="table-empty">还没有运行记录</td></tr>';
+    list.innerHTML = '<tr><td colspan="8" class="table-empty">还没有运行记录</td></tr>';
     return;
   }
   if (!visibleRuns.length) {
-    list.innerHTML = '<tr><td colspan="9" class="table-empty">没有符合筛选条件的运行记录</td></tr>';
+    list.innerHTML = '<tr><td colspan="8" class="table-empty">没有符合筛选条件的运行记录</td></tr>';
     return;
   }
   const sortedRuns = [...visibleRuns].sort((first, second) => {
     const numericSort = ["current_turn", "project_number"].includes(state.sortKey);
     const firstValue = numericSort
       ? Number(first[state.sortKey] || 0)
-      : String(first.updated_at || "");
+      : String(first[state.sortKey] || first.updated_at || "");
     const secondValue = numericSort
       ? Number(second[state.sortKey] || 0)
-      : String(second.updated_at || "");
+      : String(second[state.sortKey] || second.updated_at || "");
     const result = firstValue < secondValue ? -1 : firstValue > secondValue ? 1 : 0;
     return state.sortDirection === "asc" ? result : -result;
   });
@@ -326,20 +347,26 @@ function renderRunList() {
     const [label, tone] = run.imported_baseline
       ? ["基线已导入", "complete"]
       : phaseLabel(run.phase);
-    const model = run.current_model || (Number(run.current_turn || 1) > 1 && run.second_model ? run.second_model : run.model);
     const taskType = run.current_task_type || run.task_type || "未记录";
     const category = run.project_category && run.project_category !== "未记录" ? run.project_category : "";
     const categoryTone = category === "纯前端" ? "frontend" : category === "纯后端" ? "backend" : category === "全栈" ? "fullstack" : "neutral";
-    return `<tr class="run-row ${state.selectedId === run.id ? "active" : ""}" data-run-id="${run.id}" tabindex="0">
+    const targetRunId = run.background_generation ? run.source_run_id : run.id;
+    const recordMeta = run.background_generation
+      ? `${run.background_kind || "后台任务"} · 来源 ${run.source_project_number || "—"}`
+      : run.id;
+    const actions = run.background_generation
+      ? `<span class="record-actions"><button class="record-open" type="button" data-run-id="${escapeHtml(targetRunId)}">查看来源</button><span class="background-job-readonly">只读</span></span>`
+      : `<span class="record-actions"><button class="record-open" type="button" data-run-id="${escapeHtml(targetRunId)}">查看详情</button><button class="record-delete" type="button" data-run-action="delete" data-run-id="${escapeHtml(targetRunId)}" ${isRunning(run.phase) ? 'disabled title="运行中不可删除"' : ""}>删除</button></span>`;
+    const statusContent = `<span class="run-status-stack"><span class="table-phase ${tone}" title="${escapeHtml(run.status_detail || label)}"><i aria-hidden="true"></i>${escapeHtml(label)}</span>${run.background_generation ? `<small class="background-job-stage">${escapeHtml(run.status_detail || "正在生成题面")}</small>` : ""}</span>`;
+    return `<tr class="run-row${run.background_generation ? " background-generation" : ""} ${state.selectedId === run.id ? "active" : ""}" data-run-id="${escapeHtml(targetRunId)}" tabindex="0">
       <td data-label="编号"><span class="number-badge">${escapeHtml(run.project_number || "—")}</span></td>
-      <td data-label="项目 / 仓库"><span><button class="record-name" type="button" data-run-id="${run.id}">${escapeHtml(run.repo_name)}</button><small>${escapeHtml(run.id)}</small></span></td>
+      <td data-label="项目 / 仓库"><span><button class="record-name" type="button" data-run-id="${escapeHtml(targetRunId)}">${escapeHtml(run.repo_name)}</button><small>${escapeHtml(recordMeta)}</small></span></td>
       <td data-label="当前对话轮次"><span class="turn-badge">${escapeHtml(run.turn_label || `第 ${run.current_turn || 1} 轮`)}</span></td>
       <td data-label="任务类型"><span class="task-tags"><span class="task-type-badge">${escapeHtml(taskType)}</span>${category ? `<span class="category-badge ${categoryTone}">${escapeHtml(category)}</span>` : ""}</span></td>
-      <td data-label="语言 / 框架"><span class="framework-text" title="${escapeHtml(run.language_framework || "未记录")}">${escapeHtml(run.language_framework || "未记录")}</span></td>
-      <td data-label="模型"><code>${escapeHtml(model || "未记录")}</code></td>
-      <td data-label="当前状态"><span class="table-phase ${tone}" title="${escapeHtml(run.status_detail || label)}"><i aria-hidden="true"></i>${escapeHtml(label)}</span></td>
-      <td data-label="更新时间"><time>${escapeHtml((run.updated_at || run.created_at || "").slice(5, 16))}</time></td>
-      <td data-label="操作"><span class="record-actions"><button class="record-open" type="button" data-run-id="${run.id}">查看详情</button><button class="record-delete" type="button" data-run-action="delete" data-run-id="${run.id}" ${isRunning(run.phase) ? 'disabled title="运行中不可删除"' : ""}>删除</button></span></td>
+      <td data-label="开始时间" class="time-column">${renderTableTimestamp(run.created_at, "started")}</td>
+      <td data-label="当前状态">${statusContent}</td>
+      <td data-label="更新时间" class="time-column">${renderTableTimestamp(run.updated_at || run.created_at, "updated")}</td>
+      <td data-label="操作">${actions}</td>
     </tr>`;
   }).join("");
   document.querySelectorAll("[data-sort-key]").forEach((button) => {
@@ -355,7 +382,7 @@ function progressState(run) {
   if (["first_retry_queued", "first_starting", "first_running"].includes(run.phase)) current = 2;
   if (["first_idle", "review_queued", "review_running", "awaiting_second"].includes(run.phase)) current = 3;
   if (["second_queued", "second_starting", "second_running"].includes(run.phase)) current = 4;
-  if (["second_idle", "final_review_queued", "final_review_running"].includes(run.phase)) current = 5;
+  if (["second_idle", "final_review_queued", "final_review_running", "manual_review"].includes(run.phase)) current = 5;
   if (["complete", "turn_limit"].includes(run.phase)) current = run.turn_count > 1 ? 6 : 4;
   if (["failed", "stopped", "interrupted"].includes(run.phase)) {
     if (run.second_prompt_id) current = 5;
@@ -642,7 +669,7 @@ function renderDetail() {
     && run.container_cleaned && run.repo_url && run.base_sha && !run.retry_run_id;
   const canRetryGeneration = run.phase === "failed" && run.repo_name === "题目生成中"
     && !run.repo_url && !run.first_prompt_id;
-  const canRetryStage = run.phase === "failed" && Boolean(run.stage_retry_name);
+  const canRetryStage = ["failed", "manual_review"].includes(run.phase) && Boolean(run.stage_retry_name);
   const turns = run.turns?.length ? run.turns : [];
   const latestTurn = turns.length ? turns[turns.length - 1] : null;
   const turnCount = Number(run.turn_count ?? 1);
@@ -863,7 +890,11 @@ async function loadHealth() {
 
 async function loadRuns(keepSelection = true) {
   try {
-    state.runs = await api("/api/runs");
+    const [runs, backgroundJobs] = await Promise.all([
+      api("/api/runs"),
+      api("/api/runs/background-jobs"),
+    ]);
+    state.runs = [...runs, ...backgroundJobs];
     if (!keepSelection && state.runs.length) state.selectedId = state.runs[0].id;
     renderRunList();
   } catch (error) {
@@ -914,7 +945,7 @@ function renderSoloQaControls() {
     bridgeStatus.textContent = "提交助手未连接";
   }
   detail.textContent = state.soloQaLastMessage || (state.soloQaBridgeReady
-    ? "可同步历史提交；提交时会自动上传轨迹并在本地保存远端状态。"
+    ? "历史状态按需手动同步；提交时只核对所选轮次，并自动上传对应轨迹。"
     : "安装一次 Chrome 提交助手后，可同步历史提交并自动上传轨迹。");
   const selected = state.completedTurns.filter((turn) =>
     state.selectedExportTurns.has(turn.key) && soloQaSubmittable(turn)
@@ -1027,10 +1058,6 @@ window.addEventListener("message", (event) => {
     state.soloQaBridgeReady = true;
     state.soloQaBridgeVersion = String(message.payload?.version || "");
     renderSoloQaControls();
-    if (window.location.hash === "#exports" && !state.soloQaAutoSyncStarted) {
-      state.soloQaAutoSyncStarted = true;
-      syncSoloQa({ silent: true });
-    }
     return;
   }
   if (!["SOLO_QA_BRIDGE_RESULT", "SOLO_QA_BRIDGE_ERROR"].includes(message.type)) return;
@@ -1203,9 +1230,10 @@ function renderExportPage() {
       : `<span class="export-readiness ${turn.export_ready ? "ready" : "blocked"}">${turn.export_ready ? "可导出 · 尚未深度检查" : `待补资料（${escapeHtml(exportIssues.length)}）`}</span>${exportIssueDetails}`;
     const promptExpanded = state.expandedExportPrompts.has(turn.key);
     const promptRowId = `export-prompt-${turn.run_id}-${turn.turn_number}`;
+    const evaluationEditor = promptExpanded ? exportEvaluationEditorHtml(turn) : "";
     return `
     <tr class="export-turn-row${promptExpanded ? " prompt-expanded" : ""}">
-      <td data-label="题面"><button class="export-prompt-toggle" type="button" data-export-prompt-key="${escapeHtml(turn.key)}" aria-expanded="${promptExpanded}" aria-controls="${escapeHtml(promptRowId)}" title="${promptExpanded ? "收起题面" : "展开题面"}"><span aria-hidden="true">›</span><span class="sr-only">${promptExpanded ? "收起" : "展开"} ${escapeHtml(turn.repo_name)} 第 ${escapeHtml(turn.turn_number)} 轮题面</span></button></td>
+      <td data-label="详情"><button class="export-prompt-toggle" type="button" data-export-prompt-key="${escapeHtml(turn.key)}" aria-expanded="${promptExpanded}" aria-controls="${escapeHtml(promptRowId)}" title="${promptExpanded ? "收起题面与评分" : "展开题面与评分"}"><span aria-hidden="true">›</span><span class="sr-only">${promptExpanded ? "收起" : "展开"} ${escapeHtml(turn.repo_name)} 第 ${escapeHtml(turn.turn_number)} 轮题面与评分</span></button></td>
       <td data-label="选择"><input class="export-turn-checkbox" type="checkbox" data-export-key="${escapeHtml(turn.key)}" aria-label="选择 ${escapeHtml(turn.repo_name)} 第 ${escapeHtml(turn.turn_number)} 轮" ${state.selectedExportTurns.has(turn.key) ? "checked" : ""} /></td>
       <td data-label="编号"><span class="number-badge">${escapeHtml(turn.project_number || "—")}</span></td>
       <td data-label="项目 / 仓库"><button class="record-name export-run-link" type="button" data-export-run-id="${escapeHtml(turn.run_id)}">${escapeHtml(turn.repo_name)}</button><small>${escapeHtml(turn.run_id)}</small></td>
@@ -1214,12 +1242,272 @@ function renderExportPage() {
       <td data-label="难度">${escapeHtml(turn.task_difficulty || "未记录")}</td>
       <td data-label="资料 / 提交前检查" title="${escapeHtml(preflightIssues.length ? preflightIssues.join("；") : exportIssues.join("；"))}">${readinessContent}</td>
       <td data-label="SOLO-QA" class="solo-qa-cell" title="${escapeHtml(soloQaDetail)}"><span class="solo-qa-state ${escapeHtml(soloQaTone)}">${escapeHtml(soloQaLabel)}</span>${soloQaLink ? `<small>${soloQaLink}</small>` : ""}${soloQaDetail ? `<small>${escapeHtml(soloQaDetail)}</small>` : ""}</td>
-      <td data-label="完成时间"><time>${escapeHtml(turn.completed_at || "")}</time></td>
+      <td data-label="完成时间" class="time-column">${renderTableTimestamp(turn.completed_at, "completed")}</td>
       <td data-label="操作"><button class="record-delete export-turn-delete" type="button" data-export-delete-key="${escapeHtml(turn.key)}" ${state.exportDeleteBusy ? "disabled" : ""}>删除</button></td>
     </tr>
-    ${promptExpanded ? `<tr class="export-prompt-row" id="${escapeHtml(promptRowId)}"><td colspan="11"><div class="export-prompt-content"><strong>题面</strong><p>${escapeHtml(turn.prompt || "未记录题面")}</p></div></td></tr>` : ""}`;
+    ${promptExpanded ? `<tr class="export-prompt-row" id="${escapeHtml(promptRowId)}"><td colspan="11"><div class="export-prompt-content"><strong>题面</strong><p>${escapeHtml(turn.prompt || "未记录题面")}</p></div>${evaluationEditor}</td></tr>` : ""}`;
   }).join("");
   updateExportSelectionControls();
+}
+
+const exportEvaluationDimensions = [
+  ["delivery", "交付完整性"],
+  ["instruction_following", "指令遵循"],
+  ["planning", "任务规划"],
+  ["reasoning", "推理能力"],
+  ["execution", "执行能力"],
+];
+
+function exportEvaluationDraft(turn) {
+  const saved = state.exportEvaluationDrafts.get(turn.key);
+  if (saved) return saved;
+  const draft = {};
+  exportEvaluationDimensions.forEach(([key]) => {
+    draft[key] = {
+      score: Number(turn.evaluation?.[key]?.score || 0),
+      description: String(turn.evaluation?.[key]?.description || ""),
+    };
+  });
+  return draft;
+}
+
+function exportEvaluationEditorHtml(turn) {
+  if (!turn.evaluation) {
+    return '<div class="export-evaluation-empty">该轮尚无可编辑评分。</div>';
+  }
+  const draft = exportEvaluationDraft(turn);
+  const busy = state.exportEvaluationBusy.has(turn.key);
+  const status = turn.evaluation_overridden
+    ? `<span class="manual">已人工修改${turn.evaluation_override_updated_at ? ` · ${escapeHtml(turn.evaluation_override_updated_at)}` : ""}</span>`
+    : "<span>当前为自动评分</span>";
+  return `<section class="export-evaluation-editor" data-evaluation-editor="${escapeHtml(turn.key)}">
+    <div class="export-evaluation-heading"><div><strong>五维评分与描述</strong>${status}</div><small>保存后，Excel 导出和 SOLO-QA 提交均使用这里的内容。</small></div>
+    <div class="export-evaluation-grid">${exportEvaluationDimensions.map(([key, label]) => {
+      const item = draft[key] || {};
+      return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数">${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="3" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述">${escapeHtml(item.description || "")}</textarea></label>`;
+    }).join("")}</div>
+    <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${busy ? "保存中…" : "保存评分修改"}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<span>原始自动评分不会被覆盖。</span></div>
+  </section>`;
+}
+
+function updateEvaluationDraft(input) {
+  const key = input.dataset.evaluationKey;
+  const dimension = input.dataset.evaluationDimension;
+  const field = input.dataset.evaluationField;
+  const turn = state.completedTurns.find((item) => item.key === key);
+  if (!key || !dimension || !field || !turn) return;
+  const draft = exportEvaluationDraft(turn);
+  draft[dimension] = {
+    ...(draft[dimension] || {}),
+    [field]: field === "score" ? Number(input.value) : input.value,
+  };
+  state.exportEvaluationDrafts.set(key, draft);
+}
+
+async function saveExportEvaluation(turnKey, reset = false) {
+  if (state.exportEvaluationBusy.has(turnKey)) return;
+  const turn = state.completedTurns.find((item) => item.key === turnKey);
+  if (!turn) return;
+  state.exportEvaluationBusy.add(turnKey);
+  renderExportPage();
+  try {
+    await api("/api/exports/turns/evaluation", {
+      method: "POST",
+      body: JSON.stringify({
+        turn_key: turnKey,
+        reset,
+        evaluation: reset ? undefined : exportEvaluationDraft(turn),
+      }),
+    });
+    state.exportEvaluationDrafts.delete(turnKey);
+    state.exportPreflight = null;
+    await loadCompletedTurns();
+    showNotice(reset ? "已恢复自动评分；后续导出和提交将使用自动版本" : "评分修改已保存；后续导出和提交将使用人工版本");
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    state.exportEvaluationBusy.delete(turnKey);
+    renderExportPage();
+  }
+}
+
+function localDateValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function setActiveModuleTab(activeModule) {
+  const tabs = {
+    runs: $("#module-tab-runs"),
+    exports: $("#open-export-page"),
+    analytics: $("#open-analytics-page"),
+  };
+  Object.entries(tabs).forEach(([module, tab]) => {
+    const active = module === activeModule;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+}
+
+const analyticsTaskTypes = [
+  ["0-1 代码生成", "baseline"],
+  ["Feature 迭代", "feature"],
+  ["Bug 修复", "bugfix"],
+  ["其他", "other"],
+];
+
+function renderHourlyChart(hours, peakCount) {
+  const chart = $("#hourly-output-chart");
+  hideHourlyChartTooltip();
+  const chartType = state.analyticsChartType;
+  const maxCount = Math.max(1, ...hours.map((hour) => Number(hour.total || 0)));
+  [
+    [$("#analytics-chart-bar"), "bar"],
+    [$("#analytics-chart-line"), "line"],
+  ].forEach(([button, type]) => {
+    const active = chartType === type;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+
+  if (chartType === "line") {
+    const width = 930;
+    const plotTop = 20;
+    const plotBottom = 188;
+    const xFor = (index) => 20 + (index * 890 / 23);
+    const yFor = (total) => plotBottom - (Number(total || 0) / maxCount) * (plotBottom - plotTop);
+    const points = hours.map((hour, index) => `${xFor(index)},${yFor(hour.total)}`).join(" ");
+    const areaPoints = `20,${plotBottom} ${points} 910,${plotBottom}`;
+    const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+      const y = plotBottom - ratio * (plotBottom - plotTop);
+      return `<line x1="20" y1="${y}" x2="910" y2="${y}" class="analytics-line-grid"></line>`;
+    }).join("");
+    const labels = hours.map((hour, index) =>
+      `<text x="${xFor(index)}" y="218" text-anchor="middle">${String(hour.hour).padStart(2, "0")}</text>`
+    ).join("");
+    const nodes = hours.map((hour, index) => {
+      const total = Number(hour.total || 0);
+      const isPeak = peakCount > 0 && total === peakCount;
+      return `<circle class="analytics-line-node${isPeak ? " peak" : ""}" cx="${xFor(index)}" cy="${yFor(total)}" r="5" tabindex="0" data-analytics-hour="${index}" aria-label="${escapeHtml(hour.label)}，完成 ${total} 轮"><title>${escapeHtml(hour.label)}：${total} 轮</title></circle>`;
+    }).join("");
+    chart.className = "hourly-chart analytics-line-chart";
+    chart.innerHTML = `<svg viewBox="0 0 ${width} 228" role="img" aria-label="每小时完成轮次折线图">
+      ${gridLines}
+      <polygon class="analytics-line-area" points="${areaPoints}"></polygon>
+      <polyline class="analytics-line-path" points="${points}"></polyline>
+      ${nodes}
+      <g class="analytics-line-labels">${labels}</g>
+    </svg>`;
+    return;
+  }
+
+  chart.className = "hourly-chart analytics-bar-chart";
+  chart.innerHTML = hours.map((hour, index) => {
+    const total = Number(hour.total || 0);
+    const segments = analyticsTaskTypes.map(([taskType, className]) => {
+      const count = Number(hour.by_task_type?.[taskType] || 0);
+      if (!count) return "";
+      const height = (count / maxCount) * 100;
+      return `<i class="hourly-bar-segment ${className}" style="height:${height}%"></i>`;
+    }).join("");
+    const isPeak = peakCount > 0 && total === peakCount;
+    return `<div class="hourly-bar${isPeak ? " peak" : ""}" tabindex="0" data-analytics-hour="${index}" aria-label="${escapeHtml(hour.label)}，完成 ${total} 轮">
+      <b>${total || ""}</b>
+      <div class="hourly-bar-track"><div class="hourly-bar-stack">${segments}</div></div>
+      <span>${String(hour.hour).padStart(2, "0")}</span>
+    </div>`;
+  }).join("");
+}
+
+function showHourlyChartTooltip(hourIndex, target, pointerEvent = null) {
+  const hour = state.hourlyAnalytics?.hours?.[Number(hourIndex)];
+  const tooltip = $("#hourly-chart-tooltip");
+  if (!hour || !tooltip || !target) return;
+  const total = Number(hour.total || 0);
+  tooltip.innerHTML = `<div class="analytics-tooltip-heading"><strong>${escapeHtml(hour.label)}</strong><b>${total} 轮</b></div>
+    <div class="analytics-tooltip-breakdown">${analyticsTaskTypes.map(([taskType, className]) =>
+      `<span><i class="${className}"></i>${escapeHtml(taskType)}<b>${Number(hour.by_task_type?.[taskType] || 0)}</b></span>`
+    ).join("")}</div>`;
+  tooltip.classList.remove("hidden");
+  const cardRect = $(".analytics-chart-card").getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const pointerX = pointerEvent?.clientX || targetRect.left + targetRect.width / 2;
+  const pointerY = pointerEvent?.clientY || targetRect.top;
+  const left = Math.min(Math.max(pointerX - cardRect.left + 12, 10), cardRect.width - tooltip.offsetWidth - 10);
+  const top = Math.max(pointerY - cardRect.top - tooltip.offsetHeight - 10, 70);
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function hideHourlyChartTooltip() {
+  $("#hourly-chart-tooltip")?.classList.add("hidden");
+}
+
+function setAnalyticsChartType(chartType) {
+  if (!['bar', 'line'].includes(chartType) || state.analyticsChartType === chartType) return;
+  state.analyticsChartType = chartType;
+  hideHourlyChartTooltip();
+  renderHourlyAnalytics();
+}
+
+function renderHourlyAnalytics() {
+  const analytics = state.hourlyAnalytics;
+  if (!analytics) return;
+  const summary = analytics.summary || {};
+  const hours = Array.isArray(analytics.hours) ? analytics.hours : [];
+  const peakCount = Number(summary.peak_count || 0);
+
+  $("#analytics-total").textContent = String(summary.completed_turns || 0);
+  $("#analytics-peak").textContent = `${peakCount} 轮`;
+  $("#analytics-active-hours").textContent = `${summary.active_hours || 0} 小时`;
+  $("#analytics-average").textContent = Number(summary.average_per_hour || 0).toFixed(2);
+  $("#analytics-peak-hours").textContent = (summary.peak_hours || []).join("、") || "当天暂无产出";
+  $("#analytics-definition").textContent = `${analytics.definition || "按完成轮次统计。"} 时区：${analytics.timezone || "本机"}`;
+  $("#analytics-chart-caption").textContent = `${analytics.date} · 共完成 ${summary.completed_turns || 0} 轮`;
+  analyticsTaskTypes.forEach(([taskType, className]) => {
+    const total = hours.reduce(
+      (sum, hour) => sum + Number(hour.by_task_type?.[taskType] || 0),
+      0
+    );
+    $(`#analytics-type-${className}-count`).textContent = `${total} 条`;
+  });
+
+  renderHourlyChart(hours, peakCount);
+
+  $("#hourly-output-list").innerHTML = hours.map((hour) => {
+    const total = Number(hour.total || 0);
+    const isPeak = peakCount > 0 && total === peakCount;
+    return `<tr${isPeak ? ' class="peak-hour"' : ""}>
+      <td data-label="时段"><b>${escapeHtml(hour.label)}</b></td>
+      <td data-label="完成轮次"><strong>${total}</strong></td>
+      <td data-label="0-1 代码生成">${Number(hour.by_task_type?.["0-1 代码生成"] || 0)}</td>
+      <td data-label="Feature 迭代">${Number(hour.by_task_type?.["Feature 迭代"] || 0)}</td>
+      <td data-label="Bug 修复">${Number(hour.by_task_type?.["Bug 修复"] || 0)}</td>
+      <td data-label="其他">${Number(hour.by_task_type?.["其他"] || 0)}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function loadHourlyAnalytics(dateValue = state.analyticsDate || localDateValue(), showLoading = true) {
+  if (state.analyticsBusy) return;
+  state.analyticsBusy = true;
+  state.analyticsDate = dateValue;
+  $("#analytics-date").value = dateValue;
+  if (showLoading && !state.hourlyAnalytics) {
+    $("#hourly-output-chart").innerHTML = '<div class="analytics-loading">正在读取每小时产出…</div>';
+    $("#hourly-output-list").innerHTML = '<tr><td colspan="6" class="table-empty">正在读取统计数据…</td></tr>';
+  }
+  try {
+    state.hourlyAnalytics = await api(`/api/analytics/hourly-output?date=${encodeURIComponent(dateValue)}`);
+    state.analyticsLastLoadedAt = Date.now();
+    renderHourlyAnalytics();
+  } catch (error) {
+    if (showLoading) showNotice(error.message);
+  } finally {
+    state.analyticsBusy = false;
+  }
 }
 
 function setPageHeader(title, description, showNewButton = true) {
@@ -1233,7 +1521,9 @@ function showListPage() {
   state.detail = null;
   detailView.classList.add("hidden");
   exportView.classList.add("hidden");
+  analyticsView.classList.add("hidden");
   recordsView.classList.remove("hidden");
+  setActiveModuleTab("runs");
   setPageHeader("运行记录", "查看任务状态、当前轮次和使用的技术信息。", true);
   renderRunList();
   $(".records-table-wrap").scrollLeft = 0;
@@ -1249,7 +1539,9 @@ async function showDetailPage(id) {
   state.selectedId = id;
   recordsView.classList.add("hidden");
   exportView.classList.add("hidden");
+  analyticsView.classList.add("hidden");
   detailView.classList.remove("hidden");
+  setActiveModuleTab("runs");
   setPageHeader("任务详情", "查看完整题面、会话标识、逐轮结果和运行轨迹。", true);
   detailView.innerHTML = '<div class="detail-loading">正在加载任务详情…</div>';
   await loadDetail();
@@ -1262,11 +1554,26 @@ async function showExportPage() {
   state.detail = null;
   recordsView.classList.add("hidden");
   detailView.classList.add("hidden");
+  analyticsView.classList.add("hidden");
   exportView.classList.remove("hidden");
+  setActiveModuleTab("exports");
   setPageHeader("导出与提交", "选择一个或多个已完成轮次，导出 Excel 或提交到 SOLO-QA。", true);
-  $("#export-turn-list").innerHTML = '<tr><td colspan="10" class="table-empty">正在读取已完成轮次…</td></tr>';
+  $("#export-turn-list").innerHTML = '<tr><td colspan="11" class="table-empty">正在读取已完成轮次…</td></tr>';
   await loadCompletedTurns();
   pingSoloQaBridge();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function showAnalyticsPage() {
+  state.selectedId = null;
+  state.detail = null;
+  recordsView.classList.add("hidden");
+  detailView.classList.add("hidden");
+  exportView.classList.add("hidden");
+  analyticsView.classList.remove("hidden");
+  setActiveModuleTab("analytics");
+  setPageHeader("数据分析", "按自然小时查看已完成轮次的产出节奏和任务类型分布。", true);
+  await loadHourlyAnalytics(state.analyticsDate || localDateValue());
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -1353,6 +1660,10 @@ async function applyRoute() {
   }
   if (hash === "#exports") {
     await showExportPage();
+    return;
+  }
+  if (hash === "#analytics") {
+    await showAnalyticsPage();
     return;
   }
   const detailMatch = hash.match(/^#run\/([a-f0-9]{12})$/);
@@ -1770,8 +2081,28 @@ $("#import-project-numbers").addEventListener("input", updateImportBaselinePrevi
 $("#auto-refill-toggle").addEventListener("click", toggleAutoRefill);
 $("#auto-refill-schedule").addEventListener("click", setAutoRefillSchedule);
 $("#auto-refill-clear").addEventListener("click", clearAutoRefillSchedule);
+$("#module-tab-runs").addEventListener("click", () => navigateTo("#runs"));
 $("#open-export-page").addEventListener("click", () => navigateTo("#exports"));
+$("#open-analytics-page").addEventListener("click", () => navigateTo("#analytics"));
 $("#export-back-to-list").addEventListener("click", () => navigateTo("#runs"));
+$("#analytics-date").addEventListener("change", (event) => {
+  if (event.target.value) loadHourlyAnalytics(event.target.value);
+});
+$("#analytics-today").addEventListener("click", () => {
+  loadHourlyAnalytics(localDateValue());
+});
+$("#analytics-chart-bar").addEventListener("click", () => setAnalyticsChartType("bar"));
+$("#analytics-chart-line").addEventListener("click", () => setAnalyticsChartType("line"));
+$("#hourly-output-chart").addEventListener("pointermove", (event) => {
+  const point = event.target.closest("[data-analytics-hour]");
+  if (point) showHourlyChartTooltip(point.dataset.analyticsHour, point, event);
+});
+$("#hourly-output-chart").addEventListener("pointerleave", hideHourlyChartTooltip);
+$("#hourly-output-chart").addEventListener("focusin", (event) => {
+  const point = event.target.closest("[data-analytics-hour]");
+  if (point) showHourlyChartTooltip(point.dataset.analyticsHour, point);
+});
+$("#hourly-output-chart").addEventListener("focusout", hideHourlyChartTooltip);
 $("#download-export").addEventListener("click", downloadSelectedTurns);
 $("#delete-selected-export-turns").addEventListener("click", () => {
   deleteExportTurns([...state.selectedExportTurns]);
@@ -1888,13 +2219,33 @@ $("#select-preflight-passed").addEventListener("click", () => {
   showNotice(`已选择 ${state.selectedExportTurns.size} 个检查通过轮次`);
 });
 $("#export-turn-list").addEventListener("change", (event) => {
+  const evaluationInput = event.target.closest("[data-evaluation-field]");
+  if (evaluationInput) {
+    updateEvaluationDraft(evaluationInput);
+    return;
+  }
   const checkbox = event.target.closest("[data-export-key]");
   if (!checkbox) return;
   if (checkbox.checked) state.selectedExportTurns.add(checkbox.dataset.exportKey);
   else state.selectedExportTurns.delete(checkbox.dataset.exportKey);
   updateExportSelectionControls();
 });
+$("#export-turn-list").addEventListener("input", (event) => {
+  const evaluationInput = event.target.closest("[data-evaluation-field]");
+  if (evaluationInput) updateEvaluationDraft(evaluationInput);
+});
 $("#export-turn-list").addEventListener("click", (event) => {
+  const saveEvaluation = event.target.closest("[data-save-evaluation]");
+  if (saveEvaluation) {
+    saveExportEvaluation(saveEvaluation.dataset.saveEvaluation);
+    return;
+  }
+  const resetEvaluation = event.target.closest("[data-reset-evaluation]");
+  if (resetEvaluation) {
+    if (!window.confirm("恢复自动评分？已保存的人工修改将被移除。")) return;
+    saveExportEvaluation(resetEvaluation.dataset.resetEvaluation, true);
+    return;
+  }
   const promptButton = event.target.closest("[data-export-prompt-key]");
   if (promptButton) {
     const key = promptButton.dataset.exportPromptKey;
@@ -1936,9 +2287,17 @@ async function refresh() {
   await Promise.all([loadRuns(), loadHealth()]);
   if (state.selectedId) await loadDetail();
   if (window.location.hash === "#exports") await loadCompletedTurns();
+  if (
+    window.location.hash === "#analytics"
+    && Date.now() - state.analyticsLastLoadedAt >= 30000
+  ) {
+    await loadHourlyAnalytics(state.analyticsDate || localDateValue(), false);
+  }
 }
 
 async function boot() {
+  state.analyticsDate = localDateValue();
+  $("#analytics-date").value = state.analyticsDate;
   await Promise.all([loadHealth(), loadRuns()]);
   await applyRoute();
   pingSoloQaBridge();

@@ -272,3 +272,243 @@
 <!-- prompt-end -->
 <!-- task-entry-end -->
 
+<!-- task-entry-start {"run_id": "8e4cac5ab71d", "repo_name": "3002-plant-specimen-label-preflight", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "Node.js, React, TypeScript, Vite, Vitest, Docker Compose", "summary": "为需要一次打印多份馆藏标签的标本员建立“打印批次”闭环，批次保存有序记录编号，并在浏览器本地存储中经历空批次与已编排两个状态。 … 复用现有记录存储、消息样式和容器配置，补充领域单测与组件端到端测试，验收加入顺序分页、重复加入不增量、失效成员清理和八条以上记录跨页打印，现有单条打印、导入及编辑撤销继续通过。"} -->
+## 3002-3 · 3002-plant-specimen-label-preflight
+
+- 创建时间：2026-09-10 20:48:07 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：Node.js, React, TypeScript, Vite, Vitest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+为需要一次打印多份馆藏标签的标本员建立“打印批次”闭环，批次保存有序记录编号，并在浏览器本地存储中经历空批次与已编排两个状态。记录卡可将当前标本加入或移出批次，工具栏入口打开批次预览，按加入顺序将标签确定性排入A4纸每页八格，随后一次调用浏览器打印。领域层负责去重、保持顺序、清理已不存在的记录并生成分页模型，React界面展示批次数量、分页预览和问题记录提示，但问题提示不阻止打印。若导入JSON、载入示例或删除记录导致批次成员失效，打开预览时自动剔除并明确提示，空批次点击预览只反馈“请先选择标本”，且不改变工作集。复用现有记录存储、消息样式和容器配置，补充领域单测与组件端到端测试，验收加入顺序分页、重复加入不增量、失效成员清理和八条以上记录跨页打印，现有单条打印、导入及编辑撤销继续通过。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "0915481f13d9", "repo_name": "3004-archive-box-page-audit", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "Node.js, React, TypeScript, Vite, Vitest, Docker Compose", "summary": "根据仓库 README 自动整理的导入基线说明：# 纸质档案装盒页码核对台 纯前端、本地优先的档案装盒页码核对工具。 … nginx 提供 SPA 回退和 `/health` 健康检查。"} -->
+## 3004 · 3004-archive-box-page-audit
+
+- 创建时间：2026-09-10 23:54:18 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：Node.js, React, TypeScript, Vite, Vitest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+根据仓库 README 自动整理的导入基线说明：# 纸质档案装盒页码核对台 纯前端、本地优先的档案装盒页码核对工具。支持档案增删改、CSV 原子导入、自动异常识别、问题处置、筛选、每盒区间视图、打印清单，以及 JSON 全量备份恢复。数据只写入当前浏览器 `localStorage`。 ## 本地运行 ```bash npm install npm run dev ``` 测试与构建：`npm test`、`npm run build`。 ## CSV 导入 文件须为 UTF-8 CSV，首行必须严格使用： ```text 档号,标题,年度,保管期限,盒号,起始页,结束页,申报页数,备注 ``` 除备注外均必填；年度与页数字段须为 0–999999 的整数。导入检查现有数据及批内重复档号、起止页合法性。任一行失败会显示行号并取消整批导入，不改变原数据。带逗号或双引号的文本请使用标准 CSV 引号规则。 ## 核对与备份 自动识别重复档号、页码倒置、实际页数与申报页数不符、同盒区间重叠。问题可标记“已修正”或“确认保留”并填写说明；编辑档案后会重新检查并清除其旧处置。JSON 导入先完整校验，非法备份不会覆盖当前数据。 ## Docker ```bash docker compose up --build -d curl http://localhost:8084/health docker compose down ``` 可用 `WEB_PORT=18084` 修改宿主端口。nginx 提供 SPA 回退和 `/health` 健康检查。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "31aca1c58847", "repo_name": "3005-ink-batch-press-release", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Node.js, React, TypeScript, Vite, Vitest, Python, FastAPI, SQLAlchemy, pytest, Docker Compose", "summary": "根据仓库 README 自动整理的导入基线说明：# 油墨批次上机放行台 面向印刷生产现场的轻量全栈放行工作台。 … 标准 viewport 与断点布局保证桌面及 390px 窄屏无页面级横向溢出。"} -->
+## 3005 · 3005-ink-batch-press-release
+
+- 创建时间：2026-09-10 23:54:20 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Node.js, React, TypeScript, Vite, Vitest, Python, FastAPI, SQLAlchemy, pytest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+根据仓库 README 自动整理的导入基线说明：# 油墨批次上机放行台 面向印刷生产现场的轻量全栈放行工作台。管理油墨批次、上机工单、风险检查和处置闭环；首次启动自动加入 4 个批次、1 张工单及示例问题。 ## Docker 一键启动 ```bash docker compose up --build ``` 浏览器打开 <http://localhost:3005>。可通过 `WEB_PORT=3105 docker compose up --build` 改端口。Compose 项目名固定为 `ink-batch-press-release`，SQLite 数据保存在命名卷中。 停止使用 `docker compose down`；需清除运行数据时使用 `docker compose down -v`。 ## 业务能力 - 新增、编辑、停用批次，记录唯一编号、颜色、供应商、日期、黏度、质检状态与备注。 - 创建唯一工单号的上机记录，关联批次、印刷机、承印材料、计划日期、操作人与说明。 - 工单创建时检查计划日期是否过期，以及批次是否待检、不合格或隔离；不合格与待检分别记录问题类型。 - 问题可更新为待处理、已确认、特批放行、已关闭；特批放行必须填写理由。 - 首页展示批次、合格、30 天内到期、工单、未处理问题指标，支持批次及问题多条件筛选。 - 重复编号返回 409，不存在资源返回 404，停用批次上机返回 409，缺失/非法字段返回 422。 ## 本地测试 后端（Python 3.11+，根配置已提供模块路径，无需设置 `PYTHONPATH`）： ```bash python3 -m venv .venv ./.venv/bin/pip install -r backend/requirements-dev.txt ./.venv/bin/pytest ``` 前端（Node.js 20+）： ```bash cd frontend npm ci npm test npm run build ``` ## API - `GET /health` - `GET/POST /api/batches`，`PUT /api/batches/{id}`，`PATCH /api/batches/{id}/deactivate` - `GET/POST /api/jobs` - `GET /api/issues`，`PATCH /api/issues/{id}` - `GET /api/stats` 技术栈为 FastAPI、SQLAlchemy、SQLite、React、TypeScript、Vite 与 Nginx。标准 viewport 与断点布局保证桌面及 390px 窄屏无页面级横向溢出。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "c7197d31ac5c", "repo_name": "tamper-evident-calibration-ledger", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Docker, Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, RFC 6962 Merkle Tree, HMAC, pytest", "summary": "为让外部审计系统明确记录已消费到哪次封存，引入“审计接入点”模块，持久保存接入方标识、幂等注册键和最后确认的检查点。 … 通过 Alembic 增加接入点表及唯一约束，在领域服务、模式与路由中贯通契约，端到端测试验证注册重放、顺序确认、多接入点隔离，以及跳级或并发确认只有一次成功且游标无回退。"} -->
+## 0004-8 · tamper-evident-calibration-ledger
+
+- 创建时间：2026-09-11 01:48:29 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, RFC 6962 Merkle Tree, HMAC, pytest
+
+### User Prompt
+
+<!-- prompt-start -->
+为让外部审计系统明确记录已消费到哪次封存，引入“审计接入点”模块，持久保存接入方标识、幂等注册键和最后确认的检查点。审计员通过 POST /v1/audit-consumers 注册接入点，相同键和参数重放返回原对象，参数不同则返回幂等冲突。处理完一批增量事件后，调用 POST /v1/audit-consumers/{id}/acknowledgements 提交检查点，服务仅接受当前确认点的后继，首次确认只能从首个检查点开始，并在事务中单调推进游标。未知接入点或检查点返回对应未找到错误，跳级、倒退和重复确认返回包含当前值与期望前驱的冲突；数据库故障使用现有错误信封，事件、检查点和审计包行为保持兼容。通过 Alembic 增加接入点表及唯一约束，在领域服务、模式与路由中贯通契约，端到端测试验证注册重放、顺序确认、多接入点隔离，以及跳级或并发确认只有一次成功且游标无回退。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "f6da62a24990", "repo_name": "darkroom-working-solution-mixer", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "暗房临时更换显影罐后，操作员常把“1+4”误当成五倍浓缩液，或在毫升取整后让工作液总量发生偏差。 … 非法字段须就地反馈且不保留旧配液卡；合法结果应同时显示浓缩液、清水、可逐项勾选的量取步骤及适合打印的配液卡，最终可观察到每一步不超容量且所有步骤合计严格等于目标总量。"} -->
+## 0025 · darkroom-working-solution-mixer
+
+- 创建时间：2026-09-11 02:57:10 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+暗房临时更换显影罐后，操作员常把“1+4”误当成五倍浓缩液，或在毫升取整后让工作液总量发生偏差。请从空仓库实现一款纯前端配液台，使用 React、TypeScript 与 Vite，让用户输入稀释式 1+n、目标总量和量筒容量；n 只允许 1 至 99 的整数，总量与容量只允许 100 至 5000 mL 的整数。浓缩液体积按总量÷(n+1)计算，精确值以 0.5 mL 为界四舍五入到整数，清水量必须用目标总量减去取整后的浓缩液，保证两者之和不变。仓库须通过 Docker Compose 启动可访问页面，宿主端口由 WEB_PORT 覆盖，并提供名为 verify 的一次性验收服务运行 Vitest 与 Playwright；README 应在该链路旁解释启动和输入边界，禁止用固定结果代替计算。若单项液体超过量筒容量，界面按“若干满量筒加最后余量”生成分次量取步骤，恰好等于容量时不得多出零余量步骤。非法字段须就地反馈且不保留旧配液卡；合法结果应同时显示浓缩液、清水、可逐项勾选的量取步骤及适合打印的配液卡，最终可观察到每一步不超容量且所有步骤合计严格等于目标总量。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "9c2511d1d4b4", "repo_name": "pharma-gtin-validation-gate", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, pytest, Docker Compose", "summary": "药品收货接口若把扫描到的包装码仅按“十四位数字”放行，录入差错会直接进入后续追溯链路。 … 最终可观察到混合批次中每个包装码都得到唯一、保序且可复算的放行结论。"} -->
+## 0027 · pharma-gtin-validation-gate
+
+- 创建时间：2026-09-11 04:16:35 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, pytest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+药品收货接口若把扫描到的包装码仅按“十四位数字”放行，录入差错会直接进入后续追溯链路。请从空仓库实现一个 Python 3.12、FastAPI 纯后端服务，接收含 1 至 100 个 codes 的 JSON 数组；每项必须恰为 14 个 ASCII 数字，空白、连字符、全角数字和其他字符均不转换。GTIN-14 的前 13 位从左到右依次乘 3、1、3、1，校验位固定为 `(10 - 加权和对 10 取模) 对 10 取模`。服务必须保留输入顺序和重复项，为每项返回原值、计算出的校验位以及 valid、format_error 或 checksum_mismatch；格式错误项的计算校验位为 null。数组为空、超过上限、成员非字符串或请求结构错误时整体返回 422 且不返回部分 results，合法结构即使含无效代码也返回 200。使用 Pydantic 固定请求边界和结构化错误，pytest 覆盖公式及接口，Docker Compose 的宿主端口由 API_PORT 覆盖，并提供名为 verify 的一次性验收服务；README 在公式旁给出可复算示例，.gitignore 排除本地产物，代码不得以占位实现代替校验。最终可观察到混合批次中每个包装码都得到唯一、保序且可复算的放行结论。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "14530f197845", "repo_name": "stage-fly-sequence-rehearsal", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "舞台监督在排练前收到一叠吊杆口令卡，顺序稍有颠倒就可能出现未锁定先移动或未归位先解锁，但纸面复核难以展示错误发生时的设备状态。 … 最终监督可看到整套口令闭合回到空载归位，或明确看到唯一首错及当时的吊杆状态。"} -->
+## 0028 · stage-fly-sequence-rehearsal
+
+- 创建时间：2026-09-11 04:27:21 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+舞台监督在排练前收到一叠吊杆口令卡，顺序稍有颠倒就可能出现未锁定先移动或未归位先解锁，但纸面复核难以展示错误发生时的设备状态。请从空仓库实现纯前端预演台，用React、TypeScript与Vite完成动作卡拖放排序、状态推演和首错定位，并以Vitest验证裁决规则、Playwright覆盖重排后复算。初始状态固定为空载且归位；装载仅允许在空载时执行，重量必须为1至500千克的整数；装载后只能锁定，锁定后可移动到舞台位，舞台位只能归位，归位且仍锁定时才可解锁，解锁后才能卸载回到初始状态。仓库须通过Docker Compose运行，宿主端口由WEB_PORT覆盖，并提供名为verify的一次性验收服务；应用不得设置业务后端或访问在线服务。推演遇到第一张非法卡即停止，后续卡不得继续改变状态，界面同时保留此前轨迹、首错卡和具体原因；任何增删或重排都要清除旧结论后重新裁决。README说明卡片含义及启动方式，.gitignore排除依赖与产物，不能以固定响应或未实现按钮代替交互。最终监督可看到整套口令闭合回到空载归位，或明确看到唯一首错及当时的吊杆状态。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "718cbb650296", "repo_name": "3004-archive-box-page-audit", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "Node.js, React, TypeScript, Vite, Vitest, Docker Compose", "summary": "库房人员需要在不改动档案登记信息的前提下核实实体盒内容，请在每盒页码区间旁加入独立的盒内盘点面板，以一次盘点会话保存所选盒号、创建时间及当时盒内档案的快照。 … 用 Vitest 验证唯一命中和歧义选择落到正确会话项，并以界面测试还原开始盘点、刷新续盘至自动完成，以及无效和重复扫描不推进进度，现有构建与 Docker Compose 健康检查继续通过。"} -->
+## 3004-3 · 3004-archive-box-page-audit
+
+- 创建时间：2026-09-11 05:44:22 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：Node.js, React, TypeScript, Vite, Vitest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+库房人员需要在不改动档案登记信息的前提下核实实体盒内容，请在每盒页码区间旁加入独立的盒内盘点面板，以一次盘点会话保存所选盒号、创建时间及当时盒内档案的快照。用户选择盒号开始后，可连续输入或扫描档号，唯一命中时按会话项标识登记为已找到，全部命中后自动完成，刷新页面仍能查看进度和结果。若同一档号命中多件，面板展示各候选的盘点序号、题名和页码区间，用户明确选中一件才推进进度；取消选择、档号不存在或重复扫描时给出对应提示，快照和计数保持不变。会话项在创建时生成独立标识并保留来源档案标识，匹配服务只更新盘点快照，结果写入新的本地存储键，现有档案、异常处置、连续编页及 JSON 备份内容均不被改写，旧数据可直接加载。用 Vitest 验证唯一命中和歧义选择落到正确会话项，并以界面测试还原开始盘点、刷新续盘至自动完成，以及无效和重复扫描不推进进度，现有构建与 Docker Compose 健康检查继续通过。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "d78a8c3521bf", "repo_name": "darkroom-working-solution-mixer", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "暗房需要在现有配液计算之外建立独立的药液处理容量台账，让操作员按实际冲洗量掌握一批药液还能处理多少胶片，避免凭记忆继续使用已经耗尽的药液。 … 原配液表单、分罐步骤、打印卡和无障碍反馈保持原有行为，Docker Compose 的 web 与 verify 链路继续可用，WEB_PORT 仍可覆盖宿主端口。"} -->
+## 0025-3 · darkroom-working-solution-mixer
+
+- 创建时间：2026-09-11 05:44:54 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+暗房需要在现有配液计算之外建立独立的药液处理容量台账，让操作员按实际冲洗量掌握一批药液还能处理多少胶片，避免凭记忆继续使用已经耗尽的药液。操作员从顶部“容量台账”入口创建带名称和额定容量的药液批次，再选中批次登记本次处理的等效胶片数量与备注，页面按时间展示使用记录、累计用量、剩余容量和使用中或已耗尽状态。领域服务以创建批次和登记用量两个命令作为契约，每条记录写入前重新计算剩余量，Vitest 应证明连续登记不会产生负数且恰好用完时状态确定转为已耗尽。批次与不可修改的使用记录保存在 localStorage，刷新后仍能还原同一台账，空名称、非正整数或超过剩余容量时就地说明原因且不写入记录，Playwright 从新建批次走到分次用完并验证刷新恢复。原配液表单、分罐步骤、打印卡和无障碍反馈保持原有行为，Docker Compose 的 web 与 verify 链路继续可用，WEB_PORT 仍可覆盖宿主端口。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "31168478d2a3", "repo_name": "stage-fly-sequence-rehearsal", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "舞台监督需要把纸面预演转成逐张报令的走台会话，以便操作者只看到当前应执行的口令、执行后的吊杆状态和剩余张数，而不是一次读完整条轨迹。 … Vitest验证合法推进、首错停步和末张幂等，Playwright证明标准闭环逐张完成、非法序列在对应卡受阻且后续状态不变，并确认走台期间编辑入口不可用、结束后重新可用。"} -->
+## 0028-3 · stage-fly-sequence-rehearsal
+
+- 创建时间：2026-09-11 07:30:00 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+舞台监督需要把纸面预演转成逐张报令的走台会话，以便操作者只看到当前应执行的口令、执行后的吊杆状态和剩余张数，而不是一次读完整条轨迹。监督整理任意非空序列后点击“开始走台”，系统复制当时的卡序与重量作为会话快照，随后每次点击“执行下一张”都通过现有单卡裁决推进游标，合法闭合时显示走台完成，遇到非法卡则停在执行前状态并给出卡号与原因。会话领域契约应以纯函数管理待命、进行中、完成、受阻这一组状态及快照、游标和当前吊杆状态，App负责接线，独立走台面板呈现当前卡与进度，进行中锁定牌库、排序、重量、删除和草稿操作，结束或受阻后恢复编辑。空序列开始时留在待命并显示可理解的反馈，重复点击不会越过末张或受阻卡，刷新仍按现有空序列启动，草稿格式、实时裁决、Docker Compose与WEB_PORT覆盖保持兼容。Vitest验证合法推进、首错停步和末张幂等，Playwright证明标准闭环逐张完成、非法序列在对应卡受阻且后续状态不变，并确认走台期间编辑入口不可用、结束后重新可用。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "7c172a56bc82", "repo_name": "pharma-gtin-validation-gate", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, pytest, Docker Compose", "summary": "药品完成收货后，质量人员为该收货单登记冷链记录，提交唯一评估号、允许温区及按时间递增的采样点，取得可复查的运输温控结论。 … pytest 与 verify 通过真实 HTTP 验证全程合规、多个越界区段的积分和读取一致性、重复评估号冲突，以及非法时间序列不产生残记录。"} -->
+## 0027-3 · pharma-gtin-validation-gate
+
+- 创建时间：2026-09-11 07:52:38 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, pytest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+药品完成收货后，质量人员为该收货单登记冷链记录，提交唯一评估号、允许温区及按时间递增的采样点，取得可复查的运输温控结论。实现独立的冷链评估领域模块，将连续越界采样归并为异常区段，按相邻点做梯形积分，计算持续分钟数和偏离温区的度分钟，并保存原始采样与摘要。POST /cold-chain-assessments 创建评估，GET /cold-chain-assessments/{assessment_id} 返回同一份确定性结果，计算值按分钟保留两位小数。评估号重复返回409，收货单不存在返回404，温区无效、采样点不足、时间未严格递增或跨度超过七天返回422，失败请求不留记录。SQLite 启动迁移加入评估与采样表并关联现有收货单，FastAPI 模型及错误信封保持项目风格，既有接口不改变，Compose 不增加常驻服务且 API_PORT 仍可覆盖宿主端口。pytest 与 verify 通过真实 HTTP 验证全程合规、多个越界区段的积分和读取一致性、重复评估号冲突，以及非法时间序列不产生残记录。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "839ce73ab2ed", "repo_name": "3005-ink-batch-press-release", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Node.js, React, TypeScript, Vite, Vitest, Python, FastAPI, SQLAlchemy, pytest, Docker Compose", "summary": "将批次建档时的一次黏度值扩展为独立的现场黏度巡检模块，操作员从批次列表展开巡检面板，按实际测量顺序登记测量时间、黏度、人员和备注，并查看按时间排列的历史与趋势。 … 前端测试走通登记两次异常读数并刷新趋势和问题，后端测试证明正常读数不告警、逆序时间返回冲突且不落库，并用并发请求确认同批次只生成一条未关闭问题。"} -->
+## 3005-6 · 3005-ink-batch-press-release
+
+- 创建时间：2026-09-11 12:48:17 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Node.js, React, TypeScript, Vite, Vitest, Python, FastAPI, SQLAlchemy, pytest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+将批次建档时的一次黏度值扩展为独立的现场黏度巡检模块，操作员从批次列表展开巡检面板，按实际测量顺序登记测量时间、黏度、人员和备注，并查看按时间排列的历史与趋势。后端增加巡检记录实体及批次关联，登记接口以数据库写事务拒绝早于该批次最新测量时间的补录，并按测量时间和记录编号稳定排序，使并发登记不会漏判或重复判定。每次成功登记后，以批次建档黏度为基准检查最新连续两条记录，若均向同一方向偏离超过百分之十，则原子创建该批次至多一条未关闭的黏度漂移问题，刷新后在趋势和问题处置中都能看到结果。为让巡检问题不依赖工单，问题表的工单关联改为可空，响应增加问题来源并允许工单编号为空，巡检问题显示批次巡检标识，现有工单风险问题仍展示原工单编号并保持筛选和处置行为，旧库启动时完成兼容迁移。前端测试走通登记两次异常读数并刷新趋势和问题，后端测试证明正常读数不告警、逆序时间返回冲突且不落库，并用并发请求确认同批次只生成一条未关闭问题。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "d0b22ab8bcfd", "repo_name": "accessible-egress-grid-verifier", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright", "summary": "改造中的社区礼堂只有一张方格化平面草图，轮椅疏散路线若靠肉眼挑选，常会遗漏被临时隔断截断的通道。 … 最终核验员能看到唯一最短疏散轨迹，或看到不可能误解为可通行的失败现象。"} -->
+## 0029 · accessible-egress-grid-verifier
+
+- 创建时间：2026-09-11 12:44:59 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+改造中的社区礼堂只有一张方格化平面草图，轮椅疏散路线若靠肉眼挑选，常会遗漏被临时隔断截断的通道。请从空仓库实现一个全栈核验器：核验员在 React 网格编辑器中创建 2 至 40 行、2 至 40 列的平面，设置恰好一个起点、一个出口及若干阻挡格，前端把结构化数据提交给 FastAPI，API 自行实现四方向最短路径搜索并返回有序坐标和步数。每格代表 0.5 米，起点计入路线但不计步；只能上下左右进入非阻挡格。存在多条等长路线时，扩展相邻格必须固定按上、右、下、左，因而结果唯一。仓库中前置配置 TypeScript、Pydantic、pytest、Vitest 与 Playwright，并提供名为 verify 的一次性验收服务；Docker Compose 启动 web 与 api，WEB_PORT、API_PORT 可覆盖宿主端口。README 应说明请求契约和运行方式，.gitignore 排除构建产物，前后端均须给出可操作的字段级错误反馈，禁止用固定响应或占位实现代替联调。行列不符、坐标越界、起终点重合或被阻挡时整次请求失败且不返回路线；出口不可达时明确显示“不可达”、已探索格数为零以外的真实值，但路线画布不得残留上一次成功结果。最终核验员能看到唯一最短疏散轨迹，或看到不可能误解为可通行的失败现象。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "bfe66a8001aa", "repo_name": "concrete-compression-release-gate", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, Decimal, pytest, Docker Compose", "summary": "施工现场送来的三块混凝土试件可能平均强度达标，却被异常低值掩盖，实验室需要只接收整组数据并立即给出唯一结论的纯后端接口。 … README 写明接口示例、单位和计算规则，.gitignore 排除本地产物，禁止固定响应或占"} -->
+## 0030 · concrete-compression-release-gate
+
+- 创建时间：2026-09-11 13:43:35 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, Decimal, pytest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+施工现场送来的三块混凝土试件可能平均强度达标，却被异常低值掩盖，实验室需要只接收整组数据并立即给出唯一结论的纯后端接口。代码从空仓库起步，使用 Python 3.12、FastAPI、Pydantic 与 Decimal，实现请求契约、强度计算和批次放行裁决。每次 JSON 请求必须包含设计强度及恰好三个试件，每个试件提供受压面积 mm² 和破坏载荷 kN，所有数值均须大于零。单块强度按“载荷×1000÷面积”计算为 MPa，先以 ROUND_HALF_UP 保留 0.1 MPa，再用三个舍入后数值计算算术平均值并同法保留 0.1 MPa。仅当平均值不低于设计强度且最低单值不低于设计强度的 85.0% 时通过，等于阈值计入通过。合法响应返回三项强度、平均强度、通过布尔值和 reasons 数组；未通过时数组须包含全部未满足条件，并固定按 MEAN_BELOW_DESIGN、MIN_BELOW_85_PERCENT 排序，同时不满足时返回两项，通过时为空。字段缺失、试件数量错误或非正数值统一返回 422，且不得返回任何部分强度。Docker Compose 发布 API，宿主端口可由 API_PORT 覆盖，并提供 verify 一次性服务，以 pytest 通过真实 HTTP 验证链路。README 写明接口示例、单位和计算规则，.gitignore 排除本地产物，禁止固定响应或占
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "ab6cfe0328a1", "repo_name": "organ-roll-hole-verifier", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "手摇风琴纸带的孔位偏差会造成阀门回位不及或同时耗气过多，制带员需要在冲孔前核验离散网格。 … 使用 Docker Compose 启动 web，宿主端口可由 WEB_PORT 覆盖，并提供一次性 verify 验收服务；README 给出网格坐标示例，.gitignore 排除构建产物，禁止固"} -->
+## 0032 · organ-roll-hole-verifier
+
+- 创建时间：2026-09-11 13:58:52 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+手摇风琴纸带的孔位偏差会造成阀门回位不及或同时耗气过多，制带员需要在冲孔前核验离散网格。请从空仓库起步，实现 TypeScript、React、Vite 纯前端应用，不调用在线服务。编辑区固定 24 条音轨，长度可选 32、48 或 64 个节拍列，支持鼠标点击和键盘切换孔位。裁决规则唯一：第 1、2 列及最后 2 列禁孔；同一音轨任意两孔列号差至少为 2；每列最多 4 个孔；至少有 1 个孔才可制作。一次裁决列出全部违规格，面板按禁孔、复孔过近、列超载聚合展示，修正后立即重算；合法时明确显示可制作与总孔数，空白时显示尚未录入。比例化打印预览须保留 24 条音轨、列号及违规标记。Vitest 覆盖四类结论和边界列，Playwright 覆盖键鼠编辑、违规修正闭环及打印预览一致性。使用 Docker Compose 启动 web，宿主端口可由 WEB_PORT 覆盖，并提供一次性 verify 验收服务；README 给出网格坐标示例，.gitignore 排除构建产物，禁止固定响应或未实现按钮。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "1a096ddbc76e", "repo_name": "redaction-rule-lab", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "Docker, TypeScript, Vue 3, Vite, Vitest, Playwright", "summary": "法务调整规则后，需要在真实合同外发前确认一组典型片段的脱敏结果没有回退，请加入本地“回归样例集”闭环，样例仅驻留浏览器内存且不参与正式导出。 … Vitest 验证样例解析、顺序执行、首差异定位及规则变化重跑，Playwright 从载入含一项失败的样例集、定位差异、修正规则触发全量通过，到继续完成原有脱敏确认和下载，证明该模块可独立验收。"} -->
+## 0008-3 · redaction-rule-lab
+
+- 创建时间：2026-09-11 20:54:47 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：Docker, TypeScript, Vue 3, Vite, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+法务调整规则后，需要在真实合同外发前确认一组典型片段的脱敏结果没有回退，请加入本地“回归样例集”闭环，样例仅驻留浏览器内存且不参与正式导出。用户选择 JSON 样例文件后自动运行，每项包含编号、原文、期望脱敏文本及可选的期望命中规则编号序列，解析器校验唯一编号和字段类型，执行器复用当前有效规则与完整管线并按文件顺序产出结果。store 维护当前样例集、逐项结果和规则变化后的重跑状态，独立面板汇总通过数，点击失败项可查看首个文本差异位置、实际与期望片段以及规则序列差异。文件语法或字段错误应定位到样例编号或数组下标并保留上一份有效报告，单项管线失败显示原有错误位置且不覆盖其他项，回归检查不改变规则启停、人工确认、例外审阅和下载闸门，旧规则与现有操作无需迁移。Vitest 验证样例解析、顺序执行、首差异定位及规则变化重跑，Playwright 从载入含一项失败的样例集、定位差异、修正规则触发全量通过，到继续完成原有脱敏确认和下载，证明该模块可独立验收。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+

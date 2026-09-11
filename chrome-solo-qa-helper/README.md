@@ -15,4 +15,4 @@
 4. 选择本目录：`/Users/zhangxinyu/claude code/claude-eval-console/chrome-solo-qa-helper`。
 5. 刷新 `http://127.0.0.1:8765/#exports`。
 
-安装后，导出页会显示“提交助手已连接”。先点击“同步我的提交”，确认历史数据已经按 SessionID 和 TurnID 匹配，再选择轮次提交。
+安装后，导出页会显示“提交助手已连接”。历史状态只在点击“同步我的提交”时手动核对；提交按钮仅对本次所选轮次按 SessionID 和 TurnID 检查重复，然后上传并创建记录。

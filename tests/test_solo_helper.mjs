@@ -35,6 +35,7 @@ const traceBytes = Buffer.from(await trace.arrayBuffer());
 const traceDigest = createHash("sha256").update(traceBytes).digest("hex");
 const localStates = [];
 const requests = [];
+let createdCount = 0;
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -51,13 +52,16 @@ globalThis.fetch = async (url, options = {}) => {
     credentials: options.credentials || "",
     headers: Object.fromEntries(new Headers(options.headers || {}).entries()),
   });
-  if (href.endsWith("/api/solo-qa/turns/abc123abc123/1/payload")) {
+  const payloadMatch = href.match(/\/api\/solo-qa\/turns\/(abc123abc123|def456def456)\/1\/payload$/);
+  if (payloadMatch) {
+    const runId = payloadMatch[1];
+    const suffix = runId === "abc123abc123" ? "one" : "two";
     return jsonResponse({
-      key: "abc123abc123:1",
+      key: `${runId}:1`,
       values: {
-        "User Prompt": "完成真实提交链路",
-        "SessionID": "session-test",
-        "TurnID/PromptID": "turn-test",
+        "User Prompt": `完成真实提交链路 ${suffix}`,
+        "SessionID": `session-${suffix}`,
+        "TurnID/PromptID": `turn-${suffix}`,
         "当前对话轮次排序": 1,
       },
       payload_sha256: "a".repeat(64),
@@ -65,12 +69,12 @@ globalThis.fetch = async (url, options = {}) => {
         name: "trace.jsonl",
         size: trace.size,
         sha256: traceDigest,
-        url: "http://127.0.0.1:8765/api/solo-qa/turns/abc123abc123/1/trajectory",
+        url: `http://127.0.0.1:8765/api/solo-qa/turns/${runId}/1/trajectory`,
       },
       solo_qa: { state: "not_submitted", remote_id: "" },
     });
   }
-  if (href.endsWith("/api/solo-qa/turns/abc123abc123/1/trajectory")) {
+  if (/\/api\/solo-qa\/turns\/(abc123abc123|def456def456)\/1\/trajectory$/.test(href)) {
     return new Response(trace, { status: 200 });
   }
   if (href.endsWith("/api/solo-qa/state")) {
@@ -101,19 +105,10 @@ globalThis.fetch = async (url, options = {}) => {
   if (href.endsWith("/api/v1/submissions") && options.method === "POST") {
     const body = JSON.parse(options.body);
     assert.equal(body.schema_fingerprint, "schema-test");
-    assert.equal(body.data.user_prompt, "完成真实提交链路");
+    assert.match(body.data.user_prompt, /^完成真实提交链路 (one|two)$/);
     assert.equal(body.data.trace_file[0].path, "uploads/trace.jsonl");
-    return jsonResponse({ id: 123, status: "SUBMITTED", message: "提交成功" });
-  }
-  if (href.endsWith("/api/v1/submissions/123")) {
-    return jsonResponse({
-      id: 123,
-      status: "QC_PASSED",
-      session_id: "session-test",
-      turn_id: "turn-test",
-      round_no: 1,
-      qc_summary: "质检通过",
-    });
+    createdCount += 1;
+    return jsonResponse({ id: 122 + createdCount, status: "SUBMITTED", message: "提交成功" });
   }
   throw new Error(`unexpected request: ${href}`);
 };
@@ -123,7 +118,10 @@ assert.equal(typeof listener, "function");
 
 const response = await new Promise((resolve) => {
   const asynchronous = listener(
-    { type: "SOLO_QA_SUBMIT", payload: { turn_keys: ["abc123abc123:1"] } },
+    {
+      type: "SOLO_QA_SUBMIT",
+      payload: { turn_keys: ["abc123abc123:1", "def456def456:1"] },
+    },
     { url: "http://127.0.0.1:8765/#exports" },
     resolve,
   );
@@ -133,9 +131,19 @@ const response = await new Promise((resolve) => {
 assert.equal(response.ok, true);
 assert.equal(response.data.results[0].outcome, "submitted");
 assert.equal(response.data.results[0].remote_id, "123");
-assert.deepEqual(localStates.map((item) => item.state), ["submitting", "qc_passed"]);
-assert.ok(requests.some((item) => item.href.endsWith("/submissions/upload")));
-assert.ok(requests.some((item) => item.href.endsWith("/submissions") && item.method === "POST"));
+assert.equal(response.data.results[1].outcome, "submitted");
+assert.equal(response.data.results[1].remote_id, "124");
+assert.deepEqual(
+  localStates.map((item) => item.state),
+  ["submitting", "qc_pending", "submitting", "qc_pending"],
+);
+assert.equal(requests.filter((item) => item.href.endsWith("/submissions/form-schema")).length, 1);
+assert.equal(requests.filter((item) => item.href.endsWith("/submissions/upload")).length, 2);
+assert.equal(
+  requests.filter((item) => item.href.endsWith("/submissions") && item.method === "POST").length,
+  2,
+);
+assert.equal(requests.filter((item) => /\/submissions\/(123|124)$/.test(item.href)).length, 0);
 const remoteWrites = requests.filter((item) => item.href.startsWith("/api/v1/") && item.method === "POST");
 assert.ok(remoteWrites.length >= 2);
 assert.ok(remoteWrites.every((item) => item.credentials === "include"));

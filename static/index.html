@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <title>Claude Eval Console</title>
-    <link rel="stylesheet" href="/styles.css?v=30" />
+    <link rel="stylesheet" href="/styles.css?v=35" />
   </head>
   <body>
     <div class="shell">
@@ -84,6 +84,12 @@
           </div>
         </header>
 
+        <nav class="module-tabs" role="tablist" aria-label="主要模块">
+          <button class="module-tab active" id="module-tab-runs" type="button" role="tab" aria-selected="true" aria-controls="records-view">运行记录</button>
+          <button class="module-tab" id="open-export-page" type="button" role="tab" aria-selected="false" aria-controls="export-view">导出轮次</button>
+          <button class="module-tab" id="open-analytics-page" type="button" role="tab" aria-selected="false" aria-controls="analytics-view">数据分析</button>
+        </nav>
+
         <div id="notice" class="notice hidden" role="status"></div>
 
         <section class="view records-section" id="records-view">
@@ -94,7 +100,6 @@
             <div class="records-heading-actions">
               <span id="record-count">0 条记录</span>
               <button class="secondary-button" id="open-import-baseline" type="button" disabled>导入现有 0-1 基线</button>
-              <button class="secondary-button" id="open-export-page" type="button">导出完成轮次</button>
             </div>
           </div>
           <form class="records-filters" id="run-filters">
@@ -143,15 +148,14 @@
                   <th>项目 / 仓库</th>
                   <th><button class="sort-button" type="button" data-sort-key="current_turn">当前对话轮次 <span>↕</span></button></th>
                   <th>任务类型</th>
-                  <th>语言 / 框架</th>
-                  <th>模型</th>
+                  <th><button class="sort-button" type="button" data-sort-key="created_at">开始时间 <span>↕</span></button></th>
                   <th>当前状态</th>
                   <th><button class="sort-button active" type="button" data-sort-key="updated_at">更新时间 <span>↓</span></button></th>
                   <th><span class="sr-only">操作</span></th>
                 </tr>
               </thead>
               <tbody id="run-list">
-                <tr><td colspan="9" class="table-empty">还没有运行记录</td></tr>
+                <tr><td colspan="8" class="table-empty">还没有运行记录</td></tr>
               </tbody>
             </table>
           </div>
@@ -248,7 +252,7 @@
                   <strong>提交到 SOLO-QA</strong>
                   <span class="solo-qa-bridge-status disconnected" id="solo-qa-bridge-status">提交助手未连接</span>
                 </div>
-                <p id="solo-qa-status-detail">安装一次 Chrome 提交助手后，可同步历史提交并自动上传轨迹。</p>
+                <p id="solo-qa-status-detail">历史提交按需手动同步；正式提交只核对当前所选轮次。</p>
                 <details>
                   <summary>首次安装说明</summary>
                   <p>打开 <code>chrome://extensions</code>，开启开发者模式，选择“加载已解压的扩展程序”，然后选择：</p>
@@ -266,7 +270,7 @@
               <table class="export-table">
                 <thead>
                   <tr>
-                    <th><span class="sr-only">展开题面</span></th>
+                    <th><span class="sr-only">展开题面与评分</span></th>
                     <th><input id="select-all-export-turns" type="checkbox" aria-label="选择全部已完成轮次" /></th>
                     <th>编号</th>
                     <th>项目 / 仓库</th>
@@ -283,6 +287,68 @@
                   <tr><td colspan="11" class="table-empty">正在读取已完成轮次…</td></tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="analytics-view" class="view analytics-view hidden">
+          <div class="analytics-card">
+            <div class="analytics-heading">
+              <div>
+                <span>HOURLY OUTPUT</span>
+                <h2>每小时产出</h2>
+                <p id="analytics-definition">按完成轮次统计，每个自然小时汇总一次。</p>
+              </div>
+              <div class="analytics-date-controls">
+                <label for="analytics-date">统计日期</label>
+                <input id="analytics-date" type="date" />
+                <button class="secondary-button" id="analytics-today" type="button">今天</button>
+              </div>
+            </div>
+
+            <div class="analytics-summary" aria-label="产出概览">
+              <article><span>完成轮次</span><b id="analytics-total">—</b><small>当天总产出</small></article>
+              <article><span>峰值时段</span><b id="analytics-peak">—</b><small id="analytics-peak-hours">暂无产出</small></article>
+              <article><span>活跃小时</span><b id="analytics-active-hours">—</b><small>有完成产出的小时数</small></article>
+              <article><span>全天均值</span><b id="analytics-average">—</b><small>完成轮次 / 小时</small></article>
+              <article><span class="analytics-type-label"><i class="baseline"></i>0-1 代码生成</span><b id="analytics-type-baseline-count">—</b><small>当天完成条数</small></article>
+              <article><span class="analytics-type-label"><i class="feature"></i>Feature 迭代</span><b id="analytics-type-feature-count">—</b><small>当天完成条数</small></article>
+              <article><span class="analytics-type-label"><i class="bugfix"></i>Bug 修复</span><b id="analytics-type-bugfix-count">—</b><small>当天完成条数</small></article>
+              <article><span class="analytics-type-label"><i class="other"></i>其他类型</span><b id="analytics-type-other-count">—</b><small>当天完成条数</small></article>
+            </div>
+
+            <div class="analytics-chart-card">
+              <div class="analytics-section-heading">
+                <div><h3>小时趋势</h3><p id="analytics-chart-caption">正在读取统计数据…</p></div>
+                <div class="analytics-chart-tools">
+                  <div class="analytics-chart-toggle" role="group" aria-label="图表类型">
+                    <button class="active" id="analytics-chart-bar" type="button" aria-pressed="true">柱状图</button>
+                    <button id="analytics-chart-line" type="button" aria-pressed="false">折线图</button>
+                  </div>
+                  <div class="analytics-legend" aria-label="任务类型图例">
+                    <span><i class="baseline"></i>0-1</span>
+                    <span><i class="feature"></i>Feature</span>
+                    <span><i class="bugfix"></i>Bug 修复</span>
+                    <span><i class="other"></i>其他</span>
+                  </div>
+                </div>
+              </div>
+              <div class="hourly-chart-scroll">
+                <div class="hourly-chart" id="hourly-output-chart" aria-live="polite">
+                  <div class="analytics-loading">正在读取每小时产出…</div>
+                </div>
+              </div>
+              <div class="analytics-tooltip hidden" id="hourly-chart-tooltip" role="tooltip"></div>
+            </div>
+
+            <div class="analytics-table-card">
+              <div class="analytics-section-heading"><div><h3>逐小时明细</h3><p>用于核对每个时段及任务类型的完成数量。</p></div></div>
+              <div class="records-table-wrap">
+                <table class="analytics-table">
+                  <thead><tr><th>时段</th><th>完成轮次</th><th>0-1 代码生成</th><th>Feature 迭代</th><th>Bug 修复</th><th>其他</th></tr></thead>
+                  <tbody id="hourly-output-list"><tr><td colspan="6" class="table-empty">正在读取统计数据…</td></tr></tbody>
+                </table>
+              </div>
             </div>
           </div>
         </section>
@@ -314,6 +380,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=47" defer></script>
+    <script src="/app.js?v=64" defer></script>
   </body>
 </html>

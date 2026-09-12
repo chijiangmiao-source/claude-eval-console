@@ -812,3 +812,18 @@
 <!-- prompt-end -->
 <!-- task-entry-end -->
 
+<!-- task-entry-start {"run_id": "e817c746e4b2", "repo_name": "fiber-route-ambiguity-tracer", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "临时展会布线结束后，同色跳纤穿过多个转接箱，场馆弱电布线工程师需要确认两端之间究竟无路、仅有一条通路，还是存在会让切换不确定的多条路径。 … 使用 Docker Compose 运行应用，宿主端口可由 WEB_PORT 覆盖，并提供名为 verify 的一次性验收服务。"} -->
+## 0045 · fiber-route-ambiguity-tracer
+
+- 创建时间：2026-09-12 20:21:13 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+临时展会布线结束后，同色跳纤穿过多个转接箱，场馆弱电布线工程师需要确认两端之间究竟无路、仅有一条通路，还是存在会让切换不确定的多条路径。请从空仓库起步，使用 TypeScript、React、Vite 实现纯前端单页应用，通过表单建立最多 30 个端点和 60 条无向连接边，并选择两个不同端点核查。端点标识限 1 至 20 位 ASCII 字母、数字或连字符且区分大小写；录入控件只能从已有端点选择边的两端，禁用自环和已存在的无向端点对，使用户无法构造未知引用或重复边。核查时路径不得重复经过端点：零条显示“无路”，一条显示“唯一通路”及完整端点顺序，搜索到两条即可停止并显示“存在歧义”及两条证据路径；邻接端点按标识的 ASCII 码位升序搜索，起点和终点固定。任何拓扑编辑都应立即清除旧结论，删除关键连接后重新核查可观察到歧义转为唯一通路或无路。使用 Vitest 验证路径判定，Playwright 覆盖建图、核查、编辑失效与结果变化，禁止固定结果或假接口。使用 Docker Compose 运行应用，宿主端口可由 WEB_PORT 覆盖，并提供名为 verify 的一次性验收服务。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+

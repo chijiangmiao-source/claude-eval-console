@@ -5985,6 +5985,35 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(row[-2], "")
         self.assertEqual(row[-1], "张鑫宇")
 
+    def test_locked_turn_intent_wins_over_reviewed_task_type_everywhere(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                evaluation = sample_evaluation()
+                evaluation["task_type"] = "Feature 迭代"
+                app.update_turn(
+                    "abc123abc123",
+                    1,
+                    review_result=json.dumps(
+                        {"evaluation": evaluation}, ensure_ascii=False
+                    ),
+                )
+
+                stored_row = app.completed_turn_rows()[0]
+                summary = app.completed_turns()[0]
+                export_row = app.delivery_export_row(stored_row)
+                solo_values = app.solo_qa_values(stored_row)
+                solo_ready, solo_issues = app.solo_qa_readiness(stored_row)
+
+        self.assertEqual(summary["task_type"], "0-1 代码生成")
+        self.assertEqual(export_row[13], "0-1 代码生成")
+        self.assertEqual(solo_values["任务类型"], "0-1代码生成")
+        self.assertTrue(solo_ready, solo_issues)
+
     def test_manual_evaluation_overrides_export_and_solo_qa_without_replacing_review(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

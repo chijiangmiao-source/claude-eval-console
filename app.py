@@ -6464,6 +6464,19 @@ def turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
     return effective
 
 
+def completed_turn_task_type(
+    row: Dict[str, Any], evaluation: Optional[Dict[str, Any]] = None
+) -> str:
+    """Use the turn's locked intent as the task-type source of truth."""
+    reviewed = evaluation if isinstance(evaluation, dict) else turn_evaluation(row)
+    return str(
+        row.get("intent_type")
+        or row.get("task_type")
+        or reviewed.get("task_type")
+        or ""
+    ).strip()
+
+
 def normalize_manual_evaluation(
     value: Any,
     *,
@@ -6612,9 +6625,7 @@ def solo_qa_readiness(
     issues = list(export_issues)
     evaluation = turn_evaluation(row)
     try:
-        normalize_solo_qa_task_type(
-            evaluation.get("task_type") or row.get("intent_type") or row.get("task_type")
-        )
+        normalize_solo_qa_task_type(completed_turn_task_type(row, evaluation))
     except WorkflowError as exc:
         issues.append(str(exc))
     difficulty = str(
@@ -6656,7 +6667,7 @@ def solo_qa_values(row: Dict[str, Any]) -> Dict[str, Any]:
         "task_difficulty",
         row.get("run_task_difficulty") if only_turn else "",
     )
-    task_type = value("task_type", row.get("intent_type") or row.get("task_type") or "")
+    task_type = completed_turn_task_type(row, evaluation)
     return {
         "任务类型": normalize_solo_qa_task_type(task_type),
         "任务难度": difficulty,
@@ -7010,7 +7021,7 @@ def completed_turns() -> List[Dict[str, Any]]:
             "repo_name": row["repo_name"],
             "turn_number": turn_number,
             "prompt": row.get("turn_prompt") or "",
-            "task_type": evaluation.get("task_type") or row.get("intent_type") or "未记录",
+            "task_type": completed_turn_task_type(row, evaluation) or "未记录",
             "task_difficulty": evaluation.get("task_difficulty") or fallback_difficulty or "未记录",
             "model": row.get("turn_model") or "未记录",
             "completed_at": row.get("turn_updated_at") or "",
@@ -7124,7 +7135,7 @@ def delivery_export_row(row: Dict[str, Any]) -> List[Any]:
         normalize_harness_version(row.get("harness_version") or "")
         or detect_harness_version(),
         "MacOS/Linux",
-        value("task_type", row.get("intent_type") or row.get("task_type") or ""),
+        completed_turn_task_type(row, evaluation),
         difficulty,
         value("language_framework", row.get("run_language_framework") or ""),
         dimension("delivery").get("score", ""),
@@ -7181,12 +7192,13 @@ def export_readiness(row: Dict[str, Any]) -> Tuple[bool, List[str]]:
             issues.append("轨迹文件摘要不匹配")
     for field in (
         "environment_reproducibility",
-        "task_type",
         "task_difficulty",
         "language_framework",
     ):
         if not str(evaluation.get(field) or "").strip():
             issues.append(f"评分缺少 {field}")
+    if not completed_turn_task_type(row, evaluation):
+        issues.append("缺少任务类型")
     for field, label in (
         ("delivery", "交付完整性"),
         ("instruction_following", "指令遵循"),

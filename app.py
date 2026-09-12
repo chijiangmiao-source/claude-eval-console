@@ -372,6 +372,30 @@ EVALUATION_IDENTITY_REFERENCE_PATTERNS = (
 EVALUATION_RAW_NUMBER_ARRAY_RE = re.compile(
     r"\[\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)+\s*\]"
 )
+EVALUATION_NON_DEDUCTIBLE_ENVIRONMENT_PATTERNS = (
+    (
+        "网络或网关故障",
+        re.compile(
+            r"网络|网关|gateway\s*time-?out|bad\s+gateway|service\s+unavailable",
+            re.I,
+        ),
+    ),
+    (
+        "解释器或包管理环境",
+        re.compile(
+            r"系统解释器|解释器(?:不存在|不可用|缺失)|包管理(?:器|环境|方式)?|"
+            r"依赖安装(?:方式)?(?:缺失|失败|不可用)|ensurepip|break-system-packages",
+            re.I,
+        ),
+    ),
+    (
+        "权限或系统运行库",
+        re.compile(
+            r"权限不足|无权限|permission denied|系统运行库|系统依赖|浏览器依赖",
+            re.I,
+        ),
+    ),
+)
 EVALUATION_PROBLEM_MARKERS = (
     "失败", "错误", "未完成", "未验证", "未检查", "未记录", "未覆盖",
     "未实现", "未继续", "未能", "遗漏", "缺少", "中断", "阻断", "偏差",
@@ -384,17 +408,86 @@ EVALUATION_IMPACT_MARKERS = (
 )
 EVALUATION_SPECIFIC_EVIDENCE_RE = re.compile(
     r"(?:[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)"
-    r"|(?:[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|sh|ya?ml|json|md|toml))"
+    r"|(?:[A-Za-z0-9_.-]+\.(?:py|tsx|ts|jsx|js|go|rs|java|sh|ya?ml|json|md|toml))"
     r"|(?:`[^`\r\n]{2,}`)"
     r"|(?:[“「][^”」\r\n]{2,}[”」])"
-    r"|(?:\d+)"
     r"|(?:[A-Za-z_][A-Za-z0-9_]{2,}\(\))",
     re.I,
+)
+EVALUATION_POSITION_EVIDENCE_RE = re.compile(
+    r"(?:[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)"
+    r"|(?:[A-Za-z0-9_.-]+\.(?:py|tsx|ts|jsx|js|go|rs|java|sh|ya?ml|json|md|toml))"
+    r"|(?:`[^`\r\n]{2,}`)"
+    r"|(?:[“「][^”」\r\n]{2,}[”」])"
+    r"|(?:[A-Za-z_][A-Za-z0-9_]{2,}\(\))"
+    r"|(?:第\s*\d+\s*步)"
+    r"|(?:开工前|修改前|提交前|验证阶段|收尾(?:阶段|检查|安排))"
+    r"|(?:(?:修改|执行|调用|检查|运行|提交|创建|保存|读取|替换).{0,16}(?:前|后|时))",
+    re.I,
+)
+EVALUATION_PLANNING_PROBLEM_MARKERS = (
+    "计划", "规划", "安排", "阶段", "步骤", "清单", "优先级", "状态追踪",
+    "阶段状态", "开工前", "修改前", "验证阶段", "收尾", "遗漏",
+)
+EVALUATION_FULL_SCORE_BASIS_MARKERS = (
+    "核对", "对照", "检查", "验证", "验收", "测试", "复验", "回归",
+    "通过", "成功", "结果", "记录",
+)
+EVALUATION_FULL_SCORE_CONSTRAINT_BASIS_RE = re.compile(
+    r"(?:逐项|逐条).{0,16}(?:核对|对照|检查).{0,24}(?:题面|约束|要求)"
+    r"|(?:题面|约束|要求).{0,24}(?:逐项|逐条).{0,16}(?:核对|对照|检查)"
+)
+EVALUATION_FULL_SCORE_COUNT_BASIS_RE = re.compile(
+    r"(?:\d+|[一二两三四五六七八九十]+)\s*"
+    r"(?:项|条|个|组|场景|用例|检查).{0,20}(?:通过|成功|无失败|完成)"
+)
+EVALUATION_FULL_SCORE_DEFICIENCY_PATTERNS = (
+    re.compile(
+        r"(?:错误地|误把|误将|误删|误写|误用|误判|写错|用错|选错|删错|漏掉|"
+        r"错误修改|错误命令|错误目录|错误架构|函数签名粘连|测试标题丢失)"
+    ),
+    re.compile(
+        r"(?:构造不足|规划不足|执行不足|判断失误|推理失误|重复读取|冗余调用|"
+        r"无效(?:调用|操作|尝试)|不匹配的文本替换|需要返工|造成返工|导致返工|"
+        r"(?:未|没有|还没|尚未)(?:完成|验证|检查|覆盖|记录|实现|复验))"
+    ),
+    re.compile(
+        r"(?:错误|不足|遗漏|失误|返工|冗余|无效).{0,24}"
+        r"(?:已经|随后|最终|后来)?(?:修复|恢复|改正|纠正|补齐)"
+    ),
+)
+EVALUATION_REPEAT_ACTION_RE = re.compile(
+    r"(?:重复|多次|反复).{0,16}(?:读取|查看|调用|执行|运行|修改|尝试)"
+    r"|(?:连续\s*[一二两三四五六七八九十\d]+\s*次).{0,16}"
+    r"(?:读取|查看|调用|执行|运行|修改|尝试)"
+)
+EVALUATION_REPEAT_COUNT_RE = re.compile(
+    r"(?:\d+|[一二两三四五六七八九十]+)\s*次"
+)
+EVALUATION_CAUSAL_STATE_CLAIM_RE = re.compile(
+    r"(?:导致|使得?|因|由于).{0,48}(?:清空|被覆盖|丢失|状态改变|顺序改变)"
+)
+EVALUATION_CAUSAL_HELPER_CLAIM_RE = re.compile(
+    r"(?:因|由于).{0,64}(?:辅助函数|函数|组件).{0,48}"
+    r"(?:回头修正|返工|失败|清空|覆盖|丢失)"
+)
+EVALUATION_ARCHITECTURE_CLAIM_RE = re.compile(
+    r"(?:amd64.{0,40}arm64|arm64.{0,40}amd64|错误架构|架构不匹配)",
+    re.I,
+)
+EVALUATION_QUOTED_EVIDENCE_RE = re.compile(
+    r"`([^`\r\n]{2,})`|[“「]([^”」\r\n]{2,})[”」]"
+)
+EVALUATION_FUNCTION_REFERENCE_RE = re.compile(
+    r"\b[A-Za-z_][A-Za-z0-9_]{2,}\(\)"
+)
+EVALUATION_API_ROUTE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])/(?:[A-Za-z0-9_{}.-]+/)*[A-Za-z0-9_{}.-]+"
 )
 EVALUATION_VAGUE_FILE_COUNT_RE = re.compile(r"\d+\s*个?\s*文件")
 EVALUATION_FILE_NAME_RE = re.compile(
     r"(?:[A-Za-z0-9_.-]+/)+(?:[A-Za-z0-9_.-]+)"
-    r"|(?:[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|sh|ya?ml|json|md|toml))",
+    r"|(?:[A-Za-z0-9_.-]+\.(?:py|tsx|ts|jsx|js|go|rs|java|sh|ya?ml|json|md|toml))",
     re.I,
 )
 EVALUATION_FILE_COUNT_OUTPUT_RE = re.compile(
@@ -427,10 +520,11 @@ PROMPT_HIGH_RISK_FRAGMENTS = (
 )
 BUG_REPAIR_REPEAT_SIMILARITY_LIMIT = 0.72
 BUG_REPAIR_RESIDUAL_MARKERS = ("上轮", "上次修复后", "修复后")
-EVALUATION_DESCRIPTION_GUIDANCE = f"""评分描述写成自然的项目工作记录，不写成评语或验收报告模板，不限制句数。每段按“做了什么—途中遇到什么—最后结果怎样”的顺序组织，从本项目特有的业务对象、测试数量、可观察结果或返工动作切入；没有发生波折时可以省略中间一项，不要为了凑结构编造过程。直接说本轮改了什么、哪里返工、还有什么没验证；一句只承载一组相关事实，功能很多时挑最能说明分数的两三项。不足可以逐项举例，但每项都要落到本轮真实发生的动作和后果。凡是低于 5 分的描述，必须用至少两个完整句子自然写明问题发生在第几轮；整段合计应包含具体步骤、文件、函数、接口、日志、报错或数量等至少一项客观证据，并说明不足及其实际后果，不强制三者挤在第一句。如果轨迹中找不到真实不足，应改评 5 分，不能为了保留非满分而编造问题。五个维度不要使用相同的开头、转折和收尾：交付写用户最终得到什么，指令遵循对照明确要求，规划记录真实步骤和遗漏，推理写定位依据与判断失误，执行写“对象＋结果＋本轮独有数字或故障恢复”。措辞尽量口语化：根据语境把“未”写成“没有”或“还没”，把“均”写成“都”，把“包含”写成“有”；不要改动代码、文件名、接口字段、原始报错或引号内的原文。面向用户解释测试数据，不直接抄写 `[0,2,1,1]` 这类原始数字数组；应改写成“零费用项保持为零、其余费用按提交顺序分配”等可观察业务结果，原数组只保留在内部证据中。五维描述直接陈述本轮动作和结果，不出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，也不用“模型认为”“模型完成了”这类说法指代执行者。执行能力描述完全不出现 npm、npx、Docker 等原始命令名称，不罗列命令串；即使命令真实执行过，也改写成项目对象、失败现象、恢复动作和可核验结果。五维描述只能使用当前轮次轨迹、Git 变化和验收结果中真实存在的事实；数字、成功或失败、修改前后状态必须与证据一致。不要推测执行者心里“意识到”或“抓住”了什么，也不要为了扣分编造错误。禁用这些措辞：{'、'.join(EVALUATION_DISALLOWED_PHRASES)}。高风险公共片段同样禁用：{'、'.join(EVALUATION_HIGH_RISK_FRAGMENTS)}。不复述分数，不提评分工具、内部提示或生成过程。只评价当前轮次完成的内容。"""
+EVALUATION_DESCRIPTION_GUIDANCE = f"""评分描述写成自然的项目工作记录，不写成评语或验收报告模板，不限制句数。每段按“做了什么—途中遇到什么—最后结果怎样”的顺序组织，从本项目特有的业务对象、测试数量、可观察结果或返工动作切入；没有发生波折时可以省略中间一项，不要为了凑结构编造过程。直接说本轮改了什么、哪里返工、还有什么没验证；一句只承载一组相关事实，功能很多时挑最能说明分数的两三项。不足可以逐项举例，但每项都要落到本轮真实发生的动作和后果。凡是低于 5 分的描述，必须用至少两个完整句子自然写明问题发生在第几轮；整段合计应包含具体步骤、文件、函数、接口、日志、报错或数量等至少一项客观证据，并说明具体不足及其实际影响，不强制这些内容挤在第一句。如果轨迹中找不到真实不足，应改评 5 分，不能为了保留非满分而编造问题。5 分描述必须写出实际核对或验收依据，并且只能保留正向完成事实；只要描述中保留了本轮真实发生的错误操作、遗漏、失误或返工，该维度就不能评 5 分。预期的 404、409、422 等业务反馈属于契约结果，不要误写成执行失误。五个维度不要使用相同的开头、转折和收尾，也不要把一个维度的扣分点搬到另一个维度：交付写最终得到什么，指令遵循对照明确要求，规划记录真实步骤和遗漏，推理写定位依据与判断失误，执行写“对象＋结果＋本轮独有数字或故障恢复”。措辞尽量口语化：根据语境把“未”写成“没有”或“还没”，把“均”写成“都”，把“包含”写成“有”；不要改动代码、文件名、接口字段、原始报错或引号内的原文。用通俗方式解释测试数据，不直接抄写 `[0,2,1,1]` 这类原始数字数组；应改写成“零费用项保持为零、其余费用按提交顺序分配”等可观察业务结果，原数组只保留在内部证据中。五维描述直接陈述本轮动作和结果，不使用“用户”这类泛化主语，不出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，也不用“模型认为”“模型完成了”这类说法指代执行者。执行能力描述完全不出现 npm、npx、Docker 等原始命令名称，不罗列命令串；即使命令真实执行过，也改写成项目对象、失败现象、恢复动作和可核验结果。五维描述只能使用当前轮次轨迹、Git 变化和验收结果中真实存在的事实；数字、成功或失败、修改前后状态必须与证据一致。“重复读取”“多次调用”等次数判断必须写出轨迹中可核对的次数；状态被清空、内容被覆盖和架构不匹配等因果判断必须有直接输出，不能只凭后续测试结果反推。不要推测执行者心里“意识到”或“抓住”了什么，也不要为了扣分编造错误。禁用这些措辞：{'、'.join(EVALUATION_DISALLOWED_PHRASES)}。高风险公共片段同样禁用：{'、'.join(EVALUATION_HIGH_RISK_FRAGMENTS)}。不复述分数，不提评分工具、内部提示或生成过程。只评价当前轮次完成的内容。"""
+EVALUATION_DESCRIPTION_GUIDANCE += """ 环境、网络、权限、系统解释器、包管理器或系统运行库问题只能写入 other_issues，不能出现在任何非满分维度中作为扣分理由。遇到这类阻碍后完成适配属于恢复事实，不是能力缺点；如果轨迹没有另外记录错误命令、错误修改、冗余调用或遗漏步骤，该维度应评 5 分。确有错误操作时只描述错误动作和它造成的后果，不把环境故障本身写成不足。"""
 EVALUATION_RUBRIC_START = "第三步：打分并撰写反馈"
 EVALUATION_RUBRIC_END = "第四步：提交数据"
-EVALUATION_SCORE_GUIDANCE = """严格使用下方评分表的 1～5 分制，对五个维度分别定档，不得改用十分制、百分制或自行换算。先根据本轮轨迹与产物确定最匹配档位，再填写该档整数；评分描述必须与分数一致。低于 5 分时必须写明本轮真实存在的不足、具体证据和实际后果；如果只能写出完成情况和优点，该项应评 5 分。环境、网络或复核工具自身故障不能作为模型能力扣分依据；如果同一失败在暂存本轮改动后的未修改基线中也能复现，它属于历史基线，不能作为本轮扣分或执行缺口。只写“若干文件”或文件数量不算具体证据，必须给出完整文件名或关键报错原文。禁止照抄评分表，必须写本轮可核验实证。"""
+EVALUATION_SCORE_GUIDANCE = """严格使用下方评分表的 1～5 分制，对五个维度分别定档，不得改用十分制、百分制或自行换算。先根据本轮轨迹与产物逐项确定最匹配档位，再填写该档整数；评分描述必须与分数一致。不要为了省事把五项机械地都评为 5 分：只有五个维度分别都有充分材料证明没有缺口时才可全部满分；轨迹中真实出现的遗漏、错误修改、无效重试、未完成验收或需求偏差，应体现在对应维度的分数中。但不能为了让分数有高低而编造不足。5 分描述必须给出真实核对或验收依据，并且不能同时写“早期错误后来修复”一类扣分事实；如果该事实确实属于当前维度，应降低分数，如果不属于当前维度则不要混写。低于 5 分时必须写明本轮真实存在的不足、具体证据和实际影响；如果只能写出完成情况和优点，该项应评 5 分。环境、网络或复核工具自身故障不能作为能力扣分依据；如果同一失败在暂存本轮改动后的未修改基线中也能复现，它属于历史基线，不能作为本轮扣分或执行缺口。只写“若干文件”或文件数量不算具体证据，必须给出完整文件名或关键报错原文。禁止照抄评分表，必须写本轮可核验实证。"""
 TASK_DIFFICULTY_GUIDANCE = """task_difficulty 必须在检查真实代码、验收结果和本轮轨迹后独立判定，不采用题面、自报或历史记录中的难度标签。简单表示改动集中、路径直接且验证成本低；中等表示跨模块完成一条工程链路并处理常见失败路径；困难表示存在较多状态不变量、恢复逻辑或复杂跨层协作；地狱只用于产物确实同时包含多组深层机制且实现与验证负担显著的情况。"""
 DEVELOPER_PROMPT_STYLE_GUIDANCE = """题面使用自然、简洁的开发交接口吻，像项目负责人结合当前场景向开发者说明下一步工作。按业务因果和操作流程组织内容，不把数据库、接口、页面、异常、测试等字段机械地逐项拼接，不连续堆叠“必须”“不得”“须”“需要”等命令句，不使用“新增某模块，使用户能够”“提供某接口并覆盖”等模板反复起句，也不在结尾集中罗列通用工程或测试清单。技术约束、失败现象、兼容边界和验收证据仍要具体，但应放在它们对应的业务行为附近。"""
 BUG_REPAIR_PROMPT_STYLE_GUIDANCE = """先根据本轮需求检查功能是否真的实现，再记录已经稳定复现的 Bug。每个 Bug 另写一条 customer_summary，系统只按原顺序用中文分号把摘要拼成一整行，不添加通用开场、序号、命令或验收尾巴。每条摘要用客户能看懂的口语写清项目专属业务对象、触发条件、当前可观察结果和正确状态；不要写标题、项目符号、引号、Markdown、文件名、函数名、命令、测试框架、推测的根因、解决方法或通用测试要求。每条摘要控制在 12～90 个字符并尽量用一句话说清楚；编号、引号、连续标点和多余句末符号会在发送前由本地程序整理，不作为候选失败原因。若上一轮修复后同一问题仍存在，摘要必须依据新的复现证据描述修复后的残留状态，不能重发或同义改写当前题面；完全没有新的可观察差异时应停止自动续轮并交由人工确认。内部的 reproduction、actual、expected 和 evidence 仍须完整填写，不能为了凑修复轮把风险或测试缺口写成 Bug。"""
@@ -843,6 +937,7 @@ def initialize_database() -> None:
               iteration_main_user_flow TEXT,
               iteration_api_or_actions TEXT NOT NULL DEFAULT '[]',
               iteration_new_state_sets TEXT NOT NULL DEFAULT '[]',
+              bug_generation_evidence TEXT NOT NULL DEFAULT '{}',
               verification_commands TEXT NOT NULL DEFAULT '[]',
               first_verification TEXT NOT NULL DEFAULT '[]',
               second_verification TEXT NOT NULL DEFAULT '[]',
@@ -1016,6 +1111,11 @@ def initialize_database() -> None:
         for column, definition in iteration_metadata_columns.items():
             if column not in columns:
                 database.execute(f"ALTER TABLE runs ADD COLUMN {column} {definition}")
+        if "bug_generation_evidence" not in columns:
+            database.execute(
+                "ALTER TABLE runs ADD COLUMN bug_generation_evidence "
+                "TEXT NOT NULL DEFAULT '{}'"
+            )
         iteration_job_columns = {
             row["name"] for row in database.execute("PRAGMA table_info(iteration_jobs)")
         }
@@ -1990,6 +2090,90 @@ def normalize_iteration_metadata(value: Any) -> Dict[str, Any]:
             source.get("new_state_sets"), ITERATION_MAX_NEW_STATE_SETS
         ),
     }
+
+
+def normalize_bug_generation_evidence(value: Any) -> Dict[str, Any]:
+    """Keep the internal reproduction record behind an independent Bug prompt."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "{}")
+        except json.JSONDecodeError as exc:
+            raise WorkflowError("Bug 出题证据格式不正确") from exc
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise WorkflowError("Bug 出题证据格式不正确")
+
+    raw_bugs = value.get("bugs")
+    if not isinstance(raw_bugs, list) or not FIRST_BUGFIX_MIN_BUGS <= len(
+        raw_bugs
+    ) <= FIRST_BUGFIX_MAX_BUGS:
+        raise WorkflowError("Bug 出题证据必须保存 3 至 4 个已复现问题")
+    fields = (
+        "title",
+        "reproduction",
+        "actual",
+        "expected",
+        "evidence",
+        "estimated_fix_scope",
+        "customer_summary",
+    )
+    bugs: List[Dict[str, str]] = []
+    for raw_bug in raw_bugs:
+        if not isinstance(raw_bug, dict):
+            raise WorkflowError("Bug 出题证据中的问题格式不正确")
+        bug = {
+            field: re.sub(r"\s+", " ", str(raw_bug.get(field) or "")).strip()
+            for field in fields
+        }
+        if any(not bug[field] for field in fields):
+            raise WorkflowError("Bug 出题证据缺少复现、结果、证据或客户摘要")
+        if bug["estimated_fix_scope"] not in {"小", "中"}:
+            raise WorkflowError("Bug 出题证据的预计修改范围只能是小或中")
+        bugs.append(bug)
+
+    review = value.get("independent_review")
+    if not isinstance(review, dict) or review.get("approved") is not True:
+        raise WorkflowError("Bug 出题证据缺少通过的独立复核结论")
+    try:
+        normalized_review = json.loads(json.dumps(review, ensure_ascii=False))
+    except (TypeError, ValueError) as exc:
+        raise WorkflowError("Bug 出题复核结论无法保存") from exc
+
+    source_run_id = re.sub(
+        r"\s+", " ", str(value.get("source_run_id") or "")
+    ).strip()
+    source_commit = re.sub(
+        r"\s+", " ", str(value.get("source_commit") or "")
+    ).strip()
+    verified_at = re.sub(
+        r"\s+", " ", str(value.get("verified_at") or "")
+    ).strip()
+    if not source_run_id or not source_commit or not verified_at:
+        raise WorkflowError("Bug 出题证据缺少来源任务、来源提交或复核时间")
+    return {
+        "source_run_id": source_run_id,
+        "source_commit": source_commit,
+        "verified_at": verified_at,
+        "focus_area": re.sub(
+            r"\s+", " ", str(value.get("focus_area") or "")
+        ).strip(),
+        "main_user_flow": re.sub(
+            r"\s+", " ", str(value.get("main_user_flow") or "")
+        ).strip(),
+        "scope_summary": re.sub(
+            r"\s+", " ", str(value.get("scope_summary") or "")
+        ).strip(),
+        "bugs": bugs,
+        "independent_review": normalized_review,
+    }
+
+
+def bug_generation_evidence_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+    try:
+        return normalize_bug_generation_evidence(row["bug_generation_evidence"])
+    except (IndexError, KeyError, WorkflowError):
+        return {}
 
 
 def iteration_metadata_from_row(row: sqlite3.Row) -> Dict[str, Any]:
@@ -4758,6 +4942,12 @@ def generate_iteration_candidate(
                 and reviewed_task_type == target_task_type
                 and not scope_errors
             ):
+                if target_task_type == "Bug 修复":
+                    checked_candidate["independent_review"] = validation
+                    checked_candidate["evidence_verified_at"] = now_text()
+                    checked_candidate["evidence_source_commit"] = str(
+                        context.get("current_commit") or ""
+                    )
                 return checked_candidate
             feedback = reason_text or (
                 f"独立复核判定类型为{reviewed_task_type}，必须调整为{target_task_type}，"
@@ -4837,6 +5027,22 @@ def generate_and_start_iteration(
         else:
             candidate = generate_iteration_candidate(baseline_run_id, target_task_type)
         prompt = str(candidate["prompt"])
+        bug_generation_evidence: Dict[str, Any] = {}
+        if target_task_type == "Bug 修复":
+            bug_generation_evidence = normalize_bug_generation_evidence(
+                {
+                    "source_run_id": baseline_run_id,
+                    "source_commit": (
+                        candidate.get("evidence_source_commit") or baseline_sha
+                    ),
+                    "verified_at": candidate.get("evidence_verified_at") or now_text(),
+                    "focus_area": candidate.get("focus_area"),
+                    "main_user_flow": candidate.get("main_user_flow"),
+                    "scope_summary": candidate.get("scope_summary"),
+                    "bugs": candidate.get("confirmed_bugs"),
+                    "independent_review": candidate.get("independent_review"),
+                }
+            )
         payload: Dict[str, Any] = {
             "prompt": prompt,
             "task_type": target_task_type,
@@ -4851,6 +5057,8 @@ def generate_and_start_iteration(
                 "new_state_sets": candidate.get("new_state_sets"),
             },
         }
+        if bug_generation_evidence:
+            payload["_bug_generation_evidence"] = bug_generation_evidence
         if baseline_sha:
             payload["_expected_baseline_sha"] = baseline_sha
         if auto_refill:
@@ -5758,6 +5966,7 @@ def update_run(run_id: str, **fields: Any) -> None:
         "iteration_expansion_axis", "iteration_modules", "iteration_engineering_core",
         "iteration_complex_dimensions", "iteration_main_user_flow",
         "iteration_api_or_actions", "iteration_new_state_sets",
+        "bug_generation_evidence",
     }
     unknown = set(fields) - allowed
     if unknown:
@@ -6005,6 +6214,7 @@ def serialize_run(row: sqlite3.Row, include_events: bool = True) -> Dict[str, An
         except json.JSONDecodeError:
             data[key] = []
     data["iteration_metadata"] = iteration_metadata_from_row(row)
+    data["bug_generation_evidence"] = bug_generation_evidence_from_row(row)
     try:
         data["review_result"] = json.loads(data.get("review_result") or "{}")
     except json.JSONDecodeError:
@@ -6159,7 +6369,9 @@ def completed_turn_rows() -> List[Dict[str, Any]]:
                  turns.prompt AS turn_prompt,
                  turns.model AS turn_model,
                  turns.prompt_id AS turn_prompt_id,
+                 turns.result AS turn_result,
                  turns.review_result AS turn_review_result,
+                 turns.verification AS turn_verification,
                  turns.manual_evaluation AS turn_manual_evaluation,
                  turns.manual_evaluation_updated_at AS turn_manual_evaluation_updated_at,
                  turns.commit_sha AS turn_commit_sha,
@@ -6208,6 +6420,16 @@ EVALUATION_DIMENSION_KEYS = (
 )
 
 
+def remove_generic_user_word(value: Any) -> str:
+    """Replace the generic 用户 label with neutral, readable wording."""
+    return (
+        str(value or "")
+        .replace("最终用户", "使用人员")
+        .replace("用户界面", "页面")
+        .replace("用户", "操作人员")
+    )
+
+
 def automatic_turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
     try:
         review = json.loads(row.get("turn_review_result") or "{}")
@@ -6229,13 +6451,16 @@ def turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
     """Return the effective evaluation, overlaying saved human score edits."""
     automatic = automatic_turn_evaluation(row)
     manual = turn_manual_evaluation(row)
-    if not manual:
-        return automatic
     effective = json.loads(json.dumps(automatic, ensure_ascii=False))
+    if manual:
+        for key in EVALUATION_DIMENSION_KEYS:
+            item = manual.get(key)
+            if isinstance(item, dict):
+                effective[key] = dict(item)
     for key in EVALUATION_DIMENSION_KEYS:
-        item = manual.get(key)
-        if isinstance(item, dict):
-            effective[key] = dict(item)
+        item = effective.get(key)
+        if isinstance(item, dict) and "description" in item:
+            item["description"] = remove_generic_user_word(item["description"])
     return effective
 
 
@@ -6265,7 +6490,9 @@ def normalize_manual_evaluation(
             raise WorkflowError(f"{labels[key]}分数必须是 1～5") from exc
         if score not in range(1, 6):
             raise WorkflowError(f"{labels[key]}分数必须是 1～5")
-        description = re.sub(r"\s+", " ", str(item.get("description") or "")).strip()
+        description = remove_generic_user_word(
+            re.sub(r"\s+", " ", str(item.get("description") or "")).strip()
+        )
         if not description:
             raise WorkflowError(f"{labels[key]}描述不能为空")
         if len(description) > 2000:
@@ -6281,6 +6508,47 @@ def normalize_manual_evaluation(
     return result
 
 
+def completed_turn_evaluation_policy_issues(
+    row: Dict[str, Any], evaluation: Dict[str, Any]
+) -> List[str]:
+    """Apply turn-aware description rules before export or submission."""
+    issues: List[str] = []
+    try:
+        turn_number = int(row.get("turn_number") or 0)
+    except (TypeError, ValueError):
+        turn_number = 0
+    try:
+        normalize_evaluation(
+            json.loads(json.dumps(evaluation, ensure_ascii=False)),
+            turn_number or None,
+            enforce_generation_detail_policy=True,
+        )
+    except WorkflowError as exc:
+        issues.append(str(exc))
+    trajectory_value = str(
+        row.get("turn_trajectory_path") or row.get("run_trajectory_path") or ""
+    ).strip()
+    trajectory_path = Path(trajectory_value).expanduser() if trajectory_value else None
+    if trajectory_path and trajectory_path.is_file():
+        trajectory = transcript_excerpt_from_path(
+            trajectory_path,
+            str(row.get("turn_prompt_id") or "") or None,
+        )
+        issues.extend(evaluation_trace_command_issues(evaluation, trajectory))
+        issues.extend(
+            evaluation_trace_grounding_issues(
+                evaluation,
+                trajectory,
+                {
+                    "prompt": str(row.get("turn_prompt") or ""),
+                    "result": str(row.get("turn_result") or ""),
+                    "verification": str(row.get("turn_verification") or ""),
+                },
+            )
+        )
+    return list(dict.fromkeys(issue for issue in issues if issue))
+
+
 def save_completed_turn_evaluation(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Persist or clear a human override without changing the automatic review."""
     turn_key = str(payload.get("turn_key") or "").strip()
@@ -6291,7 +6559,14 @@ def save_completed_turn_evaluation(payload: Dict[str, Any]) -> Dict[str, Any]:
     timestamp = now_text()
     manual_json = None
     if not reset:
-        manual = normalize_manual_evaluation(payload.get("evaluation"))
+        # Saving is intentionally permissive: human edits must not be lost just
+        # because the stricter export policy still finds wording or evidence
+        # issues.  Export/submission preflight remains responsible for those
+        # checks.  Keep only the basic shape, score range, and non-empty text
+        # validation needed to store a usable override.
+        manual = normalize_manual_evaluation(
+            payload.get("evaluation"), enforce_description_policy=False
+        )
         manual_json = json.dumps(manual, ensure_ascii=False)
     with db_connection() as database:
         database.execute(
@@ -6932,20 +7207,9 @@ def export_readiness(row: Dict[str, Any]) -> Tuple[bool, List[str]]:
         if not str(dimension.get("description") or "").strip():
             issues.append(f"缺少{label}描述")
     if evaluation:
-        try:
-            # A completed review may have been generated before the current
-            # anti-template rules were deployed. Revalidate a detached copy at
-            # export/submission time so legacy text cannot bypass newer rules.
-            normalize_evaluation(
-                json.loads(json.dumps(evaluation, ensure_ascii=False))
-            )
-        except WorkflowError as exc:
-            issues.append(str(exc))
-        if trajectory_path and trajectory_path.is_file():
-            trajectory = transcript_excerpt_from_path(
-                trajectory_path, prompt_id or None
-            )
-            issues.extend(evaluation_trace_command_issues(evaluation, trajectory))
+        # Revalidate with the concrete turn number so turn-aware wording and
+        # consistency checks use the same policy as review generation.
+        issues.extend(completed_turn_evaluation_policy_issues(row, evaluation))
     harness_version = normalize_harness_version(row.get("harness_version") or "")
     if not harness_version:
         issues.append("缺少 Harness 版本")
@@ -9083,6 +9347,8 @@ def validate_nonfull_evaluation_description(
     score: int,
     description: str,
     expected_turn_number: Optional[int],
+    *,
+    enforce_generation_detail_policy: bool = True,
 ) -> None:
     if score >= 5 or expected_turn_number is None:
         return
@@ -9094,23 +9360,69 @@ def validate_nonfull_evaluation_description(
         "execution": "执行能力",
     }
     label = labels[key]
-    turn_pattern = rf"第\s*{int(expected_turn_number)}\s*轮"
-    if not re.search(turn_pattern, description):
-        raise WorkflowError(
-            f"自动检查的{label}非满分描述未写明第 {expected_turn_number} 轮"
-        )
-    sentences = [
-        sentence.strip()
-        for sentence in re.split(r"[。！？]+", description)
-        if sentence.strip()
-    ]
+    sentences = evaluation_description_sentences(description)
     if len(sentences) < 2 or not description.endswith(("。", "！", "？")):
         raise WorkflowError(
             f"自动检查的{label}非满分描述需要至少两个完整句子"
         )
+    if not enforce_generation_detail_policy:
+        return
+    turn_pattern = rf"第\s*{expected_turn_number}\s*轮"
+    if not re.search(turn_pattern, description):
+        raise WorkflowError(
+            f"自动检查的{label}非满分描述未写明第 {expected_turn_number} 轮"
+        )
+    environment_reference = next(
+        (
+            environment_label
+            for environment_label, pattern in EVALUATION_NON_DEDUCTIBLE_ENVIRONMENT_PATTERNS
+            if pattern.search(description)
+        ),
+        "",
+    )
+    if environment_reference:
+        raise WorkflowError(
+            f"自动检查的{label}非满分描述不能把环境或网络问题作为扣分依据："
+            f"{environment_reference}"
+        )
     if not any(marker in description for marker in EVALUATION_PROBLEM_MARKERS):
         raise WorkflowError(
             f"自动检查的{label}非满分描述没有写出具体不足"
+        )
+    problem_sentences = [
+        sentence
+        for sentence in sentences
+        if any(marker in sentence for marker in EVALUATION_PROBLEM_MARKERS)
+    ]
+    if key == "planning":
+        description_has_position = bool(
+            EVALUATION_POSITION_EVIDENCE_RE.search(description)
+        )
+        located_problem = any(
+            (
+                EVALUATION_POSITION_EVIDENCE_RE.search(sentence)
+                or (
+                    description_has_position
+                    and any(
+                        reference in sentence
+                        for reference in ("该文件", "上述文件", "这些文件", "该函数", "该接口")
+                    )
+                )
+            )
+            and any(
+                marker in sentence
+                for marker in EVALUATION_PLANNING_PROBLEM_MARKERS
+            )
+            for sentence in problem_sentences
+        )
+    else:
+        located_problem = any(
+            EVALUATION_POSITION_EVIDENCE_RE.search(sentence)
+            for sentence in problem_sentences
+        )
+    if not located_problem:
+        raise WorkflowError(
+            f"自动检查的{label}非满分描述没有把不足定位到具体步骤、文件、函数、接口或报错"
         )
     description_without_turn = re.sub(turn_pattern, "", description)
     if (
@@ -9129,6 +9441,59 @@ def validate_nonfull_evaluation_description(
     if not any(marker in description for marker in EVALUATION_IMPACT_MARKERS):
         raise WorkflowError(
             f"自动检查的{label}非满分描述没有说明实际后果"
+        )
+
+
+def evaluation_description_sentences(value: Any) -> List[str]:
+    return [
+        sentence.strip()
+        for sentence in re.split(r"[。！？]+", str(value or ""))
+        if sentence.strip()
+    ]
+
+
+def evaluation_full_score_deficiency(description: str) -> str:
+    """Return a concrete self-attributed deficiency that contradicts 5 points."""
+    for sentence in evaluation_description_sentences(description):
+        if any(pattern.search(sentence) for pattern in EVALUATION_FULL_SCORE_DEFICIENCY_PATTERNS):
+            return sentence
+    return ""
+
+
+def validate_evaluation_score_description_consistency(
+    key: str,
+    score: int,
+    description: str,
+) -> None:
+    if score != 5:
+        return
+    labels = {
+        "delivery": "交付完整性",
+        "instruction_following": "指令遵循",
+        "planning": "任务规划",
+        "reasoning": "推理能力",
+        "execution": "执行能力",
+    }
+    label = labels[key]
+    deficiency = evaluation_full_score_deficiency(description)
+    if deficiency:
+        raise WorkflowError(
+            f"自动检查的{label}满分描述包含扣分点：{deficiency[:120]}"
+        )
+    has_basis_marker = any(
+        marker in description for marker in EVALUATION_FULL_SCORE_BASIS_MARKERS
+    )
+    has_concrete_basis = bool(
+        EVALUATION_FULL_SCORE_CONSTRAINT_BASIS_RE.search(description)
+        or EVALUATION_FULL_SCORE_COUNT_BASIS_RE.search(description)
+        or (
+            has_basis_marker
+            and EVALUATION_SPECIFIC_EVIDENCE_RE.search(description)
+        )
+    )
+    if not has_concrete_basis:
+        raise WorkflowError(
+            f"自动检查的{label}满分描述缺少实际核对或验收依据"
         )
 
 
@@ -9212,6 +9577,8 @@ def naturalize_evaluation_description(value: Any) -> str:
 def normalize_evaluation(
     evaluation: Any,
     expected_turn_number: Optional[int] = None,
+    *,
+    enforce_generation_detail_policy: bool = True,
 ) -> Dict[str, Any]:
     if not isinstance(evaluation, dict):
         raise WorkflowError("自动检查没有生成逐轮评分")
@@ -9226,7 +9593,9 @@ def normalize_evaluation(
         if score < 1 or score > 5:
             raise WorkflowError(f"自动检查的 {key} 分数超出范围")
         item["score"] = score
-        item["description"] = re.sub(r"\s+", " ", str(item["description"])).strip()
+        item["description"] = remove_generic_user_word(
+            re.sub(r"\s+", " ", str(item["description"])).strip()
+        )
         folded_description = item["description"].casefold()
         compact_description = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", folded_description)
         disallowed = [
@@ -9273,11 +9642,17 @@ def normalize_evaluation(
                     "自动检查的执行能力描述不能出现通用命令名称："
                     f"{command_reference[0]}"
                 )
+        validate_evaluation_score_description_consistency(
+            key,
+            score,
+            item["description"],
+        )
         validate_nonfull_evaluation_description(
             key,
             score,
             item["description"],
             expected_turn_number,
+            enforce_generation_detail_policy=enforce_generation_detail_policy,
         )
         item["description"] = naturalize_evaluation_description(item["description"])
     evaluation["language_framework"] = normalize_frameworks(evaluation.get("language_framework"))
@@ -9333,6 +9708,237 @@ def trajectory_executed_commands(trajectory: str) -> List[str]:
             if normalized in command_names:
                 commands.append(normalized)
     return list(dict.fromkeys(command for command in commands if command))
+
+
+def trajectory_evaluation_evidence(trajectory: str) -> Tuple[str, str, List[str]]:
+    """Return read-only tool evidence without changing the saved trajectory."""
+    tool_lines: List[str] = []
+    result_lines: List[str] = []
+    call_lines: List[str] = []
+    for raw_line in str(trajectory or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith(("TOOL ", "CALL ")) and not line.startswith("TOOL RESULT"):
+            tool_lines.append(line)
+            call_lines.append(line)
+        elif line.startswith("TOOL RESULT") or line.startswith("RESULT:"):
+            tool_lines.append(line)
+            result_lines.append(line)
+    return "\n".join(tool_lines), "\n".join(result_lines), call_lines
+
+
+def compact_evaluation_evidence(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def evaluation_position_anchors(sentence: str) -> List[str]:
+    anchors: List[str] = []
+    anchors.extend(match.group(0) for match in EVALUATION_FILE_NAME_RE.finditer(sentence))
+    anchors.extend(
+        next((group for group in match.groups() if group), "")
+        for match in EVALUATION_QUOTED_EVIDENCE_RE.finditer(sentence)
+    )
+    anchors.extend(
+        match.group(0) for match in EVALUATION_FUNCTION_REFERENCE_RE.finditer(sentence)
+    )
+    anchors.extend(match.group(0) for match in EVALUATION_API_ROUTE_RE.finditer(sentence))
+    return list(
+        dict.fromkeys(anchor.strip() for anchor in anchors if len(anchor.strip()) >= 3)
+    )
+
+
+def chinese_or_decimal_count(value: str) -> Optional[int]:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    return {
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }.get(text)
+
+
+def evaluation_trace_grounding_issues(
+    evaluation: Dict[str, Any],
+    trajectory: str,
+    verification: Any = "",
+) -> List[str]:
+    """Ground negative process claims in existing trace/check output only."""
+    labels = {
+        "delivery": "交付完整性",
+        "instruction_following": "指令遵循",
+        "planning": "任务规划",
+        "reasoning": "推理能力",
+        "execution": "执行能力",
+    }
+    tool_text, result_text, call_lines = trajectory_evaluation_evidence(trajectory)
+    verification_text = (
+        verification
+        if isinstance(verification, str)
+        else json.dumps(verification, ensure_ascii=False)
+    )
+    evidence_text = compact_evaluation_evidence(f"{tool_text}\n{verification_text}")
+    direct_result_text = compact_evaluation_evidence(
+        f"{result_text}\n{verification_text}"
+    )
+    issues: List[str] = []
+    for key, label in labels.items():
+        item = evaluation.get(key)
+        if not isinstance(item, dict):
+            continue
+        try:
+            score = int(item.get("score"))
+        except (TypeError, ValueError):
+            continue
+        description = str(item.get("description") or "")
+        description_sentences = evaluation_description_sentences(description)
+        description_quotes = [
+            next((group for group in match.groups() if group), "")
+            for match in EVALUATION_QUOTED_EVIDENCE_RE.finditer(description)
+        ]
+        problem_sentences = (
+            description_sentences
+            if score >= 5
+            else [
+                sentence
+                for sentence in description_sentences
+                if (
+                    any(marker in sentence for marker in EVALUATION_PROBLEM_MARKERS)
+                    or EVALUATION_REPEAT_ACTION_RE.search(sentence)
+                    or EVALUATION_CAUSAL_STATE_CLAIM_RE.search(sentence)
+                    or EVALUATION_CAUSAL_HELPER_CLAIM_RE.search(sentence)
+                    or EVALUATION_ARCHITECTURE_CLAIM_RE.search(sentence)
+                )
+            ]
+        )
+        for sentence in problem_sentences:
+            anchors = evaluation_position_anchors(sentence)
+            if anchors and not any(
+                compact_evaluation_evidence(anchor) in evidence_text
+                for anchor in anchors
+            ):
+                issues.append(
+                    f"{label}描述的具体依据无法在本轮轨迹或验收结果中找到："
+                    f"{anchors[0]}"
+                )
+                break
+
+            if EVALUATION_REPEAT_ACTION_RE.search(sentence):
+                count_match = EVALUATION_REPEAT_COUNT_RE.search(sentence)
+                if not count_match:
+                    issues.append(
+                        f"{label}描述声称存在重复或多次操作，但没有写明轨迹中可核对的次数"
+                    )
+                    break
+                count_token = re.match(
+                    r"\d+|[一二两三四五六七八九十]+",
+                    count_match.group(0),
+                )
+                expected_count = chinese_or_decimal_count(
+                    count_token.group(0) if count_token else ""
+                )
+                file_anchors = [
+                    anchor
+                    for anchor in anchors
+                    if EVALUATION_FILE_NAME_RE.fullmatch(anchor)
+                ]
+                if expected_count and file_anchors:
+                    for anchor in file_anchors:
+                        actual_count = sum(
+                            compact_evaluation_evidence(anchor)
+                            in compact_evaluation_evidence(line)
+                            for line in call_lines
+                        )
+                        if actual_count < expected_count:
+                            issues.append(
+                                f"{label}描述中的重复次数与本轮轨迹不符："
+                                f"{anchor} 只定位到 {actual_count} 次调用"
+                            )
+                            break
+                    if issues:
+                        break
+
+            sentence_without_turn = re.sub(r"第\s*\d+\s*轮", "", sentence)
+            number_claims = re.findall(
+                r"(?<![A-Za-z0-9])\d+(?:\.\d+)?(?![A-Za-z0-9])",
+                sentence_without_turn,
+            )
+            if number_claims and not all(
+                compact_evaluation_evidence(number) in evidence_text
+                for number in number_claims
+            ):
+                missing_number = next(
+                    number
+                    for number in number_claims
+                    if compact_evaluation_evidence(number) not in evidence_text
+                )
+                issues.append(
+                    f"{label}描述中的数量或状态码无法在本轮轨迹、题面或验收结果中找到："
+                    f"{missing_number}"
+                )
+                break
+
+            if EVALUATION_CAUSAL_STATE_CLAIM_RE.search(sentence):
+                effect_terms = [
+                    term
+                    for term in ("清空", "被覆盖", "丢失", "状态改变", "顺序改变")
+                    if term in sentence
+                ]
+                if not any(
+                    compact_evaluation_evidence(anchor) in direct_result_text
+                    for anchor in description_quotes
+                    if anchor
+                ) and not any(
+                    compact_evaluation_evidence(term) in direct_result_text
+                    for term in effect_terms
+                ):
+                    issues.append(
+                        f"{label}描述中的状态因果判断缺少本轮轨迹里的直接输出"
+                    )
+                    break
+
+            if EVALUATION_CAUSAL_HELPER_CLAIM_RE.search(sentence) and not any(
+                compact_evaluation_evidence(anchor) in direct_result_text
+                for anchor in description_quotes
+                if anchor
+            ):
+                issues.append(
+                    f"{label}描述中的辅助函数因果判断缺少本轮轨迹里的直接报错"
+                )
+                break
+
+            if EVALUATION_ARCHITECTURE_CLAIM_RE.search(sentence):
+                if not any(
+                    compact_evaluation_evidence(anchor) in direct_result_text
+                    for anchor in description_quotes
+                    if anchor
+                ):
+                    issues.append(
+                        f"{label}描述中的架构判断缺少本轮轨迹里的报错或检查输出原文"
+                    )
+                    break
+    return list(dict.fromkeys(issues))
+
+
+def validate_evaluation_trace_grounding(
+    evaluation: Dict[str, Any],
+    trajectory: str,
+    verification: Any = "",
+) -> None:
+    issues = evaluation_trace_grounding_issues(
+        evaluation,
+        trajectory,
+        verification,
+    )
+    if issues:
+        raise WorkflowError(issues[0])
 
 
 def trace_shell_result_records(trajectory: str) -> List[Tuple[str, str]]:
@@ -9676,16 +10282,28 @@ def retryable_review_output_error(detail: str) -> bool:
         marker in message
         for marker in (
             "描述引用了本轮轨迹中未执行的命令",
+            "描述包含模板化措辞",
             "描述包含高风险公共片段",
             "执行能力描述不能出现通用命令名称",
-            "非满分描述未写明第",
             "非满分描述需要至少两个完整句子",
+            "非满分描述未写明第",
             "非满分描述第一句未写明第",
             "非满分描述第一句没有写出具体不足",
             "非满分描述第一句缺少客观证据",
             "非满分描述没有写出具体不足",
             "非满分描述缺少客观证据",
+            "非满分描述没有把不足定位到具体步骤",
             "非满分描述没有说明实际后果",
+            "非满分描述不能把环境或网络问题作为扣分依据",
+            "满分描述包含扣分点",
+            "满分描述缺少实际核对或验收依据",
+            "描述的具体依据无法在本轮轨迹或验收结果中找到",
+            "描述中的数量或状态码无法在本轮轨迹、题面或验收结果中找到",
+            "描述声称存在重复或多次操作",
+            "描述中的重复次数与本轮轨迹不符",
+            "描述中的状态因果判断缺少本轮轨迹里的直接输出",
+            "描述中的辅助函数因果判断缺少本轮轨迹里的直接报错",
+            "描述中的架构判断缺少本轮轨迹里的报错或检查输出原文",
             "描述与本轮最后一次检查结果矛盾",
             "评分描述定向修正未能收敛",
             "描述包含不易理解的原始数字数组",
@@ -9865,8 +10483,8 @@ def run_codex_evaluation_dimension_repair(
     dimension_label: str,
     turn_number: int,
     validation_error: str,
-) -> str:
-    """Rewrite one rejected description while preserving all scores and findings."""
+) -> Dict[str, Any]:
+    """Repair one rejected dimension without reopening code review."""
     item = evaluation.get(dimension_key)
     if not isinstance(item, dict):
         raise WorkflowError(f"缺少{dimension_label}评分，无法定向修正描述")
@@ -9874,7 +10492,9 @@ def run_codex_evaluation_dimension_repair(
     if len(verification_text) > 24000:
         verification_text = verification_text[-24000:]
     final_verification_summary = trajectory_final_verification_summary(trajectory)
-    prompt = f"""只修正第 {turn_number} 轮“{dimension_label}”的评分描述，不修改分数，不改其他四个维度，也不重新判断代码是否通过。现有分数是 {int(item.get('score') or 0)} 分。请依据原题面、已有描述、验收结果和本轮操作轨迹，把真实存在的不足、客观证据及实际后果写成用户能看懂的至少两个完整句子；这些要素可以分布在整段中，不必全部塞进第一句。不能添加材料中不存在的文件、数字、失败、修改动作或测试结果。若材料没有支持额外细节，只整理现有事实，不要推测。直接写发生的动作和结果，不要出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，也不要用“模型认为”“模型完成了”一类主语。不要写命令名称、评分工具或内部校验过程，也不要抄写原始数字数组；把数组表达的含义改成用户能理解的业务结果。
+    prompt = f"""只修正第 {turn_number} 轮“{dimension_label}”这一项，不改其他四个维度，也不重新判断代码是否通过。现有分数是 {int(item.get('score') or 0)} 分，通常保持不变，但分数和描述必须一致：5 分只能写有真实核对或验收依据的正向事实，不能同时保留错误、遗漏、失误或返工；材料确实证明当前维度发生过这些问题时应降低分数，不属于当前维度时不要混写。低于 5 分时，请依据原题面、已有描述、验收结果和本轮操作轨迹，把真实存在的不足、客观证据及实际影响写成容易看懂的至少两个完整句子；这些内容可以分布在整段中，不必全部塞进第一句。必须写明第 {turn_number} 轮，并把不足定位到材料中真实存在的具体步骤、文件、函数、接口、日志或报错。不能添加材料中不存在的失败、修改动作、测试结果或因果关系；“重复”“多次”要写出可核对次数，状态清空、内容覆盖或架构不匹配必须引用直接输出。若材料没有支持额外细节，应把该项改评 5 分，不能推测或编造。直接写发生的动作和结果，不要出现“用户”这类泛化主语，也不要出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，或用“模型认为”“模型完成了”一类主语。不要写命令名称、评分工具或内部校验过程，也不要抄写原始数字数组；把数组表达的含义改成容易理解的业务结果。
+
+环境、网络、权限、系统解释器、包管理器和系统运行库问题不能作为任何维度的扣分依据，也不要在非满分描述里重复这些环境现象。确有执行不足时，只写材料中真实存在的错误命令、错误修改、冗余调用或遗漏步骤及其后果；找不到这类证据时，不得用环境问题替代。
 
 同类检查后出现的结果覆盖早期结果。如果下方最后结果已经通过，只能把早期失败写成已经恢复的过程，不能再写成最终仍失败、未复验或缺少通过记录。
 
@@ -9899,8 +10519,11 @@ def run_codex_evaluation_dimension_repair(
         prompt,
         {
             "type": "object",
-            "properties": {"description": {"type": "string"}},
-            "required": ["description"],
+            "properties": {
+                "score": {"type": "integer", "minimum": 1, "maximum": 5},
+                "description": {"type": "string"},
+            },
+            "required": ["score", "description"],
             "additionalProperties": False,
         },
         repo_path,
@@ -9911,7 +10534,13 @@ def run_codex_evaluation_dimension_repair(
     description = re.sub(r"\s+", " ", str(result.get("description") or "")).strip()
     if not description:
         raise WorkflowError(f"{dimension_label}定向修正没有返回描述")
-    return description
+    try:
+        score = int(result.get("score", item.get("score")))
+    except (TypeError, ValueError) as exc:
+        raise WorkflowError(f"{dimension_label}定向修正返回了无效分数") from exc
+    if score not in range(1, 6):
+        raise WorkflowError(f"{dimension_label}定向修正返回了无效分数")
+    return {"score": score, "description": description}
 
 
 def normalize_evaluation_with_targeted_repairs(
@@ -9942,6 +10571,14 @@ def normalize_evaluation_with_targeted_repairs(
             normalized = normalize_evaluation(working, expected_turn_number)
             validate_evaluation_final_verification_consistency(normalized, trajectory)
             validate_evaluation_trace_commands(normalized, trajectory)
+            validate_evaluation_trace_grounding(
+                normalized,
+                trajectory,
+                {
+                    "prompt": current_prompt,
+                    "verification": verification,
+                },
+            )
             return normalized
         except WorkflowError as exc:
             detail = str(exc)
@@ -9956,7 +10593,7 @@ def normalize_evaluation_with_targeted_repairs(
                 raise EvaluationRepairExhausted(detail, working) from exc
             if repair_notifier:
                 repair_notifier(dimension_label, detail)
-            working[dimension_key]["description"] = run_codex_evaluation_dimension_repair(
+            repaired = run_codex_evaluation_dimension_repair(
                 repo_path,
                 current_prompt,
                 verification,
@@ -9967,6 +10604,15 @@ def normalize_evaluation_with_targeted_repairs(
                 expected_turn_number,
                 detail,
             )
+            if isinstance(repaired, dict):
+                working[dimension_key]["score"] = int(
+                    repaired.get("score", working[dimension_key]["score"])
+                )
+                working[dimension_key]["description"] = str(
+                    repaired.get("description") or ""
+                )
+            else:  # Compatibility with older test doubles and saved workers.
+                working[dimension_key]["description"] = str(repaired)
             remove_unverified_evaluation_command_references(working, trajectory)
     raise EvaluationRepairExhausted("评分描述定向修正未能收敛", working)
 
@@ -11020,6 +11666,11 @@ def create_run(payload: Dict[str, Any]) -> Dict[str, Any]:
     iteration_metadata = normalize_iteration_metadata(
         payload.get("_iteration_metadata")
     )
+    bug_generation_evidence = normalize_bug_generation_evidence(
+        payload.get("_bug_generation_evidence")
+    )
+    if bug_generation_evidence and intent_type != "Bug 修复":
+        raise WorkflowError("只有独立 Bug 修复任务可以保存出题复现证据")
     run_id = uuid.uuid4().hex[:12]
     timestamp = now_text()
     with PATH_ALLOCATION_LOCK:
@@ -11086,8 +11737,8 @@ def create_run(payload: Dict[str, Any]) -> Dict[str, Any]:
                   iteration_expansion_axis, iteration_modules, iteration_engineering_core,
                   iteration_complex_dimensions, iteration_main_user_flow,
                   iteration_api_or_actions, iteration_new_state_sets,
-                  verification_commands, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待打开终端', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  bug_generation_evidence, verification_commands, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待打开终端', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     repo_name,
@@ -11116,6 +11767,7 @@ def create_run(payload: Dict[str, Any]) -> Dict[str, Any]:
                     iteration_metadata["main_user_flow"] or None,
                     json.dumps(iteration_metadata["api_or_actions"], ensure_ascii=False),
                     json.dumps(iteration_metadata["new_state_sets"], ensure_ascii=False),
+                    json.dumps(bug_generation_evidence, ensure_ascii=False),
                     json.dumps(commands, ensure_ascii=False),
                     timestamp,
                     timestamp,
@@ -11617,6 +12269,7 @@ def create_first_turn_retry(run_id: str, automatic: bool = False) -> Dict[str, A
         "_model": row["model"] or current_model(),
         "_defer_start": automatic,
         "_iteration_metadata": iteration_metadata_from_row(row),
+        "_bug_generation_evidence": bug_generation_evidence_from_row(row),
     }
     project_root = numbered_project_root(run_directory_for(row))
     if project_root:

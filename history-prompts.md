@@ -617,3 +617,198 @@
 <!-- prompt-end -->
 <!-- task-entry-end -->
 
+<!-- task-entry-start {"run_id": "04d89926e8d7", "repo_name": "darkroom-working-solution-mixer", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "暗房更换安全灯、灯距或相纸后，需要用阶梯曝光测试确定可安全操作的时长，避免凭经验判断导致材料起雾。 … 保持配液计算和容量台账行为不变，Vitest 验证阶梯生成及三种结论边界，Playwright 完成创建、评估、刷新恢复和失败输入验收，现有 web 与 verify 编排继续可用并保留 WEB_PO"} -->
+## 0025-6 · darkroom-working-solution-mixer
+
+- 创建时间：2026-09-12 15:17:19 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+暗房更换安全灯、灯距或相纸后，需要用阶梯曝光测试确定可安全操作的时长，避免凭经验判断导致材料起雾。顶部加入“安全灯测试”入口，操作员填写测试名称、起始秒数、递增秒数和条带数量，创建后页面按曝光顺序列出各条带时长，并等待观察结果。操作员选择首条出现可见灰雾的条带并完成评估，领域服务据此把前一条时长判为安全上限；首条即起雾时显示低于起始值，全部未起雾时显示至少达到末条时长。测试草稿与已完成结论保存在独立的 localStorage 键中，刷新可恢复，非法整数、超出一小时的曝光时长、缺失观察或损坏存储应就地反馈，且不能覆盖最近一次有效数据。保持配液计算和容量台账行为不变，Vitest 验证阶梯生成及三种结论边界，Playwright 完成创建、评估、刷新恢复和失败输入验收，现有 web 与 verify 编排继续可用并保留 WEB_PORT 覆盖。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "d218dd802bff", "repo_name": "hazard-label-contrast-preflight", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "警示牌运抵装置区后，安装人员需要按点位逐块核对实物，避免外观相近的标签装错位置，因此加入独立的现场装配核验模块。 … Vitest 用固定清单验证乱序扫码仍归入正确点位、重复与未知输入不推进状态，Playwright 从载入清单开始完成全部点位，并确认非法新清单不会覆盖已取得的核验进度。"} -->
+## 0018-6 · hazard-label-contrast-preflight
+
+- 创建时间：2026-09-12 15:27:38 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+警示牌运抵装置区后，安装人员需要按点位逐块核对实物，避免外观相近的标签装错位置，因此加入独立的现场装配核验模块。用户粘贴包含任务编号及唯一点位码、标签码、区域名称的清单并开始核验，再依次输入扫码枪回传的标签码，系统按清单顺序匹配待装点位并展示当前目标、完成进度和剩余项。核验会话只接受清单内且尚未确认的标签码，重复扫码或未知码不改变进度并给出明确原因，清单字段非法、编码重复或任务编号为空时整批拒绝且保留上一场有效会话。领域层负责清单解析和确定性匹配，React 增加装配核验入口并用会话状态驱动进度与反馈，现有对比度、版面预检和修订比较的数据及操作互不影响，纯前端构建与 WEB_PORT 覆盖保持可用。Vitest 用固定清单验证乱序扫码仍归入正确点位、重复与未知输入不推进状态，Playwright 从载入清单开始完成全部点位，并确认非法新清单不会覆盖已取得的核验进度。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "9eefad59e984", "repo_name": "pharma-gtin-validation-gate", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, pytest, Docker Compose", "summary": "药品入库后需按生产批号和有效期安排上架，库管员为已有收货单提交唯一复核号、复核日期、最短可售天数及各GTIN的批号、数量和失效日期，取得货架期处置清单。 … 保持现有错误结构和路由行为，Compose继续支持API_PORT；自动化验收从建单和扫描开始，证明三类批次及排序、计划外商品复核、超量提交无残记录与创建结果一致读取。"} -->
+## 0027-6 · pharma-gtin-validation-gate
+
+- 创建时间：2026-09-12 15:33:16 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, pytest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+药品入库后需按生产批号和有效期安排上架，库管员为已有收货单提交唯一复核号、复核日期、最短可售天数及各GTIN的批号、数量和失效日期，取得货架期处置清单。服务按自然日计算剩余天数，小于零、低于门槛和达到门槛的批次依次标记为expired、short_dated、usable，并在每个GTIN内按失效日期和批号稳定排序；批次数量合计不得超过该GTIN的已实收量，计划外但已入账的商品也可参与。POST /shelf-life-reviews 原子保存复核与批次明细并返回结果，GET /shelf-life-reviews/{review_id} 还原同一文档，所需表随现有SQLite启动过程幂等创建。复核号重复返回409，收货单或已入账GTIN不存在返回404，日期格式非法、批号重复、数量非正、门槛超出零至3650天或申报总量超出实收量返回422，失败请求不留记录。保持现有错误结构和路由行为，Compose继续支持API_PORT；自动化验收从建单和扫描开始，证明三类批次及排序、计划外商品复核、超量提交无残记录与创建结果一致读取。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "4c87b31a46b4", "repo_name": "3001-crate-cleaning-trace-platform", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Node.js, React, TypeScript, Vite, Vitest, Python, FastAPI, SQLAlchemy, pytest, Docker Compose", "summary": "食品厂按库位盘点周转箱时，纸面记录无法说明盘点期间应有哪些箱，本轮建立独立盘点单，以创建时的在用箱体快照作为核对基准。 … 自动化验收覆盖正常盘点准确区分缺失与错放、备用编号计入对应主箱、盘点创建后移动箱体仍按原快照结算，以及含未知或重复编号时不完成盘点且可修正重试。"} -->
+## 3001-9 · 3001-crate-cleaning-trace-platform
+
+- 创建时间：2026-09-12 16:16:16 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Node.js, React, TypeScript, Vite, Vitest, Python, FastAPI, SQLAlchemy, pytest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+食品厂按库位盘点周转箱时，纸面记录无法说明盘点期间应有哪些箱，本轮建立独立盘点单，以创建时的在用箱体快照作为核对基准。操作人从盘点页选择库位并开始盘点，逐个扫描主编号或备用编号后提交，页面展示应在、实扫、缺失和错放明细，并保留已完成盘点供当次结果复看。后端增加创建与完成盘点两个契约，盘点单从进行中转为已完成，完成时统一解析编号、拒绝重复扫描，并把快照和差异结果在同一事务内固化，之后的箱体位置变更不能改写历史结论。空库位、未知编号、已停用箱和重复完成分别返回可定位的业务反馈，页面保留未提交的扫描内容；旧数据库通过增量迁移兼容，现有台账筛选、流转登记、问题处理和备用编号行为不变。自动化验收覆盖正常盘点准确区分缺失与错放、备用编号计入对应主箱、盘点创建后移动箱体仍按原快照结算，以及含未知或重复编号时不完成盘点且可修正重试。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "78a878bf1325", "repo_name": "saddle-stitch-imposition-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose", "summary": "装订完成后，后道人员要按报价印量生成成品装箱单，避免手工划分册号时出现重装、漏装或末箱数量错误。 … pytest 验收十六页一千册按 300 册分成 300、300、300、100 四箱，验证整除分箱、非法或超限请求不落库，并证明结果可从 SQLite 原样读回。"} -->
+## 0034-6 · saddle-stitch-imposition-api
+
+- 创建时间：2026-09-12 17:00:09 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+装订完成后，后道人员要按报价印量生成成品装箱单，避免手工划分册号时出现重装、漏装或末箱数量错误。操作员向 POST /packing-plans 提交报价编号和每箱容量，系统读取报价快照并从第一册连续分箱，保存装箱单编号、来源报价、容量、总箱数及各箱册号范围。装箱领域对象负责确定性分配，SQLite 仓储通过现有迁移体系保存不可变快照，GET /packing-plans/{plan_id} 供交接人员重新读取完整结果。报价或装箱单不存在时返回 404，容量不是严格正整数、请求含多余字段或箱数超过 500 时返回定位到 carton_capacity 的 422，失败不写库也不消耗编号。拼版、定位及报价各接口保持响应兼容，数据库路径和 Compose 的 API_PORT 覆盖方式不变。pytest 验收十六页一千册按 300 册分成 300、300、300、100 四箱，验证整除分箱、非法或超限请求不落库，并证明结果可从 SQLite 原样读回。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "03c68d690e3b", "repo_name": "3004-archive-box-page-audit", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "Node.js, React, TypeScript, Vite, Vitest, Docker Compose", "summary": "库房人员将单件纸质档案临时交给查阅人后，目前无法在本机追踪未归还记录，请加入独立借阅台，以借阅记录作为核心对象保存档案快照、查阅人、借出时间、预计归还日和归还时间。 … 记录保留借出时的档号、题名、盒号和页码快照，因此后续编辑或删除档案仍可查阅历史，旧浏览器数据可直接加载，现有 JSON 备份恢复不导入也不清除借阅记录，并由往返测试固定这一边界。"} -->
+## 3004-7 · 3004-archive-box-page-audit
+
+- 创建时间：2026-09-12 17:17:01 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：Node.js, React, TypeScript, Vite, Vitest, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+库房人员将单件纸质档案临时交给查阅人后，目前无法在本机追踪未归还记录，请加入独立借阅台，以借阅记录作为核心对象保存档案快照、查阅人、借出时间、预计归还日和归还时间。用户从档案清单发起借阅，填写查阅人与预计归还日后确认，服务按档案标识拒绝已有未归还记录的重复借出，并把成功记录写入新的本地存储键，界面测试应证明刷新后该档案仍显示借出中。借阅台集中展示未归还记录及历史记录，用户对未归还项执行归还后只补写归还时间，领域测试需证明重复归还不会改变原记录，档案登记、异常处置和盘点会话均不被改写。查阅人为空、日期无效或早于借出当天时在表单旁说明原因并保留输入，目标档案在确认前被删除或已被他处借出时提示重新选择，失败操作不得产生记录。记录保留借出时的档号、题名、盒号和页码快照，因此后续编辑或删除档案仍可查阅历史，旧浏览器数据可直接加载，现有 JSON 备份恢复不导入也不清除借阅记录，并由往返测试固定这一边界。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "9df3b4a8335b", "repo_name": "venue-frequency-clearance-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Go 1.25, Gin, testify, Docker, Docker Compose", "summary": "演出进场后，协调员用频谱仪载波记录核对设备方案，以识别漏开、误开和偏频设备，而不是重新做放行裁决。 … 验收证明乱序输入仍确定性一对一匹配、缺失与多余同时出现、MHz 与等价 kHz 结果一致，并验证非法容差的字段定位。"} -->
+## 0037-7 · venue-frequency-clearance-api
+
+- 创建时间：2026-09-12 17:31:56 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Go 1.25, Gin, testify, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+演出进场后，协调员用频谱仪载波记录核对设备方案，以识别漏开、误开和偏频设备，而不是重新做放行裁决。实现 POST /v1/reconcile-observations，接收 devices、1 至 500 条 observations 及 0 至 10000 的 tolerance_khz，观测项含唯一 id 和 center_khz。领域层把容差内的设备观测对按频差、设备编号、观测编号排序后依次占用，按设备编号返回 matched 或 missing，匹配项含观测编号、实测中心和有符号偏差，未占用观测按编号列为 unexpected。重复字段、非法数值、重复观测编号及容差非整数或越界使用现有错误信封定位字段，合法但未匹配的数据直接进入核对结果。保持 coordinate、check-retunes 和 healthz 响应兼容，复用设备校验与单位换算，在领域匹配、Gin 路由、README 契约及 verify 中形成闭环。验收证明乱序输入仍确定性一对一匹配、缺失与多余同时出现、MHz 与等价 kHz 结果一致，并验证非法容差的字段定位。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "1cb7ac729e3d", "repo_name": "port-laytime-adjudicator", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, pytest, Docker, Docker Compose", "summary": "港方交接班只留下按时发生的作业事件，结算员可提交一份事件簿及费率、允许秒数，由系统生成可回查的结算结果，避免人工先整理暂停区间。 … pytest与verify从无暂停和多次暂停两条日志验证派生区间及费用，证明非法转换原子回滚、回查内容稳定，并确认原创建、时间线、对比、航次封顶接口及API_PORT覆盖继续可用。"} -->
+## 0017-8 · port-laytime-adjudicator
+
+- 创建时间：2026-09-12 17:57:56 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+港方交接班只留下按时发生的作业事件，结算员可提交一份事件簿及费率、允许秒数，由系统生成可回查的结算结果，避免人工先整理暂停区间。事件簿依次包含开工、暂停、复工和完工，领域编译器以确定性状态机校验首尾、配对和严格递增时间，再把有效暂停转换为现有左闭右开区间并调用原计费规则。创建成功时在同一事务保存原始事件、派生区间、编译摘要和关联结果标识，创建响应返回完整事件簿，第二个入口可按事件簿标识回放输入与生成结果。缺少开工或完工、连续暂停、未暂停即复工、暂停后直接完工及时间倒退应返回定位到事件下标的422，编译或计费失败不能留下事件簿或结算记录。pytest与verify从无暂停和多次暂停两条日志验证派生区间及费用，证明非法转换原子回滚、回查内容稳定，并确认原创建、时间线、对比、航次封顶接口及API_PORT覆盖继续可用。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "2921269c86ed", "repo_name": "kiln-heatwork-release", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright", "summary": "现场更换或年检热电偶后，质检员需要留存独立的校准核验单，避免仅凭窑次曲线判断传感器是否还能投入使用。 … 自动化验收从边界等于允许偏差的合格单走到持久化详情，再以单点超差确认不合格判定，并证明非法输入和重复记录均不增加数据，浏览器联调用刷新后的详情作为闭环证据。"} -->
+## 0033-7 · kiln-heatwork-release
+
+- 创建时间：2026-09-12 19:04:43 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+现场更换或年检热电偶后，质检员需要留存独立的校准核验单，避免仅凭窑次曲线判断传感器是否还能投入使用。质检员填写探头编号、校准时间、允许偏差及三至十二组设定温度、仪表读数和标准器读数，系统计算每组示值误差与最大绝对误差，并生成合格或不合格结论。提交成功后核验单作为不可变记录保存，页面转入详情展示判定依据，刷新后可按编号重新打开；后端以创建和详情两个接口承载这条流程，并复用现有 SQLite 连接、错误响应结构和容器服务。重复探头编号与校准时间、非递增设定温度、超出零至一千四百摄氏度的读数或非正允许偏差应阻止落库，表单在对应输入处说明原因，已有窑次提交、复算和对比行为不受影响。自动化验收从边界等于允许偏差的合格单走到持久化详情，再以单点超差确认不合格判定，并证明非法输入和重复记录均不增加数据，浏览器联调用刷新后的详情作为闭环证据。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "bf0b98a4bfb4", "repo_name": "specimen-handoff-sequence-gate", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, TypeScript, React, Vite, pytest, Vitest, Playwright", "summary": "样本在实验室交接窗口连续扫码时，网络超时会诱发重复提交，稍后抵达的旧请求又可能把已确认进度推乱，操作员必须知道下一次应使用哪个序号。 … 验收时可先截断一次确认响应再重发，界面只增加一个样本；迟到或跳号请求显示期望序号，刷新页面后仍停在同一准确进度。"} -->
+## 0039 · specimen-handoff-sequence-gate
+
+- 创建时间：2026-09-12 19:10:09 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, TypeScript, React, Vite, pytest, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+样本在实验室交接窗口连续扫码时，网络超时会诱发重复提交，稍后抵达的旧请求又可能把已确认进度推乱，操作员必须知道下一次应使用哪个序号。从空仓库实现 React、TypeScript、Vite 前端与 Python 3.12、FastAPI API：先创建包含二至二十个唯一样本条码的交接批次，再逐条提交条码和从 1 开始的客户端整数序号。服务端只接受当前期望序号；相同序号与相同条码的重试须返回原确认且不重复计数，低序号内容不一致或高序号请求均返回当前期望序号并保持状态不变。条码必须属于创建时冻结的批次且每个只能接收一次，全部接收后状态变为完成，此后不再接受新扫描。批次、确认记录和期望序号持久化到 PostgreSQL，同一批次的并发请求必须原子裁决。Docker Compose 运行 web 与 api，WEB_PORT、API_PORT 可覆盖宿主端口，并包含名为 verify 的一次性验收服务；页面真实联调 API，超时后允许以原序号重试。验收时可先截断一次确认响应再重发，界面只增加一个样本；迟到或跳号请求显示期望序号，刷新页面后仍停在同一准确进度。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "22ec98088296", "repo_name": "tunnel-profile-clearance-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose", "summary": "隧道激光测量只导出了二维断面折线，复核人员需要在不依赖CAD软件的情况下判断车辆限界是否满足指定净距，并定位最危险的一对边。 … 禁止几何库代算或占位结果，最终响应应稳定呈现通过结论、最小净距和唯一危险线段对。"} -->
+## 0040 · tunnel-profile-clearance-api
+
+- 创建时间：2026-09-12 19:12:32 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+隧道激光测量只导出了二维断面折线，复核人员需要在不依赖CAD软件的情况下判断车辆限界是否满足指定净距，并定位最危险的一对边。请从空仓库实现纯后端JSON API，采用Python 3.12、FastAPI与Pydantic；README给出毫米坐标示例，pytest验证几何边界，Docker Compose提供api和名为verify的一次性验收服务，宿主端口由API_PORT覆盖，并给出字段级错误反馈及.gitignore。输入包含按顺序连接但不闭合的隧道折线、首尾隐式闭合的车辆限界多边形及整数要求净距，坐标和净距均为毫米整数且绝对值不超过一百万；各相邻点不得相同，多边形不得自交，输入不得重复首点作为末点。自行实现线段相交与点到线段距离，计算两组线段间的全局最小欧氏距离；相交或接触的距离为0，内部计算使用双精度，响应距离统一四舍五入到小数点后三位。仅当未相交且未舍入的最小距离大于等于要求净距时通过；并列距离差不超过1e-9时，依次选择隧道线段起点索引、限界边起点索引较小者。禁止几何库代算或占位结果，最终响应应稳定呈现通过结论、最小净距和唯一危险线段对。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "b3de788fb52c", "repo_name": "interval-energy-apportionment-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose", "summary": "园区月底常出现总表增量与各支路分时电量之和不一致，结算员必须把这段表差精确落到既有区间，既不能因浮点误差丢失最小单位，也不能让并列余数产生随机结果。 … 最终响应按区间编号排序，明确给出原始表差、每段分摊值及分摊后校核和，使同一结算请求始终得到可逐项复算的唯一结果。"} -->
+## 0041 · interval-energy-apportionment-api
+
+- 创建时间：2026-09-12 19:43:34 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+园区月底常出现总表增量与各支路分时电量之和不一致，结算员必须把这段表差精确落到既有区间，既不能因浮点误差丢失最小单位，也不能让并列余数产生随机结果。请从空仓库实现纯后端 JSON API，使用 Python 3.12、FastAPI 与 Pydantic；输入总表起止读数以及各支路按区间汇总的电量，所有电量最多三位小数且以 0.001 kWh 为最小单位。先求总表增量减支路总和所得表差，再按每个区间全部支路电量绝对值占比分摊；权重总和为零且表差非零时拒绝。自行实现定点数最大余数法：先向零截断各区间份额，剩余最小单位按余数绝对值降序补齐，并列时按区间编号字典序升序；负表差采用同一顺序补负单位。区间集合不一致、读数倒退或精度越界须返回可定位字段的错误且不产生部分结果。仓库提供 Dockerfile、端口由 API_PORT 覆盖的 compose.yaml，以及名为 verify 的一次性验收服务；pytest 应分别固定分摊总和、并列顺序和负差额边界，禁止用浮点近似、假接口或固定响应代替计算。最终响应按区间编号排序，明确给出原始表差、每段分摊值及分摊后校核和，使同一结算请求始终得到可逐项复算的唯一结果。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "89b8b71cebfb", "repo_name": "seismic-trace-resumable-ingest", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, pytest, Docker, Docker Compose", "summary": "野外地震仪通过不稳定链路回传单个记录包时，连接中断不能迫使工程师从头上传，也不能让重试覆盖已确认字节。 … 仅当累计长度等于总长且重算整包 SHA-256 相符才能封存，封存后拒绝不同内容；整包摘要不符则会话进入不可续传的失败终态，工程师须用正确元数据新建会话，最终只能观察到摘要和长度一致的封存记录。"} -->
+## 0044 · seismic-trace-resumable-ingest
+
+- 创建时间：2026-09-12 20:02:05 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+野外地震仪通过不稳定链路回传单个记录包时，连接中断不能迫使工程师从头上传，也不能让重试覆盖已确认字节。请从空仓库实现纯后端服务：创建会话时登记总字节数与整包 SHA-256，只接受携带起始偏移、字节数和该块 SHA-256 的二进制分块；新块必须从当前 confirmed_offset 开始且不得越过总长。已确认范围内内容完全相同的分块重发应幂等成功，其他旧偏移一律返回当前期望偏移。采用 Python 3.12、FastAPI、SQLAlchemy 与 PostgreSQL，检查点和分块内容必须持久化，使 API 进程重启后可查询并续传；仓库用 Docker Compose 编排，宿主端口由 API_PORT 覆盖，并提供名为 verify 的一次性 pytest 验收服务，错误需定位到偏移或摘要，禁止占位实现。仅当累计长度等于总长且重算整包 SHA-256 相符才能封存，封存后拒绝不同内容；整包摘要不符则会话进入不可续传的失败终态，工程师须用正确元数据新建会话，最终只能观察到摘要和长度一致的封存记录。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+

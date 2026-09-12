@@ -1,4 +1,6 @@
-const UI_VERSION = "20260911.31";
+const UI_VERSION = "20260912.2";
+const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const TABLE_PAGE_SIZE = 20;
 
 const state = {
   runs: [],
@@ -13,7 +15,10 @@ const state = {
   iterationJobs: {},
   iterationPollers: {},
   filters: { query: "", taskType: "", category: "", status: "" },
+  runPage: 1,
   completedTurns: [],
+  exportPage: 1,
+  exportLastLoadedAt: 0,
   selectedExportTurns: new Set(),
   expandedExportPrompts: new Set(),
   exportEvaluationDrafts: new Map(),
@@ -129,6 +134,65 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function paginateItems(items, requestedPage) {
+  const totalItems = items.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / TABLE_PAGE_SIZE));
+  const page = Math.min(totalPages, Math.max(1, Number(requestedPage) || 1));
+  const startIndex = (page - 1) * TABLE_PAGE_SIZE;
+  return {
+    items: items.slice(startIndex, startIndex + TABLE_PAGE_SIZE),
+    page,
+    totalPages,
+    totalItems,
+    startItem: totalItems ? startIndex + 1 : 0,
+    endItem: Math.min(totalItems, startIndex + TABLE_PAGE_SIZE),
+  };
+}
+
+function paginationPageButtons(scope, page, totalPages) {
+  const pages = [...new Set([1, page - 1, page, page + 1, totalPages])]
+    .filter((value) => value >= 1 && value <= totalPages)
+    .sort((first, second) => first - second);
+  let previous = 0;
+  return pages.map((value) => {
+    const gap = value - previous > 1 ? '<span class="pagination-gap" aria-hidden="true">…</span>' : "";
+    previous = value;
+    return `${gap}<button class="pagination-page${value === page ? " current" : ""}" type="button" data-page-scope="${escapeHtml(scope)}" data-page-target="${value}" ${value === page ? 'aria-current="page"' : ""}>${value}</button>`;
+  }).join("");
+}
+
+function renderTablePagination(scope, pagination) {
+  const disabled = pagination.totalPages <= 1 ? "disabled" : "";
+  const summary = pagination.totalItems
+    ? `第 ${pagination.startItem}–${pagination.endItem} 条，共 ${pagination.totalItems} 条 · 每页 ${TABLE_PAGE_SIZE} 条`
+    : `共 0 条 · 每页 ${TABLE_PAGE_SIZE} 条`;
+  const controls = `<span class="pagination-summary">${summary}</span>
+    <span class="pagination-actions">
+      <button type="button" data-page-scope="${escapeHtml(scope)}" data-page-target="1" ${pagination.page <= 1 ? "disabled" : ""}>首页</button>
+      <button type="button" data-page-scope="${escapeHtml(scope)}" data-page-target="${pagination.page - 1}" ${pagination.page <= 1 ? "disabled" : ""}>上一页</button>
+      <span class="pagination-pages">${paginationPageButtons(scope, pagination.page, pagination.totalPages)}</span>
+      <span class="pagination-position">第 ${pagination.page} / ${pagination.totalPages} 页</span>
+      <button type="button" data-page-scope="${escapeHtml(scope)}" data-page-target="${pagination.page + 1}" ${pagination.page >= pagination.totalPages ? "disabled" : ""}>下一页</button>
+      <button type="button" data-page-scope="${escapeHtml(scope)}" data-page-target="${pagination.totalPages}" ${pagination.page >= pagination.totalPages ? "disabled" : ""}>末页</button>
+    </span>`;
+  document.querySelectorAll(`[data-table-pagination="${scope}"]`).forEach((element) => {
+    element.innerHTML = controls;
+    element.classList.toggle("single-page", Boolean(disabled));
+  });
+}
+
+function changeTablePage(scope, requestedPage) {
+  if (scope === "runs") {
+    state.runPage = requestedPage;
+    renderRunList();
+    return;
+  }
+  if (scope === "exports") {
+    state.exportPage = requestedPage;
+    renderExportPage();
+  }
+}
+
 function renderTableTimestamp(value, tone = "neutral") {
   const text = String(value || "").trim();
   if (!text) return '<span class="table-timestamp empty">—</span>';
@@ -161,6 +225,16 @@ function phaseLabel(phase) {
   return phaseInfo[phase] || [phase || "未知", ""];
 }
 
+function runNeedsAttention(run) {
+  return String(run?.status_detail || "").includes("等待人工确认");
+}
+
+function displayedRunPhase(run) {
+  return runNeedsAttention(run)
+    ? ["等待人工确认", "failed"]
+    : phaseLabel(run.phase);
+}
+
 function isRunning(phase) {
   return ["generation_queued", "generation_running", "iteration_generation_running", "queued", "first_retry_queued", "creating_repo", "first_starting", "first_running", "first_idle", "review_queued", "review_running", "awaiting_second", "second_queued", "second_starting", "second_running", "second_idle", "final_review_queued", "final_review_running"].includes(phase);
 }
@@ -177,7 +251,7 @@ function runMatchesStatus(run, status) {
   if (!status) return true;
   if (status === "active") return isRunning(run.phase);
   if (status === "complete") return run.phase === "complete";
-  if (status === "attention") return ["turn_limit", "manual_review", "interrupted", "failed", "stopped"].includes(run.phase);
+  if (status === "attention") return runNeedsAttention(run) || ["turn_limit", "manual_review", "interrupted", "failed", "stopped"].includes(run.phase);
   return true;
 }
 
@@ -263,15 +337,18 @@ function renderHealth() {
   const refill = state.health.auto_refill || {};
   const refillRow = $("#auto-refill-row");
   const refillButton = $("#auto-refill-toggle");
+  const hasStartSchedule = Boolean(!refill.enabled && refill.enable_at);
+  const hasStopSchedule = Boolean(refill.enabled && refill.disable_at);
   if (refillRow) {
     refillRow.classList.toggle("enabled", Boolean(refill.enabled));
+    refillRow.classList.toggle("scheduled", hasStartSchedule);
     refillRow.classList.toggle("failed", Boolean(refill.error));
   }
   if (refillButton) {
     refillButton.disabled = false;
     refillButton.classList.toggle("enabled", Boolean(refill.enabled));
     refillButton.setAttribute("aria-pressed", refill.enabled ? "true" : "false");
-    refillButton.textContent = `自动补题：${refill.enabled ? "开启" : "关闭"}`;
+    refillButton.textContent = `自动补题：${refill.enabled ? "开启" : (hasStartSchedule ? "等待开始" : "关闭")}`;
   }
   const refillDetail = $("#auto-refill-detail");
   if (refillDetail) {
@@ -283,24 +360,43 @@ function renderHealth() {
   const refillDeadline = $("#auto-refill-deadline");
   const refillSchedule = $("#auto-refill-schedule");
   const refillClear = $("#auto-refill-clear");
-  const refillTimerControls = $("#auto-refill-timer-controls");
-  const hasDeadline = Boolean(refill.enabled && refill.disable_at);
-  refillTimerControls?.classList.toggle("hidden", !refill.scheduled_shutdown_supported);
+  const refillStartSchedule = $("#auto-refill-start-schedule");
+  const refillStartClear = $("#auto-refill-start-clear");
+  const refillStartControls = $("#auto-refill-start-controls");
+  const refillStopControls = $("#auto-refill-stop-controls");
+  refillStartControls?.classList.toggle(
+    "hidden",
+    Boolean(refill.enabled) || !refill.scheduled_start_supported,
+  );
+  refillStopControls?.classList.toggle(
+    "hidden",
+    !refill.enabled || !refill.scheduled_shutdown_supported,
+  );
   if (refillDeadline) {
-    refillDeadline.classList.toggle("hidden", !hasDeadline);
-    refillDeadline.textContent = hasDeadline
-      ? `定时关闭：${new Date(refill.disable_at).toLocaleString("zh-CN", { hour12: false })}（剩余 ${formatAutoRefillRemaining(refill.remaining_seconds)}）`
-      : "";
+    refillDeadline.classList.toggle("hidden", !hasStartSchedule && !hasStopSchedule);
+    refillDeadline.textContent = hasStartSchedule
+      ? `预约开始：${new Date(refill.enable_at).toLocaleString("zh-CN", { hour12: false })}（剩余 ${formatAutoRefillRemaining(refill.start_remaining_seconds)}）`
+      : (hasStopSchedule
+        ? `定时关闭：${new Date(refill.disable_at).toLocaleString("zh-CN", { hour12: false })}（剩余 ${formatAutoRefillRemaining(refill.remaining_seconds)}）`
+        : "");
   }
   if (refillSchedule) {
     refillSchedule.disabled = false;
-    refillSchedule.textContent = hasDeadline
+    refillSchedule.textContent = hasStopSchedule
       ? "更新定时"
-      : (refill.enabled ? "设置定时关闭" : "开启并定时关闭");
+      : "设置定时关闭";
   }
   if (refillClear) {
     refillClear.disabled = false;
-    refillClear.classList.toggle("hidden", !hasDeadline);
+    refillClear.classList.toggle("hidden", !hasStopSchedule);
+  }
+  if (refillStartSchedule) {
+    refillStartSchedule.disabled = false;
+    refillStartSchedule.textContent = hasStartSchedule ? "更新开始时间" : "预约开始";
+  }
+  if (refillStartClear) {
+    refillStartClear.disabled = false;
+    refillStartClear.classList.toggle("hidden", !hasStartSchedule);
   }
   renderSoloQaControls();
 }
@@ -325,10 +421,14 @@ function renderRunList() {
     ? `${persistentCount} 条记录${backgroundCount ? ` · ${backgroundCount} 个后台生成` : ""}`
     : `${visibleRuns.length} / ${state.runs.length} 项`;
   if (!state.runs.length) {
+    state.runPage = 1;
+    renderTablePagination("runs", paginateItems([], state.runPage));
     list.innerHTML = '<tr><td colspan="8" class="table-empty">还没有运行记录</td></tr>';
     return;
   }
   if (!visibleRuns.length) {
+    state.runPage = 1;
+    renderTablePagination("runs", paginateItems([], state.runPage));
     list.innerHTML = '<tr><td colspan="8" class="table-empty">没有符合筛选条件的运行记录</td></tr>';
     return;
   }
@@ -343,10 +443,13 @@ function renderRunList() {
     const result = firstValue < secondValue ? -1 : firstValue > secondValue ? 1 : 0;
     return state.sortDirection === "asc" ? result : -result;
   });
-  list.innerHTML = sortedRuns.map((run) => {
+  const pagination = paginateItems(sortedRuns, state.runPage);
+  state.runPage = pagination.page;
+  renderTablePagination("runs", pagination);
+  list.innerHTML = pagination.items.map((run) => {
     const [label, tone] = run.imported_baseline
       ? ["基线已导入", "complete"]
-      : phaseLabel(run.phase);
+      : displayedRunPhase(run);
     const taskType = run.current_task_type || run.task_type || "未记录";
     const category = run.project_category && run.project_category !== "未记录" ? run.project_category : "";
     const categoryTone = category === "纯前端" ? "frontend" : category === "纯后端" ? "backend" : category === "全栈" ? "fullstack" : "neutral";
@@ -357,7 +460,8 @@ function renderRunList() {
     const actions = run.background_generation
       ? `<span class="record-actions"><button class="record-open" type="button" data-run-id="${escapeHtml(targetRunId)}">查看来源</button><span class="background-job-readonly">只读</span></span>`
       : `<span class="record-actions"><button class="record-open" type="button" data-run-id="${escapeHtml(targetRunId)}">查看详情</button><button class="record-delete" type="button" data-run-action="delete" data-run-id="${escapeHtml(targetRunId)}" ${isRunning(run.phase) ? 'disabled title="运行中不可删除"' : ""}>删除</button></span>`;
-    const statusContent = `<span class="run-status-stack"><span class="table-phase ${tone}" title="${escapeHtml(run.status_detail || label)}"><i aria-hidden="true"></i>${escapeHtml(label)}</span>${run.background_generation ? `<small class="background-job-stage">${escapeHtml(run.status_detail || "正在生成题面")}</small>` : ""}</span>`;
+    const showStatusDetail = run.background_generation || runNeedsAttention(run);
+    const statusContent = `<span class="run-status-stack"><span class="table-phase ${tone}" title="${escapeHtml(run.status_detail || label)}"><i aria-hidden="true"></i>${escapeHtml(label)}</span>${showStatusDetail ? `<small class="background-job-stage${runNeedsAttention(run) ? " attention-detail" : ""}">${escapeHtml(run.status_detail || "正在生成题面")}</small>` : ""}</span>`;
     return `<tr class="run-row${run.background_generation ? " background-generation" : ""} ${state.selectedId === run.id ? "active" : ""}" data-run-id="${escapeHtml(targetRunId)}" tabindex="0">
       <td data-label="编号"><span class="number-badge">${escapeHtml(run.project_number || "—")}</span></td>
       <td data-label="项目 / 仓库"><span><button class="record-name" type="button" data-run-id="${escapeHtml(targetRunId)}">${escapeHtml(run.repo_name)}</button><small>${escapeHtml(recordMeta)}</small></span></td>
@@ -661,7 +765,7 @@ function renderDetail() {
   }
   const [label, tone] = run.imported_baseline
     ? ["基线已导入", "complete"]
-    : phaseLabel(run.phase);
+    : displayedRunPhase(run);
   const progress = progressState(run);
   const steps = ["生成题目", "初始仓库", "第一轮开发", "首轮检查", "后续轮开发", "逐轮复查"];
   const canStop = ["generation_queued", "generation_running", "queued", "first_retry_queued", "creating_repo", "first_starting", "first_running", "first_idle", "review_queued", "review_running", "second_queued", "second_starting", "second_running", "second_idle", "final_review_queued", "final_review_running"].includes(run.phase);
@@ -1075,6 +1179,7 @@ window.addEventListener("message", (event) => {
 async function loadCompletedTurns() {
   try {
     state.completedTurns = await api("/api/exports/turns");
+    state.exportLastLoadedAt = Date.now();
     const validKeys = new Set(state.completedTurns.map((turn) => turn.key));
     state.selectedExportTurns = new Set(
       [...state.selectedExportTurns].filter((key) => validKeys.has(key))
@@ -1187,18 +1292,25 @@ async function selectedTurnsPassPreflight(turnKeys) {
 function renderExportPage() {
   const list = $("#export-turn-list");
   if (!state.completedTurns.length) {
+    state.exportPage = 1;
+    renderTablePagination("exports", paginateItems([], state.exportPage));
     list.innerHTML = '<tr><td colspan="11" class="table-empty">还没有已完成轮次</td></tr>';
     updateExportSelectionControls();
     return;
   }
   const visibleTurns = filteredCompletedTurns();
   if (!visibleTurns.length) {
+    state.exportPage = 1;
+    renderTablePagination("exports", paginateItems([], state.exportPage));
     list.innerHTML = '<tr><td colspan="11" class="table-empty">没有符合筛选条件的完成轮次</td></tr>';
     updateExportSelectionControls();
     return;
   }
+  const pagination = paginateItems(visibleTurns, state.exportPage);
+  state.exportPage = pagination.page;
+  renderTablePagination("exports", pagination);
   const preflightByKey = exportPreflightByKey();
-  list.innerHTML = visibleTurns.map((turn) => {
+  list.innerHTML = pagination.items.map((turn) => {
     const exportIssues = Array.isArray(turn.export_issues) ? turn.export_issues : [];
     const exportIssueLabels = exportIssues.map((issue) =>
       String(issue).replace(/^缺少\s*/, "").replace(/^评分缺少\s*/, "评分：")
@@ -1284,7 +1396,7 @@ function exportEvaluationEditorHtml(turn) {
     <div class="export-evaluation-heading"><div><strong>五维评分与描述</strong>${status}</div><small>保存后，Excel 导出和 SOLO-QA 提交均使用这里的内容。</small></div>
     <div class="export-evaluation-grid">${exportEvaluationDimensions.map(([key, label]) => {
       const item = draft[key] || {};
-      return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数">${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="3" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述">${escapeHtml(item.description || "")}</textarea></label>`;
+      return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数">${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="6" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述">${escapeHtml(item.description || "")}</textarea></label>`;
     }).join("")}</div>
     <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${busy ? "保存中…" : "保存评分修改"}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<span>原始自动评分不会被覆盖。</span></div>
   </section>`;
@@ -1723,6 +1835,7 @@ async function submitModel(event) {
 
 async function toggleAutoRefill() {
   const button = $("#auto-refill-toggle");
+  const wasScheduled = Boolean(state.health?.auto_refill?.enable_at);
   const enabled = !Boolean(state.health?.auto_refill?.enabled);
   button.disabled = true;
   button.textContent = enabled ? "正在开启…" : "正在关闭…";
@@ -1736,7 +1849,60 @@ async function toggleAutoRefill() {
     });
     if (state.health) state.health.auto_refill = result;
     renderHealth();
-    showNotice(enabled ? "自动补题已开启，将自动补满空闲并行槽" : "自动补题已关闭，已启动任务继续运行");
+    showNotice(enabled
+      ? (wasScheduled ? "自动补题已立即开启，原预约开始时间已取消" : "自动补题已开启，将自动补满空闲并行槽")
+      : "自动补题已关闭，已启动任务继续运行");
+  } catch (error) {
+    showNotice(error.message);
+    renderHealth();
+  }
+}
+
+async function setAutoRefillStartSchedule() {
+  const input = $("#auto-refill-start-hours");
+  const button = $("#auto-refill-start-schedule");
+  const hours = Number(input?.value);
+  if (!Number.isFinite(hours) || hours < 0.5 || hours > 168) {
+    showNotice("自动开始时长必须是 0.5 至 168 小时");
+    input?.focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "正在预约…";
+  try {
+    const result = await api("/api/settings/auto-refill", {
+      method: "POST",
+      body: JSON.stringify({
+        enabled: false,
+        project_directory: $("#project-directory").value,
+        enable_after_hours: hours,
+      }),
+    });
+    if (state.health) state.health.auto_refill = result;
+    renderHealth();
+    showNotice(`已预约 ${hours} 小时后开始自动补题；到点前不会创建新任务`);
+  } catch (error) {
+    showNotice(error.message);
+    renderHealth();
+  }
+}
+
+async function clearAutoRefillStartSchedule() {
+  const button = $("#auto-refill-start-clear");
+  button.disabled = true;
+  button.textContent = "正在取消…";
+  try {
+    const result = await api("/api/settings/auto-refill", {
+      method: "POST",
+      body: JSON.stringify({
+        enabled: false,
+        project_directory: $("#project-directory").value,
+        enable_after_hours: null,
+      }),
+    });
+    if (state.health) state.health.auto_refill = result;
+    renderHealth();
+    showNotice("自动补题的预约开始时间已取消");
   } catch (error) {
     showNotice(error.message);
     renderHealth();
@@ -2079,6 +2245,8 @@ $("#import-baseline-form").addEventListener("submit", submitImportedBaseline);
 $("#import-project-directory").addEventListener("change", updateImportBaselinePreview);
 $("#import-project-numbers").addEventListener("input", updateImportBaselinePreview);
 $("#auto-refill-toggle").addEventListener("click", toggleAutoRefill);
+$("#auto-refill-start-schedule").addEventListener("click", setAutoRefillStartSchedule);
+$("#auto-refill-start-clear").addEventListener("click", clearAutoRefillStartSchedule);
 $("#auto-refill-schedule").addEventListener("click", setAutoRefillSchedule);
 $("#auto-refill-clear").addEventListener("click", clearAutoRefillSchedule);
 $("#module-tab-runs").addEventListener("click", () => navigateTo("#runs"));
@@ -2133,51 +2301,63 @@ $("#run-list").addEventListener("keydown", (event) => {
 });
 $("#run-filter-query").addEventListener("input", (event) => {
   state.filters.query = event.target.value;
+  state.runPage = 1;
   renderRunList();
 });
 $("#run-filter-task-type").addEventListener("change", (event) => {
   state.filters.taskType = event.target.value;
+  state.runPage = 1;
   renderRunList();
 });
 $("#run-filter-category").addEventListener("change", (event) => {
   state.filters.category = event.target.value;
+  state.runPage = 1;
   renderRunList();
 });
 $("#run-filter-status").addEventListener("change", (event) => {
   state.filters.status = event.target.value;
+  state.runPage = 1;
   renderRunList();
 });
 $("#reset-run-filters").addEventListener("click", () => {
   $("#run-filters").reset();
   state.filters = { query: "", taskType: "", category: "", status: "" };
+  state.runPage = 1;
   renderRunList();
 });
 $("#export-filter-query").addEventListener("input", (event) => {
   state.exportFilters.query = event.target.value;
+  state.exportPage = 1;
   renderExportPage();
 });
 $("#export-filter-task-type").addEventListener("change", (event) => {
   state.exportFilters.taskType = event.target.value;
+  state.exportPage = 1;
   renderExportPage();
 });
 $("#export-filter-difficulty").addEventListener("change", (event) => {
   state.exportFilters.difficulty = event.target.value;
+  state.exportPage = 1;
   renderExportPage();
 });
 $("#export-filter-readiness").addEventListener("change", (event) => {
   state.exportFilters.readiness = event.target.value;
+  state.exportPage = 1;
   renderExportPage();
 });
 $("#export-filter-solo-qa").addEventListener("change", (event) => {
   state.exportFilters.soloQaState = event.target.value;
+  state.exportPage = 1;
   renderExportPage();
 });
 $("#export-filter-date-from").addEventListener("change", (event) => {
   state.exportFilters.dateFrom = event.target.value;
+  state.exportPage = 1;
   renderExportPage();
 });
 $("#export-filter-date-to").addEventListener("change", (event) => {
   state.exportFilters.dateTo = event.target.value;
+  state.exportPage = 1;
   renderExportPage();
 });
 $("#reset-export-filters").addEventListener("click", () => {
@@ -2191,7 +2371,15 @@ $("#reset-export-filters").addEventListener("click", () => {
     dateFrom: "",
     dateTo: "",
   };
+  state.exportPage = 1;
   renderExportPage();
+});
+document.querySelectorAll("[data-table-pagination]").forEach((pagination) => {
+  pagination.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-page-scope][data-page-target]");
+    if (!button || button.disabled) return;
+    changeTablePage(button.dataset.pageScope, Number(button.dataset.pageTarget));
+  });
 });
 $("#select-all-export-turns").addEventListener("change", (event) => {
   const visibleKeys = filteredCompletedTurns().map((turn) => turn.key);
@@ -2270,6 +2458,7 @@ document.querySelectorAll("[data-sort-key]").forEach((button) => {
       state.sortKey = key;
       state.sortDirection = "desc";
     }
+    state.runPage = 1;
     renderRunList();
   });
 });
@@ -2286,7 +2475,12 @@ detailView.addEventListener("copy", () => {
 async function refresh() {
   await Promise.all([loadRuns(), loadHealth()]);
   if (state.selectedId) await loadDetail();
-  if (window.location.hash === "#exports") await loadCompletedTurns();
+  if (
+    window.location.hash === "#exports"
+    && Date.now() - state.exportLastLoadedAt >= EXPORT_REFRESH_INTERVAL_MS
+  ) {
+    await loadCompletedTurns();
+  }
   if (
     window.location.hash === "#analytics"
     && Date.now() - state.analyticsLastLoadedAt >= 30000

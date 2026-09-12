@@ -73,10 +73,118 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("问题发生在第几轮", app.EVALUATION_DESCRIPTION_GUIDANCE)
         self.assertIn("不强制三者挤在第一句", app.EVALUATION_DESCRIPTION_GUIDANCE)
         self.assertIn("如果轨迹中找不到真实不足，应改评 5 分", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn("不直接抄写 `[0,2,1,1]`", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn("不出现 AI、AI 浏览器", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn("模型认为", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn("模型完成了", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn("把“未”写成“没有”或“还没”", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn("把“均”写成“都”", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn("把“包含”写成“有”", app.EVALUATION_DESCRIPTION_GUIDANCE)
         for phrase in app.EVALUATION_DISALLOWED_PHRASES:
             self.assertIn(phrase, app.EVALUATION_DESCRIPTION_GUIDANCE)
         for phrase in app.EVALUATION_HIGH_RISK_FRAGMENTS:
             self.assertIn(phrase, app.EVALUATION_DESCRIPTION_GUIDANCE)
+
+    def test_generated_evaluation_descriptions_are_made_more_conversational(self):
+        evaluation = sample_evaluation()
+        evaluation["delivery"]["description"] = (
+            "三个场景均已验证，响应不包含旧结果，"
+            "当前未发现残留记录，尚未覆盖断网恢复。"
+        )
+
+        normalized = app.normalize_evaluation(evaluation)
+
+        self.assertEqual(
+            normalized["delivery"]["description"],
+            "三个场景都已经验证，响应没有旧结果，"
+            "当前还没发现残留记录，还没覆盖断网恢复。",
+        )
+
+    def test_plain_wording_keeps_business_terms_and_evidence_unchanged(self):
+        description = (
+            '未来天数、均值和“未保存”保持原样，'
+            'ConfigDict(extra="ignore") 未修改。'
+        )
+
+        self.assertEqual(
+            app.naturalize_evaluation_description(description),
+            '未来天数、均值和“未保存”保持原样，'
+            'ConfigDict(extra="ignore") 没有修改。',
+        )
+
+    def test_manual_evaluation_keeps_the_users_wording(self):
+        evaluation = sample_evaluation()
+        evaluation["delivery"]["description"] = "三个场景均已验证，尚未发现问题。"
+
+        normalized = app.normalize_manual_evaluation(evaluation)
+
+        self.assertEqual(
+            normalized["delivery"]["description"],
+            "三个场景均已验证，尚未发现问题。",
+        )
+
+    def test_evaluation_rejects_raw_number_arrays(self):
+        evaluation = sample_evaluation()
+        evaluation["delivery"]["description"] = (
+            "零费用分配结果是 [0,2,1,1]，其余流程保持可用。"
+        )
+
+        with self.assertRaisesRegex(app.WorkflowError, "原始数字数组"):
+            app.normalize_evaluation(evaluation)
+
+        self.assertTrue(
+            app.retryable_review_output_error(
+                "自动检查的 delivery 描述包含不易理解的原始数字数组"
+            )
+        )
+
+    def test_evaluation_descriptions_reject_ai_identity_tool_and_model_names(self):
+        descriptions = (
+            "AI 完成了页面修复。",
+            "AI浏览器确认页面能够打开。",
+            "AI Agent 修正了接口。",
+            "AI模型完成了数据检查。",
+            "Codex 补齐了测试。",
+            "GPT-5.6 判断边界正确。",
+            "Claude Code 完成了改动。",
+            "模型认为当前结果正确。",
+            "模型完成了页面交付。",
+        )
+        for description in descriptions:
+            evaluation = sample_evaluation()
+            evaluation["delivery"]["description"] = description
+            with self.subTest(description=description), self.assertRaisesRegex(
+                app.WorkflowError, "AI 身份、工具或模型名称"
+            ):
+                app.normalize_evaluation(evaluation)
+
+        self.assertTrue(
+            app.retryable_review_output_error(
+                "自动检查的 delivery 描述不能出现 AI 身份、工具或模型名称：Codex"
+            )
+        )
+
+    def test_evaluation_identity_check_does_not_match_business_model_or_filename(self):
+        evaluation = sample_evaluation()
+        evaluation["reasoning"]["description"] = (
+            "main.py 中的状态模型保留原字段，旧记录仍可正常读取。"
+        )
+
+        normalized = app.normalize_evaluation(evaluation)
+
+        self.assertEqual(
+            normalized["reasoning"]["description"],
+            evaluation["reasoning"]["description"],
+        )
+
+    def test_manual_evaluation_rejects_ai_identity_reference(self):
+        evaluation = sample_evaluation()
+        evaluation["execution"]["description"] = "模型完成了页面和接口检查。"
+
+        with self.assertRaisesRegex(
+            app.WorkflowError, "AI 身份、工具或模型名称"
+        ):
+            app.normalize_manual_evaluation(evaluation)
 
     def test_nonfull_evaluation_description_requires_exact_turn_number(self):
         evaluation = sample_evaluation()
@@ -407,6 +515,29 @@ class ValidationTests(unittest.TestCase):
         self.assertIn('run.background_generation', javascript)
         self.assertIn('background-job-stage', javascript)
 
+    def test_run_and_export_lists_have_twenty_item_dual_pagination(self):
+        html = (app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        styles = (app.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("const TABLE_PAGE_SIZE = 20", javascript)
+        self.assertEqual(html.count('data-table-pagination="runs"'), 2)
+        self.assertEqual(html.count('data-table-pagination="exports"'), 2)
+        self.assertIn("function paginateItems", javascript)
+        self.assertIn("pagination.items.map((run)", javascript)
+        self.assertIn("pagination.items.map((turn)", javascript)
+        self.assertIn("state.runPage = 1", javascript)
+        self.assertIn("state.exportPage = 1", javascript)
+        self.assertIn(".table-pagination-top", styles)
+        self.assertIn(".table-pagination-bottom", styles)
+
+    def test_frontend_and_backend_versions_stay_in_sync(self):
+        javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        match = re.search(r'^const UI_VERSION = "([^"]+)";', javascript)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), app.APP_VERSION)
+
     def test_run_list_shows_start_time_without_framework_or_model_columns(self):
         html = (app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
         javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -520,6 +651,13 @@ class ValidationTests(unittest.TestCase):
         self.assertIn(".export-prompt-toggle", styles)
         self.assertIn(".export-prompt-content", styles)
         self.assertIn(".export-evaluation-editor", styles)
+        self.assertIn("const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000", javascript)
+        self.assertIn(
+            "Date.now() - state.exportLastLoadedAt >= EXPORT_REFRESH_INTERVAL_MS",
+            javascript,
+        )
+        self.assertIn('<textarea rows="6"', javascript)
+        self.assertIn("min-height: 132px", styles)
 
     def test_export_page_exposes_solo_qa_bridge_controls(self):
         html = (app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -563,6 +701,10 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("<th>当前状态</th>", html)
         self.assertIn('data-label="当前状态"', javascript)
         self.assertIn("run.status_detail || label", javascript)
+        self.assertIn("function runNeedsAttention(run)", javascript)
+        self.assertIn('includes("等待人工确认")', javascript)
+        self.assertIn("attention-detail", javascript)
+        self.assertIn(".background-job-stage.attention-detail", styles)
         for tone in ("running", "ready", "complete", "failed", "warning"):
             self.assertIn(f".table-phase.{tone}", styles)
         self.assertIn("@keyframes status-pulse", styles)
@@ -801,6 +943,29 @@ class ParsingTests(unittest.TestCase):
         }
 
         self.assertIsNone(app.trace_human_prompt_text(event))
+
+    def test_trace_human_prompt_text_ignores_automatic_api_resume(self):
+        for content in ("继续", " 继续。 ", [{"type": "text", "text": "继续"}]):
+            event = {
+                "type": "user",
+                "promptId": "resume-prompt",
+                "message": {"content": content},
+            }
+            with self.subTest(content=content):
+                self.assertIsNone(app.trace_human_prompt_text(event))
+
+    def test_trace_human_prompt_text_ignores_cli_interruption_markers(self):
+        for content in (
+            "[Request interrupted by user]",
+            [{"type": "text", "text": "[Request interrupted by user for tool use]"}],
+        ):
+            event = {
+                "type": "user",
+                "promptId": "interruption-marker",
+                "message": {"content": content},
+            }
+            with self.subTest(content=content):
+                self.assertIsNone(app.trace_human_prompt_text(event))
 
     def test_parse_agents_json_with_prefix(self):
         value = app.parse_json_output('warning\n[{"id":"abc","status":"busy"}]')
@@ -1046,6 +1211,65 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(state["result"], "")
         self.assertEqual(state["api_error"], "API Error: 504 Gateway Time-out")
 
+    def test_container_trace_treats_continue_after_api_error_as_resumed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_root = Path(directory)
+            transcript = trace_root / "project" / "session-error.jsonl"
+            transcript.parent.mkdir()
+            events = [
+                {"type": "user", "promptId": "prompt-error", "message": {"content": "完成这个项目"}},
+                {
+                    "type": "assistant",
+                    "isApiErrorMessage": True,
+                    "apiErrorStatus": 504,
+                    "message": {"content": [{"type": "text", "text": "API Error: 504 Gateway Time-out"}]},
+                },
+                {"type": "user", "promptId": "prompt-resume", "message": {"content": "继续"}},
+                {
+                    "type": "assistant",
+                    "message": {"stop_reason": "tool_use", "content": [{"type": "tool_use", "name": "Bash"}]},
+                },
+            ]
+            transcript.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events),
+                encoding="utf-8",
+            )
+
+            state = app.trace_turn_state(trace_root, "完成这个项目")
+
+        self.assertFalse(state["complete"])
+        self.assertEqual(state["api_error"], "")
+
+    def test_container_trace_detects_second_api_error_after_continue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_root = Path(directory)
+            transcript = trace_root / "project" / "session-error.jsonl"
+            transcript.parent.mkdir()
+            events = [
+                {"type": "user", "promptId": "prompt-error", "message": {"content": "完成这个项目"}},
+                {
+                    "type": "assistant",
+                    "isApiErrorMessage": True,
+                    "apiErrorStatus": 504,
+                    "message": {"content": [{"type": "text", "text": "API Error: 504 first"}]},
+                },
+                {"type": "user", "promptId": "prompt-resume", "message": {"content": "继续"}},
+                {
+                    "type": "assistant",
+                    "isApiErrorMessage": True,
+                    "apiErrorStatus": 504,
+                    "message": {"content": [{"type": "text", "text": "API Error: 504 second"}]},
+                },
+            ]
+            transcript.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events),
+                encoding="utf-8",
+            )
+
+            state = app.trace_turn_state(trace_root, "完成这个项目")
+
+        self.assertEqual(state["api_error"], "API Error: 504 second")
+
     def test_container_trace_detects_unresolved_user_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
             trace_root = Path(directory)
@@ -1118,6 +1342,9 @@ class ParsingTests(unittest.TestCase):
                 })
                 app.update_run(created["id"], phase="first_running")
                 app.update_turn(created["id"], 1, status="running")
+                app.add_event(
+                    created["id"], app.api_resume_event_message(1), "warning"
+                )
                 trace_state = {
                     "session_id": "session-error",
                     "prompt_id": "prompt-error",
@@ -1139,6 +1366,93 @@ class ParsingTests(unittest.TestCase):
         self.assertIn("504 Gateway Time-out", stored["error"])
         export.assert_called_once_with(created["id"], force=True)
         auto_retry.assert_called_once_with(created["id"])
+
+    def test_docker_monitor_sends_continue_before_fresh_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "api-resume-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成这个项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+                app.update_turn(created["id"], 1, status="running")
+                trace_state = {
+                    "session_id": "session-error",
+                    "prompt_id": "prompt-error",
+                    "result": "",
+                    "complete": False,
+                    "api_error": "API Error: 504 Gateway Time-out",
+                    "path": root / "session-error.jsonl",
+                }
+
+                def resume_once(run_id, *_args):
+                    app.update_run(run_id, phase="stopped")
+                    return True
+
+                with mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, trace_state)
+                ), mock.patch.object(
+                    app, "resume_after_api_error", side_effect=resume_once
+                ) as resume, mock.patch.object(
+                    app, "preserve_interrupted_docker_turn"
+                ) as preserve, mock.patch.object(
+                    app, "schedule_automatic_api_retry"
+                ) as auto_retry, mock.patch.object(app.time, "sleep"):
+                    app.monitor_docker_turn(created["id"], 1)
+
+        resume.assert_called_once_with(
+            created["id"], 1, str(created["screen_name"] or "")
+        )
+        preserve.assert_not_called()
+        auto_retry.assert_not_called()
+
+    def test_api_resume_is_persisted_and_sent_only_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"), mock.patch.object(
+                app, "screen_session_running", return_value=True
+            ), mock.patch.object(app, "run_command") as command, mock.patch.object(
+                app.time, "sleep"
+            ):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "api-resume-once-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成这个项目",
+                    "_defer_start": True,
+                })
+
+                first = app.resume_after_api_error(
+                    created["id"], 1, "claude-eval-demo"
+                )
+                second = app.resume_after_api_error(
+                    created["id"], 1, "claude-eval-demo"
+                )
+                stored = app.run_row(created["id"])
+                with app.db_connection() as database:
+                    count = database.execute(
+                        "SELECT COUNT(*) FROM events WHERE run_id = ? AND message = ?",
+                        (created["id"], app.api_resume_event_message(1)),
+                    ).fetchone()[0]
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(count, 1)
+        self.assertGreater(int(stored["retry_not_before_epoch"] or 0), int(time.time()))
+        self.assertIn("等待原会话恢复", stored["status_detail"])
+        self.assertEqual(command.call_count, 3)
 
     def test_docker_monitor_preserves_user_interruption_without_reusing_session(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1238,6 +1552,51 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(stored["turns"][0]["status"], "interrupted")
         self.assertIn("本轮完成前已退出", stored["error"])
         export.assert_called_once_with(created["id"], force=True)
+
+    def test_docker_monitor_marks_confirmation_without_writing_to_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "attention-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+
+                def finish_monitor(_seconds):
+                    app.update_run(created["id"], phase="stopped")
+
+                with mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, None)
+                ), mock.patch.object(
+                    app, "docker_container_running", return_value=True
+                ), mock.patch.object(
+                    app,
+                    "terminal_screen_text",
+                    return_value="Do you want to proceed? 1. Yes 2. No",
+                ), mock.patch.object(
+                    app, "play_terminal_attention_sound", return_value=True
+                ) as sound, mock.patch.object(
+                    app.time, "monotonic", side_effect=[100.0, 161.0]
+                ), mock.patch.object(
+                    app.time, "sleep", side_effect=finish_monitor
+                ), mock.patch.object(
+                    app, "send_prompt_to_screen"
+                ) as send_prompt:
+                    app.monitor_docker_turn(created["id"], 1)
+
+                stored = app.serialize_run(app.run_row(created["id"]))
+
+        self.assertIn("等待人工确认", stored["status_detail"])
+        sound.assert_called_once_with()
+        send_prompt.assert_not_called()
 
     def test_six_hour_notice_keeps_read_only_monitor_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1493,7 +1852,12 @@ class ReviewTests(unittest.TestCase):
             with mock.patch.object(
                 app,
                 "run_codex_structured",
-                side_effect=[completed, still_invalid, still_invalid],
+                side_effect=[
+                    completed,
+                    still_invalid,
+                    still_invalid,
+                    still_invalid,
+                ],
             ) as runner:
                 result = app.run_codex_final_review(
                     repo,
@@ -1503,15 +1867,75 @@ class ReviewTests(unittest.TestCase):
                     "本轮完成了修改。",
                 )
 
-        self.assertEqual(runner.call_count, 3)
+        self.assertEqual(runner.call_count, 4)
         self.assertEqual(result["summary"], "代码复核已经完成")
         self.assertEqual(result["next_action"], "complete")
         self.assertIn("缺少客观证据", result["evaluation_warning"])
         self.assertEqual(result["evaluation"]["planning"]["score"], 4)
         self.assertEqual(
             result["evaluation"]["planning"]["description"],
-            evaluation["planning"]["description"],
+            still_invalid["description"],
         )
+
+    def test_targeted_repairs_validate_after_fourth_rewrite(self):
+        evaluation = sample_evaluation("0-1 代码生成")
+        normalized = sample_evaluation("0-1 代码生成")
+        errors = [
+            app.WorkflowError("自动检查的指令遵循非满分描述没有说明实际后果"),
+            app.WorkflowError("自动检查的推理能力非满分描述没有说明实际后果"),
+            app.WorkflowError("自动检查的推理能力描述包含高风险公共片段：全部通过"),
+            app.WorkflowError("自动检查的指令遵循描述与本轮最后一次检查结果矛盾"),
+        ]
+        with mock.patch.object(
+            app,
+            "normalize_evaluation",
+            side_effect=[*errors, normalized],
+        ) as validator, mock.patch.object(
+            app,
+            "run_codex_evaluation_dimension_repair",
+            return_value="第 1 轮存在有证据的具体不足。该问题造成了实际影响。",
+        ) as repair, mock.patch.object(
+            app,
+            "validate_evaluation_final_verification_consistency",
+        ), mock.patch.object(
+            app,
+            "validate_evaluation_trace_commands",
+        ):
+            result = app.normalize_evaluation_with_targeted_repairs(
+                evaluation,
+                1,
+                Path("."),
+                "原始需求",
+                [],
+                "轨迹",
+            )
+
+        self.assertEqual(result, normalized)
+        self.assertEqual(validator.call_count, 5)
+        self.assertEqual(repair.call_count, 4)
+
+    def test_targeted_repair_loop_exhaustion_can_fall_back_to_manual_edit(self):
+        evaluation = sample_evaluation("Bug 修复")
+        latest = sample_evaluation("Bug 修复")
+        latest["planning"]["description"] = "第 2 轮最后一次定向修正的描述。"
+        with mock.patch.object(
+            app,
+            "normalize_evaluation_with_targeted_repairs",
+            side_effect=app.EvaluationRepairExhausted(
+                "评分描述定向修正未能收敛", latest
+            ),
+        ):
+            result, warning = app.review_evaluation_with_manual_fallback(
+                evaluation,
+                2,
+                Path("."),
+                "修复需求",
+                [],
+                "轨迹",
+            )
+
+        self.assertEqual(result["planning"], latest["planning"])
+        self.assertEqual(warning, "评分描述定向修正未能收敛")
 
     def test_bug_repair_prompt_uses_direct_natural_single_line(self):
         bugs = app.normalize_bugs([
@@ -1567,7 +1991,7 @@ class ReviewTests(unittest.TestCase):
             "上轮已拦截单个尾随换行，但连续两个空行仍会生成记录并消耗实物序号。",
         )
 
-    def test_bug_customer_summary_rejects_ai_style_formatting(self):
+    def test_bug_customer_summary_repairs_harmless_formatting(self):
         bug = {
             "severity": "中",
             "title": "导出提前开放",
@@ -1579,8 +2003,34 @@ class ReviewTests(unittest.TestCase):
             "customer_summary": "1. 未确认时导出入口显示为“可用”，应该继续锁定",
         }
 
-        with self.assertRaisesRegex(app.WorkflowError, "引号|标题"):
-            app.normalize_bugs([bug])
+        normalized = app.normalize_bugs([bug])
+
+        self.assertEqual(
+            normalized[0]["customer_summary"],
+            "未确认时导出入口显示为可用，应该继续锁定",
+        )
+
+    def test_bug_customer_summary_allows_observable_quantity_increase(self):
+        bug = {
+            "severity": "中",
+            "title": "空行生成记录",
+            "reproduction": "盘点标签末尾保留空白行后提交",
+            "actual": "盘点记录数量增加一条",
+            "expected": "提示标签无效且记录数量不变",
+            "evidence": "提交前后一共多出一条盘点记录",
+            "fix": "拒绝包含空白行的标签列表",
+            "customer_summary": (
+                "2. 盘点标签末尾有空白行时，记录数量仍会增加。"
+                "正确结果应提示标签无效，并保持记录不变！"
+            ),
+        }
+
+        normalized = app.normalize_bugs([bug])
+
+        self.assertEqual(
+            normalized[0]["customer_summary"],
+            "盘点标签末尾有空白行时，记录数量仍会增加，正确结果应提示标签无效，并保持记录不变",
+        )
 
     def test_test_coverage_gap_does_not_become_a_bugfix_turn(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1858,6 +2308,63 @@ class ReviewTests(unittest.TestCase):
                     ],
                 )
                 self.assertIn("Git 和轨迹检查点已保存", stored["status_detail"])
+
+    def test_final_review_manual_confirmation_snapshots_raw_trace_without_closing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                timestamp = app.now_text()
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO runs(
+                          id, repo_name, repo_path, workspace_path, phase, session_id,
+                          first_prompt, second_prompt, second_verification,
+                          container_name, screen_name, verification_commands,
+                          created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 'final_review_queued', 'same-session',
+                                  '原始需求', '第二轮修复', '[]', 'container-review',
+                                  'screen-review', '[]', ?, ?)""",
+                        (
+                            "manual333333",
+                            "manual-review-demo",
+                            str(repo),
+                            str(repo),
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    database.execute(
+                        """INSERT INTO run_turns(
+                          run_id, turn_number, intent_type, prompt, prompt_id,
+                          verification, status, created_at, updated_at
+                        ) VALUES (?, 2, 'Bug 修复', '第二轮修复', 'p2',
+                                  '[]', 'reviewing', ?, ?)""",
+                        ("manual333333", timestamp, timestamp),
+                    )
+                repeated = app.WorkflowError(
+                    "复查发现的问题与当前修复题面没有新的可观察差异，"
+                    "已停止自动换词续轮，请人工确认"
+                )
+                with mock.patch.object(
+                    app, "run_codex_final_review", side_effect=repeated
+                ), mock.patch.object(
+                    app, "export_container_trace_snapshot"
+                ) as snapshot, mock.patch.object(
+                    app, "export_and_remove_container"
+                ) as close:
+                    app.final_review_worker("manual333333")
+
+                stored = app.serialize_run(app.run_row("manual333333"))
+
+        self.assertEqual(stored["phase"], "manual_review")
+        self.assertIn("原始轨迹已保存", stored["status_detail"])
+        snapshot.assert_called_once_with("manual333333")
+        close.assert_not_called()
 
     def test_final_review_worker_queues_next_bugfix_until_clean(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2230,6 +2737,99 @@ class RepositoryTests(unittest.TestCase):
 
         self.assertIn("两个问题都已修复", content)
 
+    def test_trace_checkpoint_keeps_final_reply_after_automatic_api_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "full.jsonl"
+            destination = root / "turn-01.jsonl"
+            events = [
+                {
+                    "type": "user",
+                    "promptId": "prompt-original",
+                    "message": {"content": "完成这个项目"},
+                },
+                {
+                    "type": "assistant",
+                    "isApiErrorMessage": True,
+                    "apiErrorStatus": 504,
+                    "message": {
+                        "stop_reason": "stop_sequence",
+                        "content": [{"type": "text", "text": "API Error: 504 Gateway Time-out"}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "promptId": "prompt-resume",
+                    "message": {"content": "继续"},
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "恢复后完成全部工作。"}],
+                    },
+                },
+                {"type": "system", "subtype": "turn_duration"},
+                {
+                    "type": "user",
+                    "promptId": "prompt-next",
+                    "message": {"content": "修复下一问题"},
+                },
+            ]
+            source.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            app.write_trace_through_turn(source, destination, "完成这个项目")
+            content = destination.read_text(encoding="utf-8")
+
+        self.assertIn('"content": "继续"', content)
+        self.assertIn("恢复后完成全部工作", content)
+        self.assertNotIn("修复下一问题", content)
+
+    def test_trace_checkpoint_keeps_final_reply_after_cli_interruption_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "full.jsonl"
+            destination = root / "turn-01.jsonl"
+            events = [
+                {
+                    "type": "user",
+                    "promptId": "prompt-original",
+                    "message": {"content": "完成这个项目"},
+                },
+                {
+                    "type": "user",
+                    "interruptedMessageId": "assistant-tool-call",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "[Request interrupted by user for tool use]",
+                            }
+                        ]
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "恢复后完成全部工作。"}],
+                    },
+                },
+                {"type": "system", "subtype": "turn_duration"},
+            ]
+            source.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            app.write_trace_through_turn(source, destination, "完成这个项目")
+            content = destination.read_text(encoding="utf-8")
+
+        self.assertIn("恢复后完成全部工作", content)
+
     def test_trace_is_exported_before_container_conversation_is_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2271,6 +2871,38 @@ class RepositoryTests(unittest.TestCase):
                 app.export_and_remove_container("archive-order", force=True)
 
         self.assertEqual(calls, ["export", "close", "remove"])
+
+    def test_raw_trace_snapshot_keeps_container_and_uses_session_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            row = {
+                "id": "snapshot-only",
+                "session_id": "session-snapshot",
+                "container_name": "container-snapshot",
+            }
+
+            def copy_traces(_row, destination):
+                transcript = destination / "-workspace" / "session-snapshot.jsonl"
+                transcript.parent.mkdir(parents=True)
+                transcript.write_text('{}\n', encoding="utf-8")
+                return destination
+
+            with mock.patch.object(app, "run_row", return_value=row), mock.patch.object(
+                app, "run_directory_for", return_value=root
+            ), mock.patch.object(
+                app, "copy_container_traces", side_effect=copy_traces
+            ), mock.patch.object(app, "update_run") as update, mock.patch.object(
+                app, "add_event"
+            ), mock.patch.object(app, "close_container_conversation") as close, mock.patch.object(
+                app, "run_command"
+            ) as command:
+                path = app.export_container_trace_snapshot("snapshot-only")
+
+        self.assertEqual(path.name, "session-snapshot.jsonl")
+        self.assertEqual(path.parent.name, "-workspace")
+        update.assert_called_once_with("snapshot-only", trajectory_path=str(path))
+        close.assert_not_called()
+        command.assert_not_called()
 
     def test_initial_repository_contains_empty_readme(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2361,6 +2993,41 @@ class RepositoryTests(unittest.TestCase):
             self.assertIn("-dmS", screen_call.args[0])
             self.assertNotIn("-DmS", screen_call.args[0])
             self.assertIs(screen_call.kwargs["capture_output"], False)
+
+    def test_terminal_attention_detection_only_reads_visible_prompt(self):
+        self.assertEqual(
+            app.terminal_attention_reason_from_text(
+                "\x1b[31mDo you want to proceed?\x1b[0m  1. Yes  2. No"
+            ),
+            "终端正在等待操作确认",
+        )
+        self.assertEqual(
+            app.terminal_attention_reason_from_text("正在继续生成页面和检查内容"),
+            "",
+        )
+
+    def test_terminal_screen_capture_uses_hardcopy_without_sending_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+
+            def hardcopy(args, **_kwargs):
+                Path(args[-1]).write_text(
+                    "Do you want to proceed?\n1. Yes\n2. No\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with mock.patch.object(app, "TERMINAL_ASSETS_DIR", root), mock.patch.object(
+                app, "screen_session_running", return_value=True
+            ), mock.patch.object(app, "run_command", side_effect=hardcopy) as command:
+                output = app.terminal_screen_text("attention-demo", "screen-demo")
+
+        self.assertIn("Do you want to proceed?", output)
+        self.assertEqual(
+            command.call_args.args[0][:7],
+            ["screen", "-S", "screen-demo", "-p", "0", "-X", "hardcopy"],
+        )
+        self.assertNotIn("stuff", command.call_args.args[0])
 
     def test_container_permission_prompt_is_confirmed_once(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -3256,6 +3923,86 @@ class AutoRefillTests(unittest.TestCase):
                 self.assertEqual(values["auto_refill_enabled"], "0")
                 self.assertEqual(values["auto_refill_disable_at"], "")
 
+    def test_scheduled_refill_start_is_persistent_and_enables_when_due(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root):
+                app.initialize_database()
+                with mock.patch.object(app.time, "time", return_value=1_000):
+                    scheduled = app.set_auto_refill(
+                        {
+                            "enabled": False,
+                            "project_directory": "team-a",
+                            "enable_after_hours": 1.5,
+                        }
+                    )
+                self.assertFalse(scheduled["enabled"])
+                self.assertIsNotNone(scheduled["enable_at"])
+                self.assertEqual(scheduled["start_remaining_seconds"], 5_400)
+                self.assertIsNone(scheduled["disable_at"])
+                self.assertIn("已预约", scheduled["detail"])
+                with app.db_connection() as database:
+                    stored = database.execute(
+                        "SELECT value FROM settings WHERE key = 'auto_refill_enable_at'"
+                    ).fetchone()
+                self.assertEqual(stored["value"], "6400")
+
+                with mock.patch.object(app.time, "time", return_value=6_401):
+                    started = app.auto_refill_configuration()
+                self.assertTrue(started["enabled"])
+                self.assertIsNone(started["enable_at"])
+                self.assertIsNone(started["start_remaining_seconds"])
+                self.assertIn("按计划开启", started["detail"])
+                with app.db_connection() as database:
+                    values = {
+                        row["key"]: row["value"]
+                        for row in database.execute(
+                            "SELECT key, value FROM settings WHERE key IN "
+                            "('auto_refill_enabled', 'auto_refill_enable_at')"
+                        )
+                    }
+                self.assertEqual(values["auto_refill_enabled"], "1")
+                self.assertEqual(values["auto_refill_enable_at"], "")
+
+    def test_scheduled_refill_start_validates_hours_and_can_be_cancelled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root):
+                app.initialize_database()
+                for invalid in (True, 0.25, 169, "later", []):
+                    with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                        app.WorkflowError, "0.5 至 168"
+                    ):
+                        app.set_auto_refill(
+                            {
+                                "enabled": False,
+                                "project_directory": "team-a",
+                                "enable_after_hours": invalid,
+                            }
+                        )
+                app.set_auto_refill(
+                    {
+                        "enabled": False,
+                        "project_directory": "team-a",
+                        "enable_after_hours": 2,
+                    }
+                )
+                cancelled = app.set_auto_refill(
+                    {
+                        "enabled": False,
+                        "project_directory": "team-a",
+                        "enable_after_hours": None,
+                    }
+                )
+                self.assertFalse(cancelled["enabled"])
+                self.assertIsNone(cancelled["enable_at"])
+                self.assertIsNone(cancelled["start_remaining_seconds"])
+                self.assertIn("已关闭", cancelled["detail"])
+
     def test_scheduled_refill_shutdown_validates_hours_and_can_be_cleared(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -3703,10 +4450,17 @@ class AutoRefillTests(unittest.TestCase):
         self.assertIn('id="auto-refill-hours"', html)
         self.assertIn('id="auto-refill-schedule"', html)
         self.assertIn('id="auto-refill-clear"', html)
-        self.assertIn('id="auto-refill-timer-controls"', html)
+        self.assertIn('id="auto-refill-start-hours"', html)
+        self.assertIn('id="auto-refill-start-schedule"', html)
+        self.assertIn('id="auto-refill-start-clear"', html)
+        self.assertIn('id="auto-refill-start-controls"', html)
+        self.assertIn('id="auto-refill-stop-controls"', html)
         self.assertIn("async function toggleAutoRefill()", javascript)
+        self.assertIn("async function setAutoRefillStartSchedule()", javascript)
+        self.assertIn("async function clearAutoRefillStartSchedule()", javascript)
         self.assertIn("async function setAutoRefillSchedule()", javascript)
         self.assertIn("async function clearAutoRefillSchedule()", javascript)
+        self.assertIn("enable_after_hours", javascript)
         self.assertIn("disable_after_hours", javascript)
         self.assertIn("Bug 修复", javascript)
         self.assertIn("Feature、Bug 修复和完整模块", html)
@@ -4335,6 +5089,24 @@ class IterationGenerationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(app.WorkflowError, "解决方法"):
             app.normalize_generated_bugfix_candidate(candidate)
+
+    def test_first_bugfix_prompt_repairs_summary_punctuation_before_validation(self):
+        candidate = self.bugfix_candidate()
+        candidate["confirmed_bugs"][0]["customer_summary"] = (
+            "1. 两人同时确认时，位置会更新两次。"
+            "页面应只保留一次移动结果！"
+        )
+
+        result = app.normalize_generated_bugfix_candidate(candidate)
+
+        self.assertEqual(
+            result["confirmed_bugs"][0]["customer_summary"],
+            "两人同时确认时，位置会更新两次，页面应只保留一次移动结果",
+        )
+        self.assertIn(
+            "两人同时确认时，位置会更新两次，页面应只保留一次移动结果。",
+            result["prompt"],
+        )
 
     def test_bugfix_review_requires_verified_focused_scope(self):
         approved = {
@@ -6555,6 +7327,47 @@ class ResilienceTests(unittest.TestCase):
 
         self.assertEqual(recovered, 1)
         self.assertEqual(stored["phase"], "review_queued")
+        self.assertEqual(stored["stage_retry_count"], 1)
+        schedule.assert_called_once()
+
+    def test_failed_trace_checkpoint_is_requeued_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_id = "tracefail111"
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "schedule_worker_at") as schedule:
+                app.initialize_database()
+                timestamp = app.now_text()
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO runs(
+                             id, repo_name, repo_path, phase, first_prompt,
+                             verification_commands, stage_retry_name, error,
+                             created_at, updated_at
+                           ) VALUES (?, 'trace-demo', '/tmp/trace', 'failed',
+                                     '需求', '[]', 'Git/轨迹检查点', ?, ?, ?)""",
+                        (
+                            run_id,
+                            "轨迹中没有找到本轮最终回复，未生成检查点",
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    database.execute(
+                        """INSERT INTO run_turns(
+                             run_id, turn_number, intent_type, prompt, status,
+                             verification, created_at, updated_at
+                           ) VALUES (?, 1, '0-1 代码生成', '需求', 'reviewing',
+                                     '[]', ?, ?)""",
+                        (run_id, timestamp, timestamp),
+                    )
+
+                recovered = app.recover_retryable_review_failures()
+                stored = app.run_row(run_id)
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(stored["phase"], "first_idle")
         self.assertEqual(stored["stage_retry_count"], 1)
         schedule.assert_called_once()
 

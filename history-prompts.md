@@ -512,3 +512,108 @@
 <!-- prompt-end -->
 <!-- task-entry-end -->
 
+<!-- task-entry-start {"run_id": "a3ccf619d65f", "repo_name": "port-laytime-adjudicator", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, pytest, Docker, Docker Compose", "summary": "同一航次可能在多个港口分别形成结算结果，结算员要把二至二十个既有结果按提交顺序生成不可变的航次封顶清单，并输入非负整数分的赔付上限。 … 现有结算创建、查询和对比契约及API_PORT配置保持可用，pytest与verify应验收未触发封顶、按比例取整且总额精确等于上限、同余数按输入顺序分配，以及失败后清单和明细数量不变。"} -->
+## 0017-4 · port-laytime-adjudicator
+
+- 创建时间：2026-09-11 21:25:05 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+同一航次可能在多个港口分别形成结算结果，结算员要把二至二十个既有结果按提交顺序生成不可变的航次封顶清单，并输入非负整数分的赔付上限。服务读取持久化结果，原费用合计未超过上限时逐项照录，超过时按各项原费用比例分配上限，使用最大余数法补足整分，余数相同按提交顺序决定，零费用项始终分得零。为航次清单及明细建立模型和Alembic迁移，在服务层保存结果标识、原费用、分配费用、合计与创建时间快照，通过创建接口返回清单，并由查询接口按清单标识完整回放。重复结果标识返回定位到对应下标的422，引用缺失返回指出下标与标识的404，非法上限或不足两个结果不写入清单，查询不存在的清单返回404。现有结算创建、查询和对比契约及API_PORT配置保持可用，pytest与verify应验收未触发封顶、按比例取整且总额精确等于上限、同余数按输入顺序分配，以及失败后清单和明细数量不变。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "b37918a36c1d", "repo_name": "kiln-heatwork-release", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright", "summary": "窑炉控制器导出的采样间隔并不固定，温度又可能在两个采样点之间越过计热起点，质检员不能再靠表格逐行估算烧成是否合格。 … 合法提交应保存原始点、未舍入积分、展示值和结论，刷新后仍能复查；任一非法点则整次不落库，界面明确指出其索引与原因，最终质检员看到唯一的欠烧、合格或过烧结果。"} -->
+## 0033 · kiln-heatwork-release
+
+- 创建时间：2026-09-12 05:48:11 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+窑炉控制器导出的采样间隔并不固定，温度又可能在两个采样点之间越过计热起点，质检员不能再靠表格逐行估算烧成是否合格。请从空仓库实现一套真实联调的全栈判定台：页面接收窑次名称及 2 至 200 个 JSON 采样点，每点含 ISO 8601 时刻和摄氏温度；时刻须严格递增、首末间隔不超过 12 小时，温度限于 0 至 1400°C。后端以相邻点间温度线性变化为唯一约定，只累计高于 600°C 的部分；跨越 600°C 时先线性求交点再切段，以梯形法得到°C·min，最终按四舍五入 half-up 保留一位。小于 18000.0 判欠烧，18000.0 至 24000.0（含两端）判合格，大于 24000.0 判过烧。采用 FastAPI 与 React，字段错误须在页面对应位置呈现；pytest、Vitest 和 Playwright 覆盖积分边界与真实联调，禁止固定响应或占位实现。Docker Compose 运行 web 与 api，宿主端口分别可由 WEB_PORT、API_PORT 覆盖，并提供名为 verify 的一次性验收服务；README 在积分实现旁解释示例，.gitignore 排除本地产物。合法提交应保存原始点、未舍入积分、展示值和结论，刷新后仍能复查；任一非法点则整次不落库，界面明确指出其索引与原因，最终质检员看到唯一的欠烧、合格或过烧结果。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "946312684788", "repo_name": "saddle-stitch-imposition-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose", "summary": "短版画册交付印厂前，制版员必须确认骑马订后的正反面页码位置；靠手工从首尾交替填写，内页一多就容易出现重页或漏页。 … 错误响应须可由调用方定位 total_pages，合法响应中每个页码恰好出现一次，最终制版员能直接得到唯一且可复算的印刷面次序。"} -->
+## 0034 · saddle-stitch-imposition-api
+
+- 创建时间：2026-09-12 05:57:26 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+短版画册交付印厂前，制版员必须确认骑马订后的正反面页码位置；靠手工从首尾交替填写，内页一多就容易出现重页或漏页。请从空仓库实现纯后端 FastAPI 服务，接收 JSON 中唯一的 total_pages；它只能是 4 至 128 的整数且必须被 4 整除，否则返回 422 的字段级原因，不得输出局部结果。仓库使用 Python 3.12，并在 Docker Compose 中提供 api 与一次性 verify 服务，api 的宿主端口由 API_PORT 覆盖；pytest 覆盖排列不变量，README 在接口示例旁解释纸张顺序，.gitignore 排除本地产物，禁止占位实现。核心算法按纸张由外到内编号 i=0…total_pages/4-1：每张正面从左到右为 [total_pages-2i, 1+2i]，背面从左到右为 [2+2i, total_pages-1-2i]。POST 接口应同步返回纸张总数及每张的序号、front、back；页码均为一基整数，不旋转、不补空白页。错误响应须可由调用方定位 total_pages，合法响应中每个页码恰好出现一次，最终制版员能直接得到唯一且可复算的印刷面次序。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "776cc5051919", "repo_name": "gel-stack-color-preview", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "舞台灯光师常在装台前凭经验叠放色片，难以直观看出多层滤光后的颜色和亮度损失。 … 采用 TypeScript、React、Vite，使用 Vitest 覆盖计算边界、Playwright 验证拖拽与恢复流程；Docker Compose 提供 web 和一次性 verify 服务，"} -->
+## 0035 · gel-stack-color-preview
+
+- 创建时间：2026-09-12 06:07:06 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+舞台灯光师常在装台前凭经验叠放色片，难以直观看出多层滤光后的颜色和亮度损失。请从空仓库起步，实现一个纯前端预检台：用户可从目录拖拽一至五张色片、调整顺序，并查看实际叠放次序、最终色块、透光率和明暗结论；每张色片包含六位十六进制 sRGB 颜色及 1% 至 100% 的整数透光率。计算时将通道值除以 255，小于等于 0.04045 时除以 12.92，否则使用 ((v+0.055)/1.055)^2.4 转为线性值；各层逐通道相乘后按逆公式转回 sRGB，乘 255 并四舍五入为整数，透光率按各层百分比相乘并四舍五入到 0.1%。结果不低于 20.0% 标为可用，否则标为过暗。非法六位十六进制颜色须明确报错，不得覆盖 localStorage 中最近一次有效方案，刷新后恢复该方案。采用 TypeScript、React、Vite，使用 Vitest 覆盖计算边界、Playwright 验证拖拽与恢复流程；Docker Compose 提供 web 和一次性 verify 服务，WEB_PORT 可覆盖宿主端口，README 给出一组可复算示例。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "a3b55e8692e3", "repo_name": "venue-frequency-clearance-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Go 1.25, Gin, testify, Docker, Docker Compose", "summary": "多场会议共用场馆无线话筒时，载波本身没有重叠也可能因保护间隔不足产生串扰，协调员需要在进场前得到唯一的放行结论。 … 合法响应按设备编号排序输出保护区间；冲突对先将两个编号字典序排列，再按第一、第二编号升序去重返回，使协调员看到 accepted=true，或得到稳定且可逐项复核的越界设备与冲突对。"} -->
+## 0037 · venue-frequency-clearance-api
+
+- 创建时间：2026-09-12 09:45:30 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Go 1.25, Gin, testify, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+多场会议共用场馆无线话筒时，载波本身没有重叠也可能因保护间隔不足产生串扰，协调员需要在进场前得到唯一的放行结论。请从空仓库实现纯后端 API，接收 1 至 200 台设备，每台含唯一字符串编号、用途、整数中心频率 kHz 和带宽 kHz；用途仅 handheld、bodypack、ifb，对应两侧保护间隔固定为 125、175、250 kHz。带宽必须是 25 至 400 的正整数，设备占用区间定义为 [中心频率-floor(带宽/2), 中心频率+ceil(带宽/2)]，再向两侧加入该用途间隔；允许频段为闭区间 [470000,694000] kHz。任一保护区间越界即整份拒绝；两个闭区间端点相等也算冲突。采用 Go 与 Gin，实现区间裁决和可定位字段的错误反馈；单元测试在规则代码旁覆盖奇数带宽、端点相触及多重冲突，README 给出可复算示例，禁止固定结果或占位实现。Docker Compose 的 API 宿主端口由 API_PORT 覆盖，并提供名为 verify 的一次性验收服务。合法响应按设备编号排序输出保护区间；冲突对先将两个编号字典序排列，再按第一、第二编号升序去重返回，使协调员看到 accepted=true，或得到稳定且可逐项复核的越界设备与冲突对。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "8ebc290107c9", "repo_name": "saddle-stitch-imposition-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose", "summary": "印厂接单人员需要在拼版前形成可追溯的纸张成本报价，请从零加入报价模块，让报价单拥有独立编号、金额快照及待确认和已确认的生命周期。 … 自动化验收应证明一千册十六页画册在给定单价和损耗率下得到固定数量与金额，确认后数据可重新读取，并在非法计价参数、未知或重复确认时获得对应反馈。"} -->
+## 0034-3 · saddle-stitch-imposition-api
+
+- 创建时间：2026-09-12 10:40:31 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+印厂接单人员需要在拼版前形成可追溯的纸张成本报价，请从零加入报价模块，让报价单拥有独立编号、金额快照及待确认和已确认的生命周期。操作员通过 POST /quotes 提交总页数、印量、每张纸单价和损耗率，领域对象按每册纸张数、印量与向上取整后的损耗计算纸张总量，再以 Decimal 保留两位金额并持久化报价快照。确认采用报价时调用 POST /quotes/{quote_id}/confirm，只有待确认报价可转为已确认，未知编号返回 404，重复确认返回 409，错误体保持现有 FastAPI 错误结构且不改写原快照。请求模型拒绝布尔值、浮点单价、负数及多余字段，SQLite 仓储与迁移随应用启动复用同一进程，不引入新服务，原拼版、定位、健康检查和 API_PORT 配置继续可用。自动化验收应证明一千册十六页画册在给定单价和损耗率下得到固定数量与金额，确认后数据可重新读取，并在非法计价参数、未知或重复确认时获得对应反馈。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "e81bb3d27e4c", "repo_name": "accessible-egress-grid-verifier", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright", "summary": "礼堂路线核验通过后，现场人员还缺少记录轮椅按路线逐格试走耗时的工具，请实现独立的“通行实测”模块，以不可变路线快照和当前检查点作为核心数据。 … 未启动实测的路线核验、费力格选路及旧响应保持兼容，现有 web、api、verify 编排继续工作，宿主端口仍由 WEB_PORT、API_PORT 覆盖，verify 纳入新增后端、组件和端到端用例"} -->
+## 0029-4 · accessible-egress-grid-verifier
+
+- 创建时间：2026-09-12 11:01:53 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Docker, Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+礼堂路线核验通过后，现场人员还缺少记录轮椅按路线逐格试走耗时的工具，请实现独立的“通行实测”模块，以不可变路线快照和当前检查点作为核心数据。核验员从成功结果启动一次实测，输入到达下一格所用秒数并逐步确认，页面持续显示下一坐标、累计时间和完成进度，到达出口后锁定总耗时；Playwright 应从核验路线贯通到实测完成。后端在 API 进程内使用 SQLite 和建表迁移保存实测记录，只开放创建实测与推进检查点两个写接口，创建时校验路线至少两格且相邻坐标仅四方向移动，推进响应返回完整进度，pytest 验证跨请求累积与最终落库一致。秒数不是 1 至 3600 的整数、实测编号不存在或完成后继续推进时，返回现有字段级错误结构且数据不发生变化；前端把反馈留在实测面板，不清除原路线。未启动实测的路线核验、费力格选路及旧响应保持兼容，现有 web、api、verify 编排继续工作，宿主端口仍由 WEB_PORT、API_PORT 覆盖，verify 纳入新增后端、组件和端到端用例。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+

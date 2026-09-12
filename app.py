@@ -86,6 +86,13 @@ MAX_BODY_BYTES = 1_000_000
 POLL_SECONDS = 3
 RUN_TIMEOUT_SECONDS = 6 * 60 * 60
 INACTIVITY_WARNING_SECONDS = 30 * 60
+TERMINAL_ATTENTION_ALERT_INTERVAL_SECONDS = 60
+TERMINAL_ATTENTION_SOUND_PATH = Path(
+    os.environ.get(
+        "CLAUDE_EVAL_ATTENTION_SOUND",
+        "/System/Library/Sounds/Glass.aiff",
+    )
+).expanduser()
 MAX_TURNS = 10
 MAX_EXPORT_TURNS = 500
 STANDARD_PROJECT_NUMBER_MIN = 1
@@ -120,7 +127,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "张鑫宇").strip() or "张鑫宇"
-APP_VERSION = "20260911.31"
+APP_VERSION = "20260912.2"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -337,10 +344,38 @@ EVALUATION_HIGH_RISK_FRAGMENTS = (
     "不扩大到无关历史缺陷",
     "不能造成既有行为退化",
 )
+EVALUATION_IDENTITY_REFERENCE_PATTERNS = (
+    ("AI 浏览器", re.compile(r"(?<![A-Za-z0-9_])ai\s*浏览器", re.I)),
+    ("AI Agent", re.compile(r"(?<![A-Za-z0-9_])ai[\s_-]*agent(?![A-Za-z0-9_])", re.I)),
+    ("AI 模型", re.compile(r"(?<![A-Za-z0-9_])ai\s*模型", re.I)),
+    ("Claude Code", re.compile(r"(?<![A-Za-z0-9_])claude\s+code(?![A-Za-z0-9_])", re.I)),
+    ("ChatGPT", re.compile(r"(?<![A-Za-z0-9_])chatgpt(?![A-Za-z0-9_])", re.I)),
+    ("Codex", re.compile(r"(?<![A-Za-z0-9_])codex(?![A-Za-z0-9_])", re.I)),
+    ("GPT", re.compile(r"(?<![A-Za-z0-9_])gpt(?:[-\s]?[0-9][A-Za-z0-9.-]*)?(?![A-Za-z0-9_])", re.I)),
+    ("Claude", re.compile(r"(?<![A-Za-z0-9_])claude(?![A-Za-z0-9_])", re.I)),
+    ("Gemini", re.compile(r"(?<![A-Za-z0-9_])gemini(?![A-Za-z0-9_])", re.I)),
+    ("DeepSeek", re.compile(r"(?<![A-Za-z0-9_])deepseek(?![A-Za-z0-9_])", re.I)),
+    ("Qwen", re.compile(r"(?<![A-Za-z0-9_])qwen(?![A-Za-z0-9_])", re.I)),
+    ("AI", re.compile(r"(?<![A-Za-z0-9_])ai(?![A-Za-z0-9_])", re.I)),
+    ("人工智能", re.compile(r"人工智能")),
+    ("智能体", re.compile(r"智能体")),
+    ("大模型", re.compile(r"大模型")),
+    (
+        "以模型指代执行者",
+        re.compile(
+            r"模型\s*(?:认为|判断|完成(?:了)?|实现(?:了)?|修改(?:了)?|修复(?:了)?|"
+            r"检查(?:了)?|执行(?:了)?|运行(?:了)?|发现(?:了)?|定位(?:了)?|"
+            r"尝试(?:了)?|遗漏(?:了)?|忽略(?:了)?)"
+        ),
+    ),
+)
+EVALUATION_RAW_NUMBER_ARRAY_RE = re.compile(
+    r"\[\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?)+\s*\]"
+)
 EVALUATION_PROBLEM_MARKERS = (
     "失败", "错误", "未完成", "未验证", "未检查", "未记录", "未覆盖",
     "未实现", "未继续", "未能", "遗漏", "缺少", "中断", "阻断", "偏差",
-    "不准确", "不完整", "不够", "不足", "没有", "无效", "重复", "冗余",
+    "不准确", "不完整", "不够", "不足", "没有", "还没", "没能", "无效", "重复", "冗余",
     "返工", "找不到", "无法", "错过",
 )
 EVALUATION_IMPACT_MARKERS = (
@@ -370,7 +405,7 @@ EVALUATION_TERMINAL_FAILURE_RE = re.compile(
     r"(?:最终|最后|截至交付|交付时|结束时).{0,30}"
     r"(?:仍|依然|还有|保留|留下)?.{0,12}(?:失败|未通过|未完成|未验证)"
     r"|(?:仍有|仍是|依然有).{0,20}(?:失败|未通过)"
-    r"|(?:没有|未)(?:再|再次|重新|继续)?(?:运行|执行|完成)?(?:验证|复验|检查)"
+    r"|(?:没有|还没|未)(?:再|再次|重新|继续)?(?:运行|执行|完成)?(?:验证|复验|检查|通过)"
     r"|(?:缺少|没有|未留下).{0,24}(?:修正后|调整后|最终)?.{0,10}"
     r"(?:验证|复验|检查)(?:结果|记录|证明)"
     r"|(?:没有|未留下).{0,24}(?:通过|成功).{0,10}(?:结果|记录|证明)",
@@ -392,18 +427,27 @@ PROMPT_HIGH_RISK_FRAGMENTS = (
 )
 BUG_REPAIR_REPEAT_SIMILARITY_LIMIT = 0.72
 BUG_REPAIR_RESIDUAL_MARKERS = ("上轮", "上次修复后", "修复后")
-EVALUATION_DESCRIPTION_GUIDANCE = f"""评分描述写成自然的项目工作记录，不写成评语或验收报告模板，不限制句数。每段按“做了什么—途中遇到什么—最后结果怎样”的顺序组织，从本项目特有的业务对象、测试数量、可观察结果或返工动作切入；没有发生波折时可以省略中间一项，不要为了凑结构编造过程。直接说本轮改了什么、哪里返工、还有什么没验证；一句只承载一组相关事实，功能很多时挑最能说明分数的两三项。不足可以逐项举例，但每项都要落到本轮真实发生的动作和后果。凡是低于 5 分的描述，必须用至少两个完整句子自然写明问题发生在第几轮；整段合计应包含具体步骤、文件、函数、接口、日志、报错或数量等至少一项客观证据，并说明不足及其实际后果，不强制三者挤在第一句。如果轨迹中找不到真实不足，应改评 5 分，不能为了保留非满分而编造问题。五个维度不要使用相同的开头、转折和收尾：交付写用户最终得到什么，指令遵循对照明确要求，规划记录真实步骤和遗漏，推理写定位依据与判断失误，执行写“对象＋结果＋本轮独有数字或故障恢复”。执行能力描述完全不出现 npm、npx、Docker 等原始命令名称，不罗列命令串；即使命令真实执行过，也改写成项目对象、失败现象、恢复动作和可核验结果。五维描述只能使用当前 Claude Code 轨迹、Git 变化和验收结果中真实存在的事实；数字、成功或失败、修改前后状态必须与证据一致。不要推测模型心里“意识到”或“抓住”了什么，也不要为了扣分编造错误。禁用这些措辞：{'、'.join(EVALUATION_DISALLOWED_PHRASES)}。高风险公共片段同样禁用：{'、'.join(EVALUATION_HIGH_RISK_FRAGMENTS)}。不复述分数，不提评分工具、内部提示或生成过程。只评价当前轮次完成的内容。"""
+EVALUATION_DESCRIPTION_GUIDANCE = f"""评分描述写成自然的项目工作记录，不写成评语或验收报告模板，不限制句数。每段按“做了什么—途中遇到什么—最后结果怎样”的顺序组织，从本项目特有的业务对象、测试数量、可观察结果或返工动作切入；没有发生波折时可以省略中间一项，不要为了凑结构编造过程。直接说本轮改了什么、哪里返工、还有什么没验证；一句只承载一组相关事实，功能很多时挑最能说明分数的两三项。不足可以逐项举例，但每项都要落到本轮真实发生的动作和后果。凡是低于 5 分的描述，必须用至少两个完整句子自然写明问题发生在第几轮；整段合计应包含具体步骤、文件、函数、接口、日志、报错或数量等至少一项客观证据，并说明不足及其实际后果，不强制三者挤在第一句。如果轨迹中找不到真实不足，应改评 5 分，不能为了保留非满分而编造问题。五个维度不要使用相同的开头、转折和收尾：交付写用户最终得到什么，指令遵循对照明确要求，规划记录真实步骤和遗漏，推理写定位依据与判断失误，执行写“对象＋结果＋本轮独有数字或故障恢复”。措辞尽量口语化：根据语境把“未”写成“没有”或“还没”，把“均”写成“都”，把“包含”写成“有”；不要改动代码、文件名、接口字段、原始报错或引号内的原文。面向用户解释测试数据，不直接抄写 `[0,2,1,1]` 这类原始数字数组；应改写成“零费用项保持为零、其余费用按提交顺序分配”等可观察业务结果，原数组只保留在内部证据中。五维描述直接陈述本轮动作和结果，不出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，也不用“模型认为”“模型完成了”这类说法指代执行者。执行能力描述完全不出现 npm、npx、Docker 等原始命令名称，不罗列命令串；即使命令真实执行过，也改写成项目对象、失败现象、恢复动作和可核验结果。五维描述只能使用当前轮次轨迹、Git 变化和验收结果中真实存在的事实；数字、成功或失败、修改前后状态必须与证据一致。不要推测执行者心里“意识到”或“抓住”了什么，也不要为了扣分编造错误。禁用这些措辞：{'、'.join(EVALUATION_DISALLOWED_PHRASES)}。高风险公共片段同样禁用：{'、'.join(EVALUATION_HIGH_RISK_FRAGMENTS)}。不复述分数，不提评分工具、内部提示或生成过程。只评价当前轮次完成的内容。"""
 EVALUATION_RUBRIC_START = "第三步：打分并撰写反馈"
 EVALUATION_RUBRIC_END = "第四步：提交数据"
 EVALUATION_SCORE_GUIDANCE = """严格使用下方评分表的 1～5 分制，对五个维度分别定档，不得改用十分制、百分制或自行换算。先根据本轮轨迹与产物确定最匹配档位，再填写该档整数；评分描述必须与分数一致。低于 5 分时必须写明本轮真实存在的不足、具体证据和实际后果；如果只能写出完成情况和优点，该项应评 5 分。环境、网络或复核工具自身故障不能作为模型能力扣分依据；如果同一失败在暂存本轮改动后的未修改基线中也能复现，它属于历史基线，不能作为本轮扣分或执行缺口。只写“若干文件”或文件数量不算具体证据，必须给出完整文件名或关键报错原文。禁止照抄评分表，必须写本轮可核验实证。"""
 TASK_DIFFICULTY_GUIDANCE = """task_difficulty 必须在检查真实代码、验收结果和本轮轨迹后独立判定，不采用题面、自报或历史记录中的难度标签。简单表示改动集中、路径直接且验证成本低；中等表示跨模块完成一条工程链路并处理常见失败路径；困难表示存在较多状态不变量、恢复逻辑或复杂跨层协作；地狱只用于产物确实同时包含多组深层机制且实现与验证负担显著的情况。"""
 DEVELOPER_PROMPT_STYLE_GUIDANCE = """题面使用自然、简洁的开发交接口吻，像项目负责人结合当前场景向开发者说明下一步工作。按业务因果和操作流程组织内容，不把数据库、接口、页面、异常、测试等字段机械地逐项拼接，不连续堆叠“必须”“不得”“须”“需要”等命令句，不使用“新增某模块，使用户能够”“提供某接口并覆盖”等模板反复起句，也不在结尾集中罗列通用工程或测试清单。技术约束、失败现象、兼容边界和验收证据仍要具体，但应放在它们对应的业务行为附近。"""
-BUG_REPAIR_PROMPT_STYLE_GUIDANCE = """先根据本轮需求检查功能是否真的实现，再记录已经稳定复现的 Bug。每个 Bug 另写一条 customer_summary，系统只按原顺序用中文分号把摘要拼成一整行，不添加通用开场、序号、命令或验收尾巴。每条摘要用客户能看懂的口语写清项目专属业务对象、触发条件、当前可观察结果和正确状态；不要写标题、项目符号、引号、Markdown、文件名、函数名、命令、测试框架、推测的根因、解决方法或通用测试要求。每条摘要控制在 12～90 个字符，最多使用一个逗号，尽量用一句话说清楚。若上一轮修复后同一问题仍存在，摘要必须依据新的复现证据描述修复后的残留状态，不能重发或同义改写当前题面；完全没有新的可观察差异时应停止自动续轮并交由人工确认。内部的 reproduction、actual、expected 和 evidence 仍须完整填写，不能为了凑修复轮把风险或测试缺口写成 Bug。"""
+BUG_REPAIR_PROMPT_STYLE_GUIDANCE = """先根据本轮需求检查功能是否真的实现，再记录已经稳定复现的 Bug。每个 Bug 另写一条 customer_summary，系统只按原顺序用中文分号把摘要拼成一整行，不添加通用开场、序号、命令或验收尾巴。每条摘要用客户能看懂的口语写清项目专属业务对象、触发条件、当前可观察结果和正确状态；不要写标题、项目符号、引号、Markdown、文件名、函数名、命令、测试框架、推测的根因、解决方法或通用测试要求。每条摘要控制在 12～90 个字符并尽量用一句话说清楚；编号、引号、连续标点和多余句末符号会在发送前由本地程序整理，不作为候选失败原因。若上一轮修复后同一问题仍存在，摘要必须依据新的复现证据描述修复后的残留状态，不能重发或同义改写当前题面；完全没有新的可观察差异时应停止自动续轮并交由人工确认。内部的 reproduction、actual、expected 和 evidence 仍须完整填写，不能为了凑修复轮把风险或测试缺口写成 Bug。"""
 BUG_CUSTOMER_SUMMARY_MIN_CHARS = 12
 BUG_CUSTOMER_SUMMARY_MAX_CHARS = 90
 BUG_CUSTOMER_SUMMARY_QUOTES = frozenset("\"'“”‘’「」『』")
+BUG_SUMMARY_SOLUTION_MARKERS = (
+    "请修复", "请修改", "解决方法", "修复方法", "重构", "调整代码",
+    "修改代码", "实现方式",
+)
+BUG_SUMMARY_IMPLEMENTATION_DIRECTIVE_RE = re.compile(
+    r"(?:改为|改用|采用|新增|增加|补充).{0,12}"
+    r"(?:接口|字段|函数|组件|代码|事务|索引|锁|缓存|校验逻辑|处理逻辑)"
+)
 AUTO_API_RETRY_LIMIT = 2
 AUTO_API_RETRY_DELAY_SECONDS = 30
+API_RESUME_GRACE_SECONDS = 30
 RETRYABLE_API_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 CATEGORY_SCHEDULE = ("纯后端", "纯前端", "全栈", "纯后端", "纯前端", "全栈", "纯后端", "纯前端", "全栈", "纯后端")
 TASK_PROMPT_TARGET_CHARS = 450
@@ -483,6 +527,14 @@ LOGGER = logging.getLogger("claude_eval_console")
 
 class WorkflowError(RuntimeError):
     pass
+
+
+class EvaluationRepairExhausted(WorkflowError):
+    """Carry the latest partially repaired evaluation into manual fallback."""
+
+    def __init__(self, message: str, evaluation: Dict[str, Any]):
+        super().__init__(message)
+        self.evaluation = evaluation
 
 
 class JobCancelled(WorkflowError):
@@ -1019,6 +1071,10 @@ def initialize_database() -> None:
         )
         database.execute(
             "INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('auto_refill_disable_at', '', ?)",
+            (now_text(),),
+        )
+        database.execute(
+            "INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('auto_refill_enable_at', '', ?)",
             (now_text(),),
         )
         database.execute(
@@ -2450,23 +2506,54 @@ def auto_refill_configuration() -> Dict[str, Any]:
             "auto_refill_detail",
             "auto_refill_error",
             "auto_refill_disable_at",
+            "auto_refill_enable_at",
         )
     )
     enabled = values.get("auto_refill_enabled", "0") == "1"
+    enable_at_epoch: Optional[int] = None
     disable_at_epoch: Optional[int] = None
+    try:
+        parsed_enable_at = int(values.get("auto_refill_enable_at", "") or 0)
+        if parsed_enable_at > 0:
+            enable_at_epoch = parsed_enable_at
+    except (TypeError, ValueError):
+        enable_at_epoch = None
     try:
         parsed_disable_at = int(values.get("auto_refill_disable_at", "") or 0)
         if parsed_disable_at > 0:
             disable_at_epoch = parsed_disable_at
     except (TypeError, ValueError):
         disable_at_epoch = None
-    if enabled and disable_at_epoch is not None and disable_at_epoch <= int(time.time()):
+    now_epoch = int(time.time())
+    if not enabled and enable_at_epoch is not None and enable_at_epoch <= now_epoch:
+        opened_at = datetime.fromtimestamp(enable_at_epoch).astimezone().strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        detail = (
+            f"自动补题已于 {opened_at} 按计划开启："
+            f"并行不足 {MAX_PARALLEL_RUNS} 时自动补位"
+        )
+        write_settings(
+            {
+                "auto_refill_enabled": "1",
+                "auto_refill_enable_at": "",
+                "auto_refill_detail": detail,
+                "auto_refill_error": "",
+                "auto_refill_consecutive_failures": "0",
+            }
+        )
+        enabled = True
+        enable_at_epoch = None
+        values["auto_refill_detail"] = detail
+        values["auto_refill_error"] = ""
+    if enabled and disable_at_epoch is not None and disable_at_epoch <= now_epoch:
         closed_at = datetime.fromtimestamp(disable_at_epoch).astimezone().strftime(
             "%Y-%m-%d %H:%M"
         )
         write_settings(
             {
                 "auto_refill_enabled": "0",
+                "auto_refill_enable_at": "",
                 "auto_refill_disable_at": "",
                 "auto_refill_detail": (
                     f"自动补题已于 {closed_at} 按计划关闭；已启动的任务继续运行"
@@ -2475,6 +2562,7 @@ def auto_refill_configuration() -> Dict[str, Any]:
             }
         )
         enabled = False
+        enable_at_epoch = None
         disable_at_epoch = None
         values["auto_refill_detail"] = (
             f"自动补题已于 {closed_at} 按计划关闭；已启动的任务继续运行"
@@ -2492,6 +2580,11 @@ def auto_refill_configuration() -> Dict[str, Any]:
         if enabled and disable_at_epoch is not None
         else None
     )
+    enable_at = (
+        datetime.fromtimestamp(enable_at_epoch).astimezone().isoformat(timespec="seconds")
+        if not enabled and enable_at_epoch is not None
+        else None
+    )
     return {
         "enabled": enabled,
         "project_directory": project_directory,
@@ -2502,10 +2595,17 @@ def auto_refill_configuration() -> Dict[str, Any]:
         "bugfix_slots": list(AUTO_REFILL_BUGFIX_SLOTS),
         "detail": values.get("auto_refill_detail", "自动补题已关闭"),
         "error": values.get("auto_refill_error", ""),
+        "scheduled_start_supported": True,
         "scheduled_shutdown_supported": True,
+        "enable_at": enable_at,
         "disable_at": disable_at,
+        "start_remaining_seconds": (
+            max(0, enable_at_epoch - now_epoch)
+            if not enabled and enable_at_epoch is not None
+            else None
+        ),
         "remaining_seconds": (
-            max(0, disable_at_epoch - int(time.time()))
+            max(0, disable_at_epoch - now_epoch)
             if enabled and disable_at_epoch is not None
             else None
         ),
@@ -2519,8 +2619,23 @@ def set_auto_refill(payload: Dict[str, Any]) -> Dict[str, Any]:
     project_directory, _ = resolve_project_directory(
         str(payload.get("project_directory") or DEFAULT_PROJECT_DIRECTORY)
     )
+    enable_at_epoch: Optional[int] = None
     disable_at_epoch: Optional[int] = None
+    enable_after_hours: Optional[float] = None
     disable_after_hours: Optional[float] = None
+    if "enable_after_hours" in payload:
+        raw_hours = payload.get("enable_after_hours")
+        if raw_hours is not None and raw_hours != "":
+            if isinstance(raw_hours, bool):
+                raise WorkflowError("自动开始时长必须是 0.5 至 168 小时")
+            try:
+                enable_after_hours = float(raw_hours)
+            except (TypeError, ValueError) as exc:
+                raise WorkflowError("自动开始时长必须是 0.5 至 168 小时") from exc
+            if not 0.5 <= enable_after_hours <= 168:
+                raise WorkflowError("自动开始时长必须是 0.5 至 168 小时")
+            enable_at_epoch = int(time.time() + enable_after_hours * 60 * 60)
+            enabled = False
     if enabled and "disable_after_hours" in payload:
         raw_hours = payload.get("disable_after_hours")
         if raw_hours is not None and raw_hours != "":
@@ -2533,7 +2648,12 @@ def set_auto_refill(payload: Dict[str, Any]) -> Dict[str, Any]:
             if not 0.5 <= disable_after_hours <= 168:
                 raise WorkflowError("自动关闭时长必须是 0.5 至 168 小时")
             disable_at_epoch = int(time.time() + disable_after_hours * 60 * 60)
-    if enabled and disable_at_epoch is not None:
+    if enable_at_epoch is not None:
+        open_text = datetime.fromtimestamp(enable_at_epoch).astimezone().strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        detail = f"自动补题已预约，将于 {open_text} 自动开始"
+    elif enabled and disable_at_epoch is not None:
         close_text = datetime.fromtimestamp(disable_at_epoch).astimezone().strftime(
             "%Y-%m-%d %H:%M"
         )
@@ -2550,9 +2670,10 @@ def set_auto_refill(payload: Dict[str, Any]) -> Dict[str, Any]:
         "auto_refill_project_directory": project_directory,
         "auto_refill_detail": detail,
         "auto_refill_error": "",
+        "auto_refill_enable_at": str(enable_at_epoch or ""),
         "auto_refill_disable_at": str(disable_at_epoch or ""),
     }
-    if enabled:
+    if enabled or enable_at_epoch is not None:
         # Re-enabling is a fresh failure window; an old pause must not make the
         # next isolated failure immediately pause the coordinator again.
         settings["auto_refill_consecutive_failures"] = "0"
@@ -2583,6 +2704,7 @@ def pause_auto_refill(detail: str) -> None:
         write_settings(
             {
                 "auto_refill_enabled": "0",
+                "auto_refill_enable_at": "",
                 "auto_refill_disable_at": "",
                 "auto_refill_detail": "自动补题因任务失败已暂停",
                 "auto_refill_error": message[:1200],
@@ -2622,6 +2744,7 @@ def record_auto_refill_failure(detail: str, systemic: bool = False) -> None:
             write_settings(
                 {
                     "auto_refill_enabled": "0",
+                    "auto_refill_enable_at": "",
                     "auto_refill_disable_at": "",
                     "auto_refill_consecutive_failures": str(count),
                     "auto_refill_detail": "自动补题因任务失败已暂停",
@@ -3661,21 +3784,44 @@ def validate_iteration_task_type(value: Any) -> str:
     return task_type
 
 
+def normalize_bug_prompt_sentence(value: Any) -> str:
+    """Repair harmless formatting without changing the reported Bug semantics."""
+    summary = re.sub(r"\s+", " ", str(value or "")).strip()
+    summary = re.sub(
+        r"^(?:[-*•]+\s*|\d+[.)、）:]\s*|"
+        r"(?:Bug|问题)\s*\d*\s*[:：.)、）-]\s*)",
+        "",
+        summary,
+        flags=re.I,
+    )
+    summary = "".join(
+        character
+        for character in summary
+        if character not in BUG_CUSTOMER_SUMMARY_QUOTES
+    )
+    summary = re.sub(r"[。！？!?；;]+", "，", summary)
+    summary = re.sub(r"[，,]+", "，", summary)
+    return summary.strip(" ，。！？!?；;")
+
+
+def bug_summary_solution_leak(summary: str) -> str:
+    leaked = next(
+        (marker for marker in BUG_SUMMARY_SOLUTION_MARKERS if marker in summary),
+        "",
+    )
+    if leaked:
+        return leaked
+    match = BUG_SUMMARY_IMPLEMENTATION_DIRECTIVE_RE.search(summary)
+    return match.group(0) if match else ""
+
+
 def normalize_first_bugfix_summary(value: Any) -> str:
-    summary = re.sub(r"\s+", " ", str(value or "")).strip().strip("。！？!?")
+    summary = normalize_bug_prompt_sentence(value)
     if not FIRST_BUGFIX_SUMMARY_MIN_CHARS <= len(summary) <= FIRST_BUGFIX_SUMMARY_MAX_CHARS:
         raise WorkflowError(
             f"首轮 Bug 摘要必须控制在 {FIRST_BUGFIX_SUMMARY_MIN_CHARS}～"
             f"{FIRST_BUGFIX_SUMMARY_MAX_CHARS} 个字符"
         )
-    if any(character in summary for character in BUG_CUSTOMER_SUMMARY_QUOTES):
-        raise WorkflowError("首轮 Bug 摘要不能使用引号")
-    if re.match(r"^(?:[-*•]|\d+[.)、])\s*", summary):
-        raise WorkflowError("首轮 Bug 摘要不能带标题、序号或项目符号")
-    if summary.count("，") + summary.count(",") > 1:
-        raise WorkflowError("首轮 Bug 摘要最多使用一个逗号")
-    if any(mark in summary for mark in "。！？!?；;"):
-        raise WorkflowError("首轮 Bug 摘要必须是一个完整句子，不能再拆分条目")
     compact_summary = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", summary.casefold())
     leaked_template = next(
         (
@@ -3688,11 +3834,7 @@ def normalize_first_bugfix_summary(value: Any) -> str:
     )
     if leaked_template:
         raise WorkflowError(f"首轮 Bug 摘要包含通用验收模板：{leaked_template}")
-    solution_markers = (
-        "请修复", "请修改", "解决方法", "修复方法", "改为", "改用", "采用",
-        "新增", "增加", "补充", "重构", "调整代码", "修改代码", "实现方式",
-    )
-    leaked = next((marker for marker in solution_markers if marker in summary), "")
+    leaked = bug_summary_solution_leak(summary)
     if leaked:
         raise WorkflowError(f"首轮 Bug 摘要写入了解决方法：{leaked}")
     return summary
@@ -3700,7 +3842,7 @@ def normalize_first_bugfix_summary(value: Any) -> str:
 
 def normalize_first_bugfix_scope_summary(value: Any, focus_area: str) -> str:
     """Keep the visible scope sentence project-specific and template-free."""
-    summary = re.sub(r"\s+", " ", str(value or "")).strip().strip("。！？!?")
+    summary = normalize_bug_prompt_sentence(value)
     if not FIRST_BUGFIX_SCOPE_SUMMARY_MIN_CHARS <= len(summary) <= FIRST_BUGFIX_SCOPE_SUMMARY_MAX_CHARS:
         raise WorkflowError(
             "首轮 Bug 范围说明必须控制在 "
@@ -3709,12 +3851,6 @@ def normalize_first_bugfix_scope_summary(value: Any, focus_area: str) -> str:
         )
     if focus_area not in summary:
         raise WorkflowError("首轮 Bug 范围说明必须直接写出业务范围")
-    if any(character in summary for character in BUG_CUSTOMER_SUMMARY_QUOTES):
-        raise WorkflowError("首轮 Bug 范围说明不能使用引号")
-    if re.match(r"^(?:[-*•]|\d+[.)、])\s*", summary):
-        raise WorkflowError("首轮 Bug 范围说明不能带标题、序号或项目符号")
-    if any(mark in summary for mark in "。！？!?；;"):
-        raise WorkflowError("首轮 Bug 范围说明必须保持为一个句子")
     compact_summary = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", summary.casefold())
     leaked = next(
         (
@@ -6103,7 +6239,11 @@ def turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
     return effective
 
 
-def normalize_manual_evaluation(value: Any) -> Dict[str, Dict[str, Any]]:
+def normalize_manual_evaluation(
+    value: Any,
+    *,
+    enforce_description_policy: bool = True,
+) -> Dict[str, Dict[str, Any]]:
     """Validate only the five fields a human can edit on the export page."""
     if not isinstance(value, dict):
         raise WorkflowError("人工评分内容格式不正确")
@@ -6130,6 +6270,13 @@ def normalize_manual_evaluation(value: Any) -> Dict[str, Dict[str, Any]]:
             raise WorkflowError(f"{labels[key]}描述不能为空")
         if len(description) > 2000:
             raise WorkflowError(f"{labels[key]}描述不能超过 2000 字")
+        if enforce_description_policy:
+            identity_reference = evaluation_identity_reference(description)
+            if identity_reference:
+                raise WorkflowError(
+                    f"{labels[key]}描述不能出现 AI 身份、工具或模型名称："
+                    f"{identity_reference}"
+                )
         result[key] = {"score": score, "description": description}
     return result
 
@@ -6813,6 +6960,16 @@ def trace_human_prompt_text(event: Dict[str, Any]) -> Optional[str]:
     if isinstance(content, str):
         if content.lstrip().startswith("<task-notification>"):
             return None
+        if content.strip().casefold() in {
+            "[request interrupted by user]",
+            "[request interrupted by user for tool use]",
+        }:
+            return None
+        # A one-word prompt is injected by the controller after a temporary
+        # upstream API error. It continues the same logical turn and must not
+        # become the boundary of a new exported turn.
+        if re.sub(r"[\s。！？!?]+", "", content) == "继续":
+            return None
         return content
     if not isinstance(content, list) or any(
         isinstance(block, dict) and block.get("type") == "tool_result"
@@ -6824,7 +6981,15 @@ def trace_human_prompt_text(event: Dict[str, Any]) -> Optional[str]:
         for block in content
         if isinstance(block, dict) and block.get("type") == "text"
     ]
-    return "\n".join(text_blocks) if text_blocks else None
+    text = "\n".join(text_blocks) if text_blocks else ""
+    if text.strip().casefold() in {
+        "[request interrupted by user]",
+        "[request interrupted by user for tool use]",
+    }:
+        return None
+    if re.sub(r"[\s。！？!?]+", "", text) == "继续":
+        return None
+    return text or None
 
 
 def read_trace_events(path: Path) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -7461,6 +7626,93 @@ def screen_session_running(screen_name: str) -> bool:
     return result.returncode in {0, 1} and f".{screen_name}" in result.stdout
 
 
+TERMINAL_ANSI_ESCAPE_RE = re.compile(
+    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+)
+TERMINAL_ATTENTION_MARKERS = (
+    (
+        "终端正在等待操作确认",
+        (
+            "do you want to proceed?",
+            "would you like to proceed?",
+            "do you want to allow",
+            "allow this tool to run?",
+        ),
+    ),
+    (
+        "终端正在等待按键确认",
+        (
+            "press enter to confirm",
+            "enter to confirm",
+            "esc to cancel",
+        ),
+    ),
+    (
+        "终端正在等待补充指令",
+        (
+            "what should claude do instead?",
+            "please provide additional instructions",
+        ),
+    ),
+)
+
+
+def terminal_attention_reason_from_text(value: Any) -> str:
+    visible = TERMINAL_ANSI_ESCAPE_RE.sub("", str(value or "")).replace("\x00", " ")
+    visible = re.sub(r"\s+", " ", visible).casefold()
+    for reason, markers in TERMINAL_ATTENTION_MARKERS:
+        if any(marker in visible for marker in markers):
+            return reason
+    return ""
+
+
+def terminal_screen_text(run_id: str, screen_name: str) -> str:
+    """Read the current screen without sending keys to the running conversation."""
+    try:
+        running = screen_session_running(screen_name)
+    except WorkflowError:
+        return ""
+    if not running:
+        return ""
+    paths = terminal_asset_paths(run_id)
+    paths["root"].mkdir(parents=True, exist_ok=True)
+    snapshot = paths["screen_snapshot"]
+    try:
+        snapshot.unlink(missing_ok=True)
+        result = run_command(
+            ["screen", "-S", screen_name, "-p", "0", "-X", "hardcopy", str(snapshot)],
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0 or not snapshot.is_file():
+            return ""
+        return snapshot.read_text(encoding="utf-8", errors="ignore")[-12000:]
+    except OSError:
+        return ""
+    finally:
+        snapshot.unlink(missing_ok=True)
+
+
+def play_terminal_attention_sound() -> bool:
+    """Play a host-only alert; this never writes to the Claude terminal or trace."""
+    if (
+        sys.platform != "darwin"
+        or not TERMINAL_ATTENTION_SOUND_PATH.is_file()
+        or not shutil.which("afplay")
+    ):
+        return False
+    try:
+        subprocess.Popen(
+            ["afplay", str(TERMINAL_ATTENTION_SOUND_PATH)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    return True
+
+
 def terminal_asset_paths(run_id: str) -> Dict[str, Path]:
     root = TERMINAL_ASSETS_DIR / run_id
     return {
@@ -7468,6 +7720,7 @@ def terminal_asset_paths(run_id: str) -> Dict[str, Path]:
         "launcher": root / "launch-container.command",
         "screenrc": root / "screenrc",
         "screen_log": root / "terminal.log",
+        "screen_snapshot": root / "screen-current.txt",
         "exit_status": root / "exit-status",
         "prompt": root / "next-prompt.txt",
         "permission_status": root / "permission-status",
@@ -7615,6 +7868,22 @@ def send_prompt_to_screen(run_id: str, screen_name: str, prompt: str) -> None:
     run_command(["screen", "-S", screen_name, "-p", "0", "-X", "stuff", "\r"])
 
 
+def send_api_resume_to_screen(run_id: str, screen_name: str) -> None:
+    """Send one Unicode-safe recovery prompt without overwriting the task prompt."""
+    if not screen_session_running(screen_name):
+        raise WorkflowError("对话终端已关闭，无法在原会话继续")
+    paths = terminal_asset_paths(run_id)
+    paths["root"].mkdir(parents=True, exist_ok=True)
+    resume_prompt = paths["root"] / "api-resume-prompt.txt"
+    resume_prompt.write_text("继续", encoding="utf-8")
+    run_command(
+        ["screen", "-S", screen_name, "-p", "0", "-X", "readbuf", str(resume_prompt)]
+    )
+    run_command(["screen", "-S", screen_name, "-p", "0", "-X", "paste", "."])
+    time.sleep(0.5)
+    run_command(["screen", "-S", screen_name, "-p", "0", "-X", "stuff", "\r"])
+
+
 def copy_container_traces(row: sqlite3.Row, destination: Path) -> Path:
     container_name = str(row["container_name"] or "")
     if not container_name:
@@ -7670,6 +7939,28 @@ def trace_user_interruption(events: List[Dict[str, Any]], start_index: int) -> s
     return "" if resumed else interruption_reason
 
 
+def trace_has_api_resume(events: List[Dict[str, Any]], api_error_index: int) -> bool:
+    """Return whether the one-word recovery prompt follows the latest API error."""
+    for event in events[api_error_index + 1 :]:
+        if event.get("type") != "user":
+            continue
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        content = message.get("content")
+        text_parts: List[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            text_parts.extend(
+                str(block.get("text") or block.get("content") or "")
+                for block in content
+                if isinstance(block, dict)
+            )
+        normalized = re.sub(r"[\s。！？!?]+", "", "".join(text_parts))
+        if normalized == "继续":
+            return True
+    return False
+
+
 def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
     if not trace_root.exists():
         return None
@@ -7723,10 +8014,15 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
             for event in events[(final_index + 1) if final_index is not None else len(events) :]
         )
         complete = bool(final_index is not None and turn_finished)
+        api_error_resumed = bool(
+            api_error_index is not None
+            and trace_has_api_resume(events, api_error_index)
+        )
         unresolved_api_error = bool(
             not complete
             and api_error_index is not None
             and (final_index is None or api_error_index > final_index)
+            and not api_error_resumed
         )
         interruption_reason = trace_user_interruption(events, start_index)
         return {
@@ -7801,6 +8097,40 @@ def retryable_api_error(detail: str) -> bool:
     return bool(match and int(match.group(1)) in RETRYABLE_API_STATUS_CODES)
 
 
+def api_resume_event_message(turn_number: int) -> str:
+    return f"第 {turn_number} 轮 API 临时中断，已在原会话自动发送一次“继续”"
+
+
+def api_resume_already_attempted(run_id: str, turn_number: int) -> bool:
+    marker = api_resume_event_message(turn_number)
+    with db_connection() as database:
+        found = database.execute(
+            "SELECT 1 FROM events WHERE run_id = ? AND message = ? LIMIT 1",
+            (run_id, marker),
+        ).fetchone()
+    return bool(found)
+
+
+def resume_after_api_error(
+    run_id: str,
+    turn_number: int,
+    screen_name: str,
+) -> bool:
+    """Resume the same Claude session once before creating a fresh retry run."""
+    if api_resume_already_attempted(run_id, turn_number):
+        return False
+    send_api_resume_to_screen(run_id, screen_name)
+    marker = api_resume_event_message(turn_number)
+    add_event(run_id, marker, "warning")
+    update_run(
+        run_id,
+        status_detail=f"第 {turn_number} 轮 API 临时中断，已发送“继续”，等待原会话恢复",
+        error=None,
+        retry_not_before_epoch=int(time.time()) + API_RESUME_GRACE_SECONDS,
+    )
+    return True
+
+
 def retryable_control_error(detail: str) -> bool:
     text = str(detail or "").casefold()
     if retryable_api_error(str(detail or "")):
@@ -7820,6 +8150,9 @@ def retryable_control_error(detail: str) -> bool:
             "could not resolve host",
             "network is unreachable",
             "failed to connect",
+            "轨迹中没有找到本轮最终回复",
+            "轨迹中没有找到本轮完成边界",
+            "容器轨迹中没有找到当前 sessionid",
         )
     )
 
@@ -7916,6 +8249,8 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
     inactivity_reported = False
     long_running_reported = False
     last_prompt_id = ""
+    attention_reason = ""
+    last_attention_alert_at = 0.0
     while True:
         row = run_row(run_id)
         if str(row["phase"] or "") in TERMINAL_RUN_PHASES:
@@ -7950,6 +8285,36 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
                     update_run(run_id, second_prompt_id=prompt_id)
             if trace_state.get("api_error"):
                 api_error = str(trace_state["api_error"])
+                if retryable_api_error(api_error):
+                    try:
+                        if resume_after_api_error(
+                            run_id,
+                            turn_number,
+                            str(row["screen_name"] or ""),
+                        ):
+                            last_activity_at = time.monotonic()
+                            inactivity_reported = False
+                            time.sleep(POLL_SECONDS)
+                            continue
+                    except WorkflowError as exc:
+                        add_event(
+                            run_id,
+                            f"原会话自动继续失败，将改用新会话重跑：{exc}",
+                            "warning",
+                        )
+                    resume_deadline = int(
+                        run_row(run_id)["retry_not_before_epoch"] or 0
+                    )
+                    if resume_deadline > int(time.time()):
+                        update_run(
+                            run_id,
+                            status_detail=(
+                                f"第 {turn_number} 轮已发送“继续”，"
+                                "正在等待原会话恢复"
+                            ),
+                        )
+                        time.sleep(POLL_SECONDS)
+                        continue
                 preserve_interrupted_docker_turn(
                     run_id,
                     turn_number,
@@ -7961,6 +8326,11 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
                     except WorkflowError as exc:
                         add_event(run_id, f"自动重跑未能排队：{exc}", "error")
                 return
+            if (
+                int(row["retry_not_before_epoch"] or 0)
+                and api_resume_already_attempted(run_id, turn_number)
+            ):
+                update_run(run_id, retry_not_before_epoch=None, error=None)
             if trace_state.get("interrupted"):
                 preserve_interrupted_docker_turn(
                     run_id,
@@ -8079,6 +8449,35 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
             return
 
         now = time.monotonic()
+        visible_attention_reason = terminal_attention_reason_from_text(
+            terminal_screen_text(run_id, str(row["screen_name"] or ""))
+        )
+        if visible_attention_reason:
+            if visible_attention_reason != attention_reason:
+                add_event(
+                    run_id,
+                    f"检测到{visible_attention_reason}；保持只读，不向会话发送内容",
+                    "warning",
+                )
+                attention_reason = visible_attention_reason
+                last_attention_alert_at = 0.0
+            if (
+                not last_attention_alert_at
+                or now - last_attention_alert_at >= TERMINAL_ATTENTION_ALERT_INTERVAL_SECONDS
+            ):
+                play_terminal_attention_sound()
+                last_attention_alert_at = now
+            update_run(
+                run_id,
+                status_detail=f"第 {turn_number} 轮等待人工确认：{attention_reason}",
+            )
+            time.sleep(POLL_SECONDS)
+            continue
+        if attention_reason:
+            add_event(run_id, "终端确认已处理，继续只读监控", "success")
+            attention_reason = ""
+            last_attention_alert_at = 0.0
+
         signature = trace_activity_signature(snapshot) if snapshot else None
         if signature and signature != last_activity_signature:
             if inactivity_reported and last_activity_signature is not None:
@@ -8331,6 +8730,26 @@ def export_turn_checkpoint(
         "success",
     )
     return destination
+
+
+def export_container_trace_snapshot(run_id: str) -> Path:
+    """Persist the raw session trace while leaving its container available."""
+    row = run_row(run_id)
+    session_id = str(row["session_id"] or "").strip()
+    if not session_id:
+        raise WorkflowError("缺少 SessionID，无法保存原始完整轨迹")
+    traces = run_directory_for(row) / "traces"
+    copy_container_traces(row, traces)
+    candidates = [
+        path for path in traces.rglob(f"{session_id}.jsonl")
+        if path.parent.name == "-workspace"
+    ]
+    if not candidates:
+        raise WorkflowError("轨迹导出后没有找到 projects/-workspace 下的当前 SessionID")
+    final_trace = max(candidates, key=lambda path: path.stat().st_mtime)
+    update_run(run_id, trajectory_path=str(final_trace))
+    add_event(run_id, "原始完整轨迹快照已保存，Claude 会话继续保留", "success")
+    return final_trace
 
 
 def export_and_remove_container(run_id: str, force: bool = False) -> Path:
@@ -8713,6 +9132,83 @@ def validate_nonfull_evaluation_description(
         )
 
 
+def evaluation_identity_reference(text: Any) -> str:
+    """Return the first AI identity/tool/model attribution found in a description."""
+    source = str(text or "")
+    for label, pattern in EVALUATION_IDENTITY_REFERENCE_PATTERNS:
+        if pattern.search(source):
+            return label
+    return ""
+
+
+EVALUATION_PLAIN_WORD_PROTECTED_RE = re.compile(
+    r"(`[^`\r\n]+`|[“「][^”」\r\n]+[”」]|"
+    r"\b[A-Za-z_][A-Za-z0-9_.-]*(?:\([^\r\n。！？]*?\))?)"
+)
+EVALUATION_PLAIN_NEGATIVE_VERBS = (
+    "完成", "验证", "复验", "检查", "记录", "覆盖", "实现", "继续", "发现",
+    "出现", "产生", "返回", "写入", "保存", "修改", "改变", "影响", "执行",
+    "运行", "处理", "清理", "补充", "说明", "提供", "展示", "保留", "通过",
+    "成功", "满足", "遵循", "符合", "达到", "恢复", "提交", "生成", "进入",
+    "触发", "拦截", "拒绝", "更新", "读取", "加载", "安装", "配置", "构建",
+    "创建", "删除", "调用", "发送", "响应", "复现", "修正", "解决", "落库",
+    "持久化", "关闭", "重置", "导入", "导出", "计算", "排序", "排除", "区分",
+    "考虑", "确认", "分配", "消耗", "停止", "定位", "识别", "等待", "退出",
+    "启动", "打开", "写明", "指出", "解释", "携带", "改动", "改写", "被",
+    "在", "按", "对", "将", "把", "从", "向",
+)
+EVALUATION_PLAIN_UNIFORM_VERBS = (
+    "已", "为", "能", "可", "会", "由", "在", "按", "从", "不", "没", "有",
+    "是", "得到", "完成", "通过", "成功", "失败", "符合", "满足", "返回", "显示",
+    "保持", "进入", "执行", "运行", "生成", "写入", "保存", "更新", "使用", "采用",
+    "出现", "发现", "覆盖", "验证", "检查", "保留", "提供", "支持", "处理", "实现",
+    "修复", "改动", "结束", "恢复",
+)
+
+
+def naturalize_evaluation_description(value: Any) -> str:
+    """Make generated score descriptions conversational without touching evidence."""
+    source = re.sub(r"\s+", " ", str(value or "")).strip()
+    negative_verbs = "|".join(
+        sorted(
+            (re.escape(word) for word in EVALUATION_PLAIN_NEGATIVE_VERBS),
+            key=len,
+            reverse=True,
+        )
+    )
+    uniform_verbs = "|".join(
+        sorted(
+            (re.escape(word) for word in EVALUATION_PLAIN_UNIFORM_VERBS),
+            key=len,
+            reverse=True,
+        )
+    )
+
+    def rewrite_prose(text: str) -> str:
+        text = text.replace("尚未包含", "还没有").replace("还未包含", "还没有")
+        text = text.replace("仍未包含", "仍然没有").replace("均未包含", "都没有")
+        text = text.replace("不包含", "没有").replace("未包含", "没有")
+        text = text.replace("包含了", "有").replace("包含", "有")
+        text = text.replace("尚未", "还没").replace("还未", "还没")
+        text = text.replace("仍未", "仍然没有").replace("并未", "没有")
+        text = text.replace("均未", "都没有").replace("未能", "没能")
+        text = re.sub(
+            r"(?:目前|当前)未(?=(?:" + negative_verbs + r"))",
+            lambda match: match.group(0)[:-1] + "还没",
+            text,
+        )
+        text = re.sub(r"未(?=(?:" + negative_verbs + r"))", "没有", text)
+        text = text.replace("均已", "都已经")
+        text = re.sub(r"均(?=(?:" + uniform_verbs + r"))", "都", text)
+        return text
+
+    parts = EVALUATION_PLAIN_WORD_PROTECTED_RE.split(source)
+    return "".join(
+        part if index % 2 else rewrite_prose(part)
+        for index, part in enumerate(parts)
+    )
+
+
 def normalize_evaluation(
     evaluation: Any,
     expected_turn_number: Optional[int] = None,
@@ -8760,6 +9256,16 @@ def normalize_evaluation(
             raise WorkflowError(
                 f"自动检查的 {key} 描述包含高风险公共片段：{high_risk}"
             )
+        if EVALUATION_RAW_NUMBER_ARRAY_RE.search(item["description"]):
+            raise WorkflowError(
+                f"自动检查的 {key} 描述包含不易理解的原始数字数组"
+            )
+        identity_reference = evaluation_identity_reference(item["description"])
+        if identity_reference:
+            raise WorkflowError(
+                f"自动检查的 {key} 描述不能出现 AI 身份、工具或模型名称："
+                f"{identity_reference}"
+            )
         if key == "execution":
             command_reference = evaluation_command_references(item["description"])
             if command_reference:
@@ -8773,6 +9279,7 @@ def normalize_evaluation(
             item["description"],
             expected_turn_number,
         )
+        item["description"] = naturalize_evaluation_description(item["description"])
     evaluation["language_framework"] = normalize_frameworks(evaluation.get("language_framework"))
     evaluation["other_issues"] = re.sub(r"\s+", " ", str(evaluation.get("other_issues") or "")).strip()
     return evaluation
@@ -9180,6 +9687,9 @@ def retryable_review_output_error(detail: str) -> bool:
             "非满分描述缺少客观证据",
             "非满分描述没有说明实际后果",
             "描述与本轮最后一次检查结果矛盾",
+            "评分描述定向修正未能收敛",
+            "描述包含不易理解的原始数字数组",
+            "描述不能出现 AI 身份、工具或模型名称",
         )
     )
 
@@ -9199,9 +9709,9 @@ def normalize_bugs(value: Any) -> List[Dict[str, str]]:
             "expected": re.sub(r"\s+", " ", str(item.get("expected") or "")).strip(),
             "evidence": re.sub(r"\s+", " ", str(item.get("evidence") or "")).strip(),
             "fix": re.sub(r"\s+", " ", str(item.get("fix") or "")).strip(),
-            "customer_summary": re.sub(
-                r"\s+", " ", str(item.get("customer_summary") or "")
-            ).strip(),
+            "customer_summary": normalize_bug_prompt_sentence(
+                item.get("customer_summary")
+            ),
         }
         if bug["severity"] not in {"高", "中", "低"} or any(
             not bug[key]
@@ -9216,21 +9726,9 @@ def normalize_bugs(value: Any) -> List[Dict[str, str]]:
         summary = bug["customer_summary"]
         if not BUG_CUSTOMER_SUMMARY_MIN_CHARS <= len(summary) <= BUG_CUSTOMER_SUMMARY_MAX_CHARS:
             raise WorkflowError("Bug 客户摘要必须控制在 12～90 个字符")
-        if any(character in summary for character in BUG_CUSTOMER_SUMMARY_QUOTES):
-            raise WorkflowError("Bug 客户摘要不能使用引号")
-        if re.match(r"^(?:[-*•]|\d+[.)、])\s*", summary):
-            raise WorkflowError("Bug 客户摘要不能带标题、序号或项目符号")
-        if summary.count("，") + summary.count(",") > 1:
-            raise WorkflowError("Bug 客户摘要每行最多使用一个逗号")
-        if any(mark in summary for mark in "。！？!?；;"):
-            raise WorkflowError("Bug 客户摘要必须是一个完整句子，不能再拆分条目")
         if EVALUATION_COMMAND_REFERENCE_RE.search(summary):
             raise WorkflowError("Bug 客户摘要不能写入具体命令")
-        solution_markers = (
-            "请修复", "请修改", "解决方法", "修复方法", "改为", "改用", "采用",
-            "新增", "增加", "补充", "重构", "调整代码", "修改代码", "实现方式",
-        )
-        leaked = next((marker for marker in solution_markers if marker in summary), "")
+        leaked = bug_summary_solution_leak(summary)
         if leaked:
             raise WorkflowError(f"Bug 客户摘要写入了解决方法：{leaked}")
         normalized.append(bug)
@@ -9376,7 +9874,7 @@ def run_codex_evaluation_dimension_repair(
     if len(verification_text) > 24000:
         verification_text = verification_text[-24000:]
     final_verification_summary = trajectory_final_verification_summary(trajectory)
-    prompt = f"""只修正第 {turn_number} 轮“{dimension_label}”的评分描述，不修改分数，不改其他四个维度，也不重新判断代码是否通过。现有分数是 {int(item.get('score') or 0)} 分。请依据原题面、已有描述、验收结果和本轮操作轨迹，把真实存在的不足、客观证据及实际后果写成用户能看懂的至少两个完整句子；这些要素可以分布在整段中，不必全部塞进第一句。不能添加材料中不存在的文件、数字、失败、修改动作或测试结果。若材料没有支持额外细节，只整理现有事实，不要推测。不要写命令名称、评分工具或内部校验过程。
+    prompt = f"""只修正第 {turn_number} 轮“{dimension_label}”的评分描述，不修改分数，不改其他四个维度，也不重新判断代码是否通过。现有分数是 {int(item.get('score') or 0)} 分。请依据原题面、已有描述、验收结果和本轮操作轨迹，把真实存在的不足、客观证据及实际后果写成用户能看懂的至少两个完整句子；这些要素可以分布在整段中，不必全部塞进第一句。不能添加材料中不存在的文件、数字、失败、修改动作或测试结果。若材料没有支持额外细节，只整理现有事实，不要推测。直接写发生的动作和结果，不要出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，也不要用“模型认为”“模型完成了”一类主语。不要写命令名称、评分工具或内部校验过程，也不要抄写原始数字数组；把数组表达的含义改成用户能理解的业务结果。
 
 同类检查后出现的结果覆盖早期结果。如果下方最后结果已经通过，只能把早期失败写成已经恢复的过程，不能再写成最终仍失败、未复验或缺少通过记录。
 
@@ -9431,7 +9929,15 @@ def normalize_evaluation_with_targeted_repairs(
     working = json.loads(json.dumps(evaluation, ensure_ascii=False))
     remove_unverified_evaluation_command_references(working, trajectory)
     attempts_by_dimension: Dict[str, int] = {}
-    for _ in range(4):
+    # Each of the five dimensions may need three focused rewrites. Keep one
+    # additional pass for validating the final rewrite; otherwise the old
+    # four-pass loop could rewrite the fourth rejected description and then
+    # fail without ever checking the repaired text.
+    repairs_per_dimension = 3
+    validation_passes = 1 + (
+        repairs_per_dimension * len(EVALUATION_DIMENSION_KEYS)
+    )
+    for _ in range(validation_passes):
         try:
             normalized = normalize_evaluation(working, expected_turn_number)
             validate_evaluation_final_verification_consistency(normalized, trajectory)
@@ -9446,8 +9952,8 @@ def normalize_evaluation_with_targeted_repairs(
                 raise
             attempt = attempts_by_dimension.get(dimension_key, 0) + 1
             attempts_by_dimension[dimension_key] = attempt
-            if attempt > 2:
-                raise
+            if attempt > repairs_per_dimension:
+                raise EvaluationRepairExhausted(detail, working) from exc
             if repair_notifier:
                 repair_notifier(dimension_label, detail)
             working[dimension_key]["description"] = run_codex_evaluation_dimension_repair(
@@ -9462,7 +9968,7 @@ def normalize_evaluation_with_targeted_repairs(
                 detail,
             )
             remove_unverified_evaluation_command_references(working, trajectory)
-    raise WorkflowError("评分描述定向修正未能收敛")
+    raise EvaluationRepairExhausted("评分描述定向修正未能收敛", working)
 
 
 def preserve_evaluation_for_manual_edit(value: Any) -> Dict[str, Any]:
@@ -9470,7 +9976,13 @@ def preserve_evaluation_for_manual_edit(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise WorkflowError("自动检查没有生成逐轮评分")
     result = dict(value)
-    result.update(normalize_manual_evaluation(value))
+    result.update(
+        normalize_manual_evaluation(value, enforce_description_policy=False)
+    )
+    for key in EVALUATION_DIMENSION_KEYS:
+        result[key]["description"] = naturalize_evaluation_description(
+            result[key]["description"]
+        )
     result["language_framework"] = normalize_frameworks(
         result.get("language_framework")
     )
@@ -9508,7 +10020,12 @@ def review_evaluation_with_manual_fallback(
         # Code findings are already available. A remaining prose-format issue
         # must not discard them or turn a successful development run into a
         # failed run; export readiness will keep the text blocked until edited.
-        return preserve_evaluation_for_manual_edit(evaluation), str(exc)
+        latest = (
+            exc.evaluation
+            if isinstance(exc, EvaluationRepairExhausted)
+            else evaluation
+        )
+        return preserve_evaluation_for_manual_edit(latest), str(exc)
 
 
 def run_codex_regrade(
@@ -9593,7 +10110,7 @@ def run_codex_review(
     evaluation_rubric = evaluation_rubric_text()
     prompt = f"""只读检查这个项目的第一轮交付，不得修改文件。完整对照原始需求、仓库实现、Docker 验收结果和 Claude Code 本轮轨迹，检查功能正确性、遗漏、异常路径、持久化、并发、界面交互和 Docker 配置，并在隔离环境中实际执行必要的复现命令。本次评分对应第 1 轮；所有非满分描述都必须明确写出“第 1 轮”。验收项中的 failure_kind=environment 表示端口占用、Docker 守护进程或临时网络等环境失败，不能当成产品 Bug 或模型能力扣分证据；应从仓库和可重复命令继续判断。bugs 只允许记录已经稳定复现且与本轮 User Prompt 验收范围直接相关的业务错误，包括本轮功能自身错误和本轮改动造成的相关回归；仓库中与本轮范围无关的历史问题只能写入 quality_gaps，也不得要求修改相应代码。每条 Bug 都必须分别填写 reproduction、actual、expected、evidence、fix 和 customer_summary，evidence 要包含实际命令、响应、日志或数据库状态。未实际复现的风险、缺少测试、覆盖不足、文档不足和代码结构问题只能写入 quality_gaps，不能进入 bugs，也不能触发修复轮。只有 bugs 非空时 next_action 才能是 bugfix。{BUG_REPAIR_PROMPT_STYLE_GUIDANCE}没有已复现 Bug 时 next_action 必须是 complete 且 bugs 为空；quality_gaps 可以非空，但不得为了增加轮次虚构 Bug。
 
-同时按交付文档对这一轮单独评分。{EVALUATION_SCORE_GUIDANCE} 五个描述都必须结合本轮轨迹和代码给出可核验依据：指出具体步骤、工具调用、文件、函数或遗漏需求；只有本轮 Claude Code 轨迹里真实执行过的命令才能按原文引用，满分也要说明已核对哪些约束。{EVALUATION_DESCRIPTION_GUIDANCE} {TASK_DIFFICULTY_GUIDANCE} 不提及评分工具、生成过程或内部提示。任务类型按本轮主要意图填写，第一轮从空仓库开发通常是“0-1 代码生成”。语言和框架用英文逗号分隔。环境可复现等级要根据仓库是否真的提供可一键执行的容器环境判断。
+同时按交付文档对这一轮单独评分。{EVALUATION_SCORE_GUIDANCE} 五个描述都必须结合本轮轨迹和代码给出可核验依据：指出具体步骤、文件、函数或遗漏需求；只有本轮操作轨迹里真实执行过的检查才能作为依据，满分也要说明已核对哪些约束。{EVALUATION_DESCRIPTION_GUIDANCE} {TASK_DIFFICULTY_GUIDANCE} 不提及评分工具、生成过程或内部提示。任务类型按本轮主要意图填写，第一轮从空仓库开发通常是“0-1 代码生成”。语言和框架用英文逗号分隔。环境可复现等级要根据仓库是否真的提供可一键执行的容器环境判断。
 
 本轮必须遵循的五维评分表：
 {evaluation_rubric}
@@ -9608,7 +10125,7 @@ def run_codex_review(
 {final_verification_summary}
 同类检查以后出现的结果为准；已经被后续成功覆盖的失败，只能描述为已恢复的过程，不能据此声称最终仍失败或没有复验。
 
-第一轮 Claude Code 轨迹：
+第一轮操作轨迹：
 {trajectory or '未取得轨迹内容'}
 """
     result = run_codex_structured(
@@ -9696,7 +10213,7 @@ def run_codex_final_review(
 {final_verification_summary}
 同类检查以后出现的结果为准；已经被后续成功覆盖的失败，只能描述为已恢复的过程，不能据此声称最终仍失败或没有复验。
 
-当前轮次 Claude Code 轨迹：
+当前轮次操作轨迹：
 {trajectory or '未取得轨迹内容'}
 """
     result = run_codex_structured(
@@ -10358,11 +10875,30 @@ def final_review_worker(run_id: str) -> None:
     except Exception as exc:  # worker boundary
         message = str(exc)
         if "已停止自动换词续轮，请人工确认" in message:
+            snapshot_error = ""
+            current = run_row(run_id)
+            if current["container_name"] and not current["container_cleaned"]:
+                try:
+                    export_container_trace_snapshot(run_id)
+                except Exception as snapshot_exc:
+                    snapshot_error = str(snapshot_exc)
+                    add_event(
+                        run_id,
+                        f"转人工确认前保存原始轨迹失败：{snapshot_error}",
+                        "error",
+                    )
             update_run(
                 run_id,
                 phase="manual_review",
-                status_detail="需要人工确认：复查问题与当前题面没有新的可观察差异",
-                error=message,
+                status_detail=(
+                    "需要人工确认：复查问题与当前题面没有新的可观察差异；"
+                    + (
+                        "原始轨迹保存失败"
+                        if snapshot_error
+                        else "原始轨迹已保存，会话继续保留"
+                    )
+                ),
+                error=message if not snapshot_error else f"{message}；{snapshot_error}",
                 stage_retry_name="逐轮复核",
                 retry_not_before_epoch=None,
             )
@@ -11664,32 +12200,41 @@ def recover_iteration_jobs() -> None:
 
 
 def recover_retryable_review_failures() -> int:
-    """Resume post-checkpoint reviews rejected only for reviewer wording."""
+    """Resume retryable review or checkpoint failures after a service restart."""
     with db_connection() as database:
         rows = database.execute(
             """SELECT id, stage_retry_name, stage_retry_count, error
                  FROM runs
                 WHERE deleted_at IS NULL
                   AND phase = 'failed'
-                  AND stage_retry_name IN ('首轮复核', '逐轮复核')
+                  AND stage_retry_name IN ('首轮复核', '逐轮复核', 'Git/轨迹检查点')
                   AND stage_retry_count < ?""",
             (CONTROL_STAGE_RETRY_LIMIT,),
         ).fetchall()
     recovered = 0
     for row in rows:
-        if not retryable_review_output_error(str(row["error"] or "")):
-            continue
         stage = str(row["stage_retry_name"] or "")
-        if stage == "首轮复核":
+        detail = str(row["error"] or "")
+        if stage == "Git/轨迹检查点":
+            if not retryable_control_error(detail):
+                continue
+            turn = latest_turn_row(str(row["id"]))
+            phase = "first_idle" if int(turn["turn_number"]) == 1 else "second_idle"
+            worker = checkpoint_resume_worker
+        elif stage == "首轮复核":
+            if not retryable_review_output_error(detail):
+                continue
             phase, worker = "review_queued", review_worker
         else:
+            if not retryable_review_output_error(detail):
+                continue
             phase, worker = "final_review_queued", final_review_worker
         if queue_control_stage_retry(
             str(row["id"]),
             stage,
             phase,
             worker,
-            str(row["error"] or ""),
+            detail,
         ):
             recovered += 1
     return recovered

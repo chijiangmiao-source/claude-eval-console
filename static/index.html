@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <title>Claude Eval Console</title>
-    <link rel="stylesheet" href="/styles.css?v=35" />
+    <link rel="stylesheet" href="/styles.css?v=38" />
   </head>
   <body>
     <div class="shell">
@@ -71,7 +71,15 @@
               </div>
             </div>
             <div class="auto-refill-controls">
-              <div class="auto-refill-timer-controls hidden" id="auto-refill-timer-controls">
+              <div class="auto-refill-timer-controls hidden" id="auto-refill-start-controls">
+                <label class="auto-refill-hours" for="auto-refill-start-hours">
+                  <input id="auto-refill-start-hours" type="number" min="0.5" max="168" step="0.5" value="2" inputmode="decimal" aria-label="自动开始小时数" />
+                  <span>小时后开始</span>
+                </label>
+                <button class="auto-refill-schedule" id="auto-refill-start-schedule" type="button">预约开始</button>
+                <button class="auto-refill-clear hidden" id="auto-refill-start-clear" type="button">取消预约</button>
+              </div>
+              <div class="auto-refill-timer-controls hidden" id="auto-refill-stop-controls">
                 <label class="auto-refill-hours" for="auto-refill-hours">
                   <input id="auto-refill-hours" type="number" min="0.5" max="168" step="0.5" value="4" inputmode="decimal" aria-label="自动关闭小时数" />
                   <span>小时后关闭</span>
@@ -140,6 +148,7 @@
             </label>
             <button class="filter-reset" id="reset-run-filters" type="button">清除筛选</button>
           </form>
+          <nav class="table-pagination table-pagination-top" data-table-pagination="runs" aria-label="任务列表上方分页"></nav>
           <div class="records-table-wrap">
             <table class="records-table">
               <thead>
@@ -159,6 +168,7 @@
               </tbody>
             </table>
           </div>
+          <nav class="table-pagination table-pagination-bottom" data-table-pagination="runs" aria-label="任务列表下方分页"></nav>
         </section>
 
         <section id="export-view" class="view export-view hidden">
@@ -266,6 +276,7 @@
                 <button class="primary-button" id="solo-qa-submit" type="button" disabled>提交所选轮次</button>
               </div>
             </div>
+            <nav class="table-pagination table-pagination-top" data-table-pagination="exports" aria-label="导出列表上方分页"></nav>
             <div class="records-table-wrap">
               <table class="export-table">
                 <thead>
@@ -288,6 +299,7 @@
                 </tbody>
               </table>
             </div>
+            <nav class="table-pagination table-pagination-bottom" data-table-pagination="exports" aria-label="导出列表下方分页"></nav>
           </div>
         </section>
 
@@ -380,6 +392,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=64" defer></script>
+    <script src="/app.js?v=70" defer></script>
   </body>
 </html>

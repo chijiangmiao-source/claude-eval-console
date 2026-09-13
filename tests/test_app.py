@@ -166,6 +166,10 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("固定顺序逐维独立评价", app.EVALUATION_DESCRIPTION_GUIDANCE)
         self.assertIn("不可见的内部思维过程", app.EVALUATION_DESCRIPTION_GUIDANCE)
         self.assertIn("必要命令和报错原文", app.EVALUATION_DESCRIPTION_GUIDANCE)
+        self.assertIn(
+            "不使用反引号或 Markdown 行内代码格式",
+            app.EVALUATION_DESCRIPTION_GUIDANCE,
+        )
         self.assertIn("自然写明第几轮", app.EVALUATION_DESCRIPTION_GUIDANCE)
         self.assertIn("已经造成的后果", app.EVALUATION_DESCRIPTION_GUIDANCE)
         self.assertIn("不要求五维同分", app.EVALUATION_SCORE_GUIDANCE)
@@ -2910,6 +2914,32 @@ class ValidationTests(unittest.TestCase):
             app.automatic_turn_evaluation(manual_row)["evidenceRefs"],
             automatic["evidenceRefs"],
         )
+
+    def test_public_turn_evaluation_removes_only_description_backticks(self):
+        automatic = with_score_stage(sample_evaluation())
+        description = "第 1 轮执行 `npm test` 后确认 `server.py` 可用。"
+        automatic["delivery"]["description"] = description
+        automatic["descriptions"][0] = description
+        automatic["behavior"][0] = "第 1 轮保留内部命令 `npm test`。"
+        row = {
+            "turn_review_result": json.dumps(
+                {"evaluation": automatic}, ensure_ascii=False
+            ),
+            "turn_manual_evaluation": "",
+        }
+
+        public = app.public_turn_evaluation(row)
+        stored = app.turn_evaluation(row)
+
+        self.assertEqual(
+            public["delivery"]["description"],
+            "第 1 轮执行 npm test 后确认 server.py 可用。",
+        )
+        self.assertEqual(
+            public["descriptions"][0], public["delivery"]["description"]
+        )
+        self.assertEqual(public["behavior"][0], automatic["behavior"][0])
+        self.assertEqual(stored["delivery"]["description"], description)
 
     def test_turn_evaluation_does_not_hide_a_saved_score_stage_mismatch(self):
         automatic = with_score_stage(sample_evaluation())
@@ -15550,6 +15580,83 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(row[16], 5)
         self.assertEqual(row[-2], "")
         self.assertEqual(row[-1], "刘昱")
+
+    def test_public_outputs_remove_backticks_without_invalidating_legacy_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                evaluation = app.automatic_turn_evaluation(
+                    app.completed_turn_rows()[0]
+                )
+                description = "第 1 轮核对 `server.py` 后确认 `POST /items` 正常。"
+                evaluation["delivery"]["description"] = description
+                evaluation["descriptions"][0] = description
+                app.update_turn(
+                    "abc123abc123",
+                    1,
+                    review_result=json.dumps(
+                        {"evaluation": evaluation}, ensure_ascii=False
+                    ),
+                )
+                stored_row = app.completed_turn_rows()[0]
+                raw_confirmation = app.evaluation_confirmation_digest(stored_row)
+                with app.db_connection() as database:
+                    database.execute(
+                        """UPDATE run_turns
+                              SET evaluation_confirmed_at = ?,
+                                  evaluation_confirmed_by = ?,
+                                  evaluation_confirmation_sha256 = ?
+                            WHERE run_id = ? AND turn_number = 1""",
+                        (
+                            app.now_text(),
+                            "刘昱",
+                            raw_confirmation,
+                            "abc123abc123",
+                        ),
+                    )
+                stored_row = app.completed_turn_rows()[0]
+                public_digest = app.solo_qa_payload_sha256(stored_row)
+                legacy_digest = app.solo_qa_payload_sha256(
+                    stored_row,
+                    sanitize_public=False,
+                )
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO solo_qa_submissions(
+                             run_id, turn_number, remote_submission_id,
+                             remote_status, state, payload_sha256,
+                             created_at, updated_at
+                           ) VALUES (?, 1, '42', 'QC_PASSED', 'qc_passed', ?, ?, ?)""",
+                        (
+                            "abc123abc123",
+                            legacy_digest,
+                            app.now_text(),
+                            app.now_text(),
+                        ),
+                    )
+
+                summary = app.completed_turns()[0]
+                export_row = app.delivery_export_row(stored_row)
+                solo_values = app.solo_qa_values(stored_row)
+                serialized = app.serialize_run(app.run_row("abc123abc123"))
+                raw = app.turn_evaluation(stored_row)
+
+        public_descriptions = (
+            summary["evaluation"]["delivery"]["description"],
+            export_row[17],
+            solo_values["交付完整性 - 描述"],
+            serialized["turns"][0]["effective_evaluation"]["delivery"]["description"],
+        )
+        self.assertNotEqual(public_digest, legacy_digest)
+        self.assertTrue(all("`" not in value for value in public_descriptions))
+        self.assertIn("`", raw["delivery"]["description"])
+        self.assertEqual(summary["evaluation_confirmation_status"], "human_confirmed")
+        self.assertEqual(summary["solo_qa"]["state"], "qc_passed")
+        self.assertFalse(summary["solo_qa"]["payload_changed"])
 
     def test_locked_turn_intent_wins_over_reviewed_task_type_everywhere(self):
         with tempfile.TemporaryDirectory() as directory:

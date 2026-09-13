@@ -128,7 +128,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260913.32"
+APP_VERSION = "20260913.33"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -929,7 +929,7 @@ PROMPT_HIGH_RISK_FRAGMENTS = (
 )
 BUG_REPAIR_REPEAT_SIMILARITY_LIMIT = 0.72
 BUG_REPAIR_RESIDUAL_MARKERS = ("上轮", "上次修复后", "修复后")
-EVALUATION_DESCRIPTION_GUIDANCE = f"""五个公开评分描述分别写成一小段自然的项目记录，不使用固定标签，也不限制句数。按交付完整性、指令遵循、任务规划、推理能力、执行能力的固定顺序逐维独立评价，不用总档印象替代单维事实，也不照抄旧分数或质检建议分。依据可见操作、说明、决策和产物评价，不索取或推测不可见的内部思维过程。直接说明该维做了什么、结果如何以及影响了哪项使用或开发工作；五段不要机械复用相同开头、转折和收尾。非满分描述要自然写明第几轮，并包含真实发生的具体操作或场景、客观观察到的问题及已经造成的后果；需要改进时写有证据支持的具体做法。可以引用真实文件名、函数名、必要命令和报错原文，但不要罗列 Bash、Read、Write、Edit、Playwright 等工具品牌或操作清单。页面问题优先用入口、控件、动作和可见现象定位。公开描述不堆绝对路径、源码行号、哈希、内部报告名或精确测试总数，这些只放内部证据。不能用“如果上线可能”“将会影响”等假设后果冒充已经发生的影响。如果轨迹中找不到真实不足，应改评 5 分，不能为了保留非满分而编造问题。5 分描述必须写出实际核对或验收依据，并且只能保留正向完成事实；本轮真实发生的错误操作、遗漏、失误或返工应放到对应维度并降低该维分数。预期的 404、409、422 等业务反馈是契约结果，不得误写成执行失误。用通俗方式解释测试数据，不直接抄写 `[0,2,1,1]` 这类原始数字数组，原数组留在内部证据中。公开描述不出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，也不用“模型认为”“模型完成了”指代执行者。数字、成功或失败、修改前后状态必须与证据一致；“重复读取”“多次调用”等次数判断必须写出轨迹中可核对的次数；状态清空、内容覆盖和架构不匹配等因果判断必须有直接输出。禁用这些模板化措辞：{'、'.join(EVALUATION_DISALLOWED_PHRASES)}。高风险公共片段同样禁用：{'、'.join(EVALUATION_HIGH_RISK_FRAGMENTS)}。不复述分数，不提评分工具、内部提示或生成过程。"""
+EVALUATION_DESCRIPTION_GUIDANCE = f"""五个公开评分描述分别写成一小段自然的项目记录，不使用固定标签，也不限制句数。按交付完整性、指令遵循、任务规划、推理能力、执行能力的固定顺序逐维独立评价，不用总档印象替代单维事实，也不照抄旧分数或质检建议分。依据可见操作、说明、决策和产物评价，不索取或推测不可见的内部思维过程。直接说明该维做了什么、结果如何以及影响了哪项使用或开发工作；五段不要机械复用相同开头、转折和收尾。非满分描述要自然写明第几轮，并包含真实发生的具体操作或场景、客观观察到的问题及已经造成的后果；需要改进时写有证据支持的具体做法。可以引用真实文件名、函数名、必要命令和报错原文，但一律写成普通文字，不使用反引号或 Markdown 行内代码格式；不要罗列 Bash、Read、Write、Edit、Playwright 等工具品牌或操作清单。页面问题优先用入口、控件、动作和可见现象定位。公开描述不堆绝对路径、源码行号、哈希、内部报告名或精确测试总数，这些只放内部证据。不能用“如果上线可能”“将会影响”等假设后果冒充已经发生的影响。如果轨迹中找不到真实不足，应改评 5 分，不能为了保留非满分而编造问题。5 分描述必须写出实际核对或验收依据，并且只能保留正向完成事实；本轮真实发生的错误操作、遗漏、失误或返工应放到对应维度并降低该维分数。预期的 404、409、422 等业务反馈是契约结果，不得误写成执行失误。用通俗方式解释测试数据，不直接抄写 `[0,2,1,1]` 这类原始数字数组，原数组留在内部证据中。公开描述不出现 AI、AI 浏览器、AI Agent、AI 模型、Codex、GPT、Claude Code 等身份、工具或模型名称，也不用“模型认为”“模型完成了”指代执行者。数字、成功或失败、修改前后状态必须与证据一致；“重复读取”“多次调用”等次数判断必须写出轨迹中可核对的次数；状态清空、内容覆盖和架构不匹配等因果判断必须有直接输出。禁用这些模板化措辞：{'、'.join(EVALUATION_DISALLOWED_PHRASES)}。高风险公共片段同样禁用：{'、'.join(EVALUATION_HIGH_RISK_FRAGMENTS)}。不复述分数，不提评分工具、内部提示或生成过程。"""
 EVALUATION_DESCRIPTION_GUIDANCE += """ 环境、网络、权限、系统解释器、包管理器或系统运行库故障可以如实记录在 other_issues、artifactFindings 或明确标注为后续独立验收的事实中，但不能作为五维能力扣分理由。已经说明“未据此扣分”时不要仅因出现环境词而拒绝描述。锁文件与清单不匹配、项目依赖声明错误等仓库事实仍按产品问题评价，不能笼统归为环境故障。"""
 EVALUATION_RUBRIC_START = "第三步：打分并撰写反馈"
 EVALUATION_RUBRIC_END = "第四步：提交数据"
@@ -7433,7 +7433,7 @@ def serialize_run(row: sqlite3.Row, include_events: bool = True) -> Dict[str, An
             "turn_evaluation_confirmed_by": turn.get("evaluation_confirmed_by") or "",
             "turn_evaluation_confirmation_sha256": turn.get("evaluation_confirmation_sha256") or "",
         }
-        turn["effective_evaluation"] = turn_evaluation(confirmation_row)
+        turn["effective_evaluation"] = public_turn_evaluation(confirmation_row)
         confirmation = evaluation_confirmation_metadata(confirmation_row)
         turn["evaluation_confirmation"] = confirmation
         turn["evaluation_confirmation_status"] = (
@@ -7694,6 +7694,24 @@ def canonical_score_stage_other(value: Any) -> str:
     return "无" if text in EVALUATION_NO_OTHER_ISSUES else text
 
 
+def clean_public_evaluation_description(value: Any) -> str:
+    """Render public score prose as plain text instead of Markdown inline code."""
+    return re.sub(r"\s+", " ", str(value or "").replace("`", "")).strip()
+
+
+def sanitize_public_evaluation_descriptions(evaluation: Dict[str, Any]) -> None:
+    """Remove public-only backticks while leaving internal evidence untouched."""
+    projected = evaluation.get("descriptions")
+    for index, key in enumerate(EVALUATION_DIMENSION_KEYS):
+        item = evaluation.get(key)
+        if isinstance(item, dict):
+            item["description"] = clean_public_evaluation_description(
+                item.get("description")
+            )
+        if isinstance(projected, list) and index < len(projected):
+            projected[index] = clean_public_evaluation_description(projected[index])
+
+
 def project_score_stage_public_fields(evaluation: Dict[str, Any]) -> None:
     """Keep the fixed-order score-stage projection aligned with named fields."""
     evaluation["scores"] = [
@@ -7775,6 +7793,13 @@ def turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
         for field in EVALUATION_SCORE_STAGE_FIELDS:
             effective.pop(field, None)
     return effective
+
+
+def public_turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a public copy with plain-text descriptions and intact evidence."""
+    evaluation = turn_evaluation(row)
+    sanitize_public_evaluation_descriptions(evaluation)
+    return evaluation
 
 
 def evaluation_confirmation_digest(row: Dict[str, Any]) -> str:
@@ -8375,8 +8400,16 @@ def solo_qa_runtime_gate(row: Dict[str, Any]) -> Dict[str, Any]:
     return {"ready": True, "status": "ready", "issues": []}
 
 
-def solo_qa_values(row: Dict[str, Any]) -> Dict[str, Any]:
-    evaluation = turn_evaluation(row)
+def solo_qa_values(
+    row: Dict[str, Any],
+    *,
+    sanitize_public: bool = True,
+) -> Dict[str, Any]:
+    evaluation = (
+        public_turn_evaluation(row)
+        if sanitize_public
+        else turn_evaluation(row)
+    )
 
     def value(name: str, fallback: Any = "") -> Any:
         result = evaluation.get(name)
@@ -8427,9 +8460,13 @@ def solo_qa_values(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def solo_qa_payload_sha256(row: Dict[str, Any]) -> str:
+def solo_qa_payload_sha256(
+    row: Dict[str, Any],
+    *,
+    sanitize_public: bool = True,
+) -> str:
     canonical = {
-        "values": solo_qa_values(row),
+        "values": solo_qa_values(row, sanitize_public=sanitize_public),
         "trajectory_sha256": str(row.get("turn_trajectory_sha256") or "").lower(),
     }
     return hashlib.sha256(
@@ -8446,6 +8483,11 @@ def solo_qa_state_summary(row: Dict[str, Any], ready: bool) -> Dict[str, Any]:
     if stored_digest:
         try:
             changed = stored_digest != solo_qa_payload_sha256(row)
+            if changed:
+                changed = stored_digest != solo_qa_payload_sha256(
+                    row,
+                    sanitize_public=False,
+                )
         except WorkflowError:
             changed = True
     if changed and state not in {"not_submitted", "failed", "remote_missing"}:
@@ -8735,7 +8777,7 @@ def sync_solo_qa_submissions(payload: Dict[str, Any]) -> Dict[str, Any]:
 def completed_turns() -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for row in completed_turn_rows():
-        evaluation = turn_evaluation(row)
+        evaluation = public_turn_evaluation(row)
         confirmation = evaluation_confirmation_metadata(row)
         turn_number = int(row["turn_number"])
         fallback_difficulty = (
@@ -8844,7 +8886,7 @@ def hourly_output_analytics(requested_date: Optional[str] = None) -> Dict[str, A
 
 
 def delivery_export_row(row: Dict[str, Any]) -> List[Any]:
-    evaluation = turn_evaluation(row)
+    evaluation = public_turn_evaluation(row)
 
     def value(name: str, fallback: Any = "") -> Any:
         result = evaluation.get(name)
@@ -19008,7 +19050,7 @@ def run_codex_evaluation_dimension_repair(
             "第一句必须用其中的具体步骤、文件、函数、命令、接口或页面动作定位真实"
             "不足，随后写已经发生的影响。"
         )
-    prompt = f"""{repair_scope}材料和证据已经由上一阶段备齐；不得调用 shell、浏览器、网络、文件读取或其他工具，不得再次检查仓库，直接按 schema 一次返回 JSON。不能添加材料中不存在的失败、修改动作、测试结果或因果关系；“重复”“多次”要写出可核对次数，状态清空、内容覆盖或架构不匹配必须引用直接输出。必要且有证据的命令与原始报错可以保留，不能罗列工具品牌、评分工具、内部校验过程、原始数字数组或精确测试总数。
+    prompt = f"""{repair_scope}材料和证据已经由上一阶段备齐；不得调用 shell、浏览器、网络、文件读取或其他工具，不得再次检查仓库，直接按 schema 一次返回 JSON。不能添加材料中不存在的失败、修改动作、测试结果或因果关系；“重复”“多次”要写出可核对次数，状态清空、内容覆盖或架构不匹配必须引用直接输出。必要且有证据的命令与原始报错可以保留；需要返回或重写公开 description 时，一律写成普通文字，不使用反引号或 Markdown 行内代码格式。不能罗列工具品牌、评分工具、内部校验过程、原始数字数组或精确测试总数。
 
 {repair_directive}
 

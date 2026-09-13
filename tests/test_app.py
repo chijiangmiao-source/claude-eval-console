@@ -8591,7 +8591,15 @@ class ReviewTests(unittest.TestCase):
         durable = app.pending_review_evaluation_result(checkpoints[0])
         self.assertEqual(durable["evaluation_draft"], draft)
         self.assertEqual(durable["evaluation_blocker"], "五维评分进行中")
-        self.assertEqual(result["evaluation"], draft)
+        self.assertEqual(
+            {key: value for key, value in result["evaluation"].items()
+             if key != "score_validation_mode"},
+            draft,
+        )
+        self.assertEqual(
+            result["evaluation"]["score_validation_mode"],
+            "quality_platform_review",
+        )
 
     def test_review_retry_regenerates_an_incomplete_score_draft_once(self):
         partial = sample_evaluation()
@@ -8753,7 +8761,15 @@ class ReviewTests(unittest.TestCase):
         scorer.assert_not_called()
         targeted_repair.assert_called_once()
         self.assertEqual(targeted_repair.call_args.args[0], draft)
-        self.assertEqual(result["evaluation"], draft)
+        self.assertEqual(
+            {key: value for key, value in result["evaluation"].items()
+             if key != "score_validation_mode"},
+            draft,
+        )
+        self.assertEqual(
+            result["evaluation"]["score_validation_mode"],
+            "quality_platform_review",
+        )
 
     def test_targeted_repair_error_carries_latest_partially_repaired_draft(self):
         evaluation = sample_evaluation()

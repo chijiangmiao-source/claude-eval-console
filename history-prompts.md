@@ -17,6 +17,66 @@
 <!-- prompt-end -->
 <!-- task-entry-end -->
 
+<!-- task-entry-start {"run_id": "172f7ea2e57e", "repo_name": "press-register-resume-board", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "印刷机调校到一半时平板可能被误刷新，调机员若记错已经测过的角点，就会漏检色版或重复采用旧读数。 … 损坏或版本不匹配的本地记录必须明确报错并允许重置，不能猜测进度，现场最终看到完整放行结论或清晰的续作阻断。"} -->
+## 0002 · press-register-resume-board
+
+- 创建时间：2026-09-12 19:23:46 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+印刷机调校到一半时平板可能被误刷新，调机员若记错已经测过的角点，就会漏检色版或重复采用旧读数。请从空仓库实现一个只在浏览器运行的四色套准复测接力板，采用 TypeScript、Vue 3 与 Vite，不设置业务后端，也不访问在线服务。一次会话固定依次测量青版、品红版，每版按左上、右上、右下、左下顺序提交，共八步；每步录入相对黑版的 X、Y 偏移，单位 mm，允许输入范围为 -2.00 至 2.00，精确到 0.01。已提交步骤不可回改，当前步骤只有两值均合法才推进；每次推进后把会话编号、八步定义、已提交值和下一步索引原子写入 localStorage，刷新或关闭后重开必须停在同一检查点。Vitest 验证状态迁移、恢复和拒绝非法推进，Playwright 覆盖中途刷新续作；Docker Compose 提供 web 与名为 verify 的一次性验收服务，WEB_PORT 可覆盖宿主端口。八步完成后，只有每个 X、Y 的绝对值都不大于 0.15 mm 才显示“可开印”，否则显示“需复调”，并按测量顺序列出所有超差色版、角点及偏移；新会话须经确认后清除旧检查点。损坏或版本不匹配的本地记录必须明确报错并允许重置，不能猜测进度，现场最终看到完整放行结论或清晰的续作阻断。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "c35021449b31", "repo_name": "runway-flash-code-decoder", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Go 1.25, Gin, testify, Docker, Docker Compose", "summary": "夜间巡检时，跑道入口灯控制器只导出交替的亮、灭毫秒时长，检修员必须据此确认设备播出的报码，边界含糊会把同一记录判成不同字符。 … 最终合法记录得到唯一可复核的报码，损坏记录则稳定停在首个异常位置。"} -->
+## 0004 · runway-flash-code-decoder
+
+- 创建时间：2026-09-12 19:33:37 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Go 1.25, Gin, testify, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+夜间巡检时，跑道入口灯控制器只导出交替的亮、灭毫秒时长，检修员必须据此确认设备播出的报码，边界含糊会把同一记录判成不同字符。请从空仓库实现纯后端判读 API，采用 Go、Gin 与 testify；Docker Compose 提供 api 及名为 verify 的一次性验收服务，宿主端口由 API_PORT 覆盖。请求给出从亮灯开始的正整数时长数组，且必须亮灭交替并以亮灯结束。亮灯 80–120ms（含端点）为点，240–360ms 为划，其余非法；同一字符内灭灯 80–120ms，字符间灭灯 240–360ms，其余非法。仅支持报码 A=.−、N=−.、R=.−.、K=−.−、S=...、O=−−−，字符间隔负责切分，禁止空字符。响应按输入顺序返回报码及每个字符覆盖的起止脉冲索引；任一脉冲非法或字符不在映射表时整次返回 422，指出首个问题索引且不得给出部分报码。README 在实现旁说明请求示例与闭区间规则，.gitignore 排除构建产物，代码不得使用固定响应或占位实现。最终合法记录得到唯一可复核的报码，损坏记录则稳定停在首个异常位置。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "ee164a0b4807", "repo_name": "drop-frame-timecode-converter", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Go 1.25, Gin, testify, Docker, Docker Compose", "summary": "广播素材清单常把丢帧时间码直接当作连续计数，节目越长，定位点与真实帧序号的偏差越明显。 … 最终媒资系统可对两种帧率执行可逆定位，十分钟边界保持连续，而不存在的丢"} -->
+## 0001 · drop-frame-timecode-converter
+
+- 创建时间：2026-09-12 18:51:11 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Go 1.25, Gin, testify, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+广播素材清单常把丢帧时间码直接当作连续计数，节目越长，定位点与真实帧序号的偏差越明显。请从空仓库实现一个纯后端换算 API，采用 Go 1.25 与 Gin；Docker Compose 提供 API 和名为 verify 的一次性验收服务，宿主端口通过 API_PORT 覆盖，testify 用例应验证边界向量，README 在中段给出请求示例，.gitignore 排除构建产物，不得返回固定结果或保留未实现分支。接口接收 direction、rate，以及 timecode 或 frame_index：rate 只允许 30000/1001、60000/1001，分别以名义 30、60 帧编号；timecode 严格为 HH:MM:SS;FF，HH 为 00 至 23，分钟和秒为 00 至 59，FF 分别为 00 至 29、00 至 59。每个小时内，除分钟数能被 10 整除外，其余分钟的 00 秒须跳过前 2 帧或前 4 帧标签；这些被跳过的标签一律非法。正向结果是从当天 00:00:00;00 起、首帧为 0 的整数索引，反向换算必须产生唯一合法标签；frame_index 仅接受当日合法范围，负数或越过 23:59:59 后最后合法帧均返回 422。错误响应指出输入字段和稳定错误码，不返回部分换算值。最终媒资系统可对两种帧率执行可逆定位，十分钟边界保持连续，而不存在的丢
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "6bacc41e7cae", "repo_name": "wheel-bolt-sequence-station", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, TypeScript, Vue 3, Vite, pytest, Vitest, Playwright", "summary": "轮毂复核工位偶尔会因触屏重试或网络延迟把同一颗螺栓记两次，迟到的旧响应还可能错误推进下一步。 … 页面刷新后应重新读取权威进度，最终只在六次有效确认后显示轮毂复核完成，否则稳定停留在当前螺栓并呈现明确拒绝原因。"} -->
+## 0006 · wheel-bolt-sequence-station
+
+- 创建时间：2026-09-12 19:45:44 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, TypeScript, Vue 3, Vite, pytest, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+轮毂复核工位偶尔会因触屏重试或网络延迟把同一颗螺栓记两次，迟到的旧响应还可能错误推进下一步。请从空仓库实现真实联调的工位页面与 API，以数据库保存会话及不可变确认事件；每个新会话固定按 A1、B2、A3、B1、A2、B3 的顺序复核六颗螺栓，页面逐次提交会话编号、从 1 开始的序号、位置码、整数扭矩和幂等键，合格范围为含边界的 4200 至 4800 cN·m。项目必须以 Docker Compose 运行，web 与 api 的宿主端口由 WEB_PORT、API_PORT 覆盖，PostgreSQL 承担跨请求状态持久化，并提供名为 verify 的一次性验收服务；自动化用例覆盖协议与真实页面操作，README 解释重试语义，禁止假接口和未实现占位。服务端只接受当前期待序号及对应位置；同一幂等键和完全相同载荷重试须返回原确认，键相同而载荷不同返回冲突，较小序号视为迟到、较大序号视为越序，所有失败均不得推进。页面刷新后应重新读取权威进度，最终只在六次有效确认后显示轮毂复核完成，否则稳定停留在当前螺栓并呈现明确拒绝原因。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
 <!-- task-entry-start {"run_id": "d511c9cb1ddd", "repo_name": "reliable-event-relay", "task_type": "0-1 代码生成"} -->
 ## 0001 · reliable-event-relay
 
@@ -812,6 +872,51 @@
 <!-- prompt-end -->
 <!-- task-entry-end -->
 
+<!-- task-entry-start {"run_id": "8f3414816524", "repo_name": "fill-weight-plateau-api", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose", "summary": "灌装线切换瓶型后，秤台振动会制造多个看似平稳的重量区间，质量工程师需要按唯一规则确定真实平台并裁决净灌装量。 … 响应返回平台首尾下标、皮重、毛重、净重和结论；无合格平台时明确返回不可判定且不得猜值，禁止占位实现，使结果可逐样本复算。"} -->
+## 0007 · fill-weight-plateau-api
+
+- 创建时间：2026-09-12 20:19:33 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+灌装线切换瓶型后，秤台振动会制造多个看似平稳的重量区间，质量工程师需要按唯一规则确定真实平台并裁决净灌装量。从空仓库实现基于 Python 3.12、FastAPI、Pydantic 的纯后端 API，配套 pytest、Dockerfile、Docker Compose、README 调用示例和排除本地产物的 .gitignore；compose.yaml 的 API 宿主端口可由 API_PORT 覆盖，并提供一次性 verify 服务。请求为 JSON，包含 50 至 20000 个样本：时间戳是 0 至 86400000 的毫秒整数且严格递增，重量是 0 至 500000 的毫克整数；目标净重为 1 至 500000 毫克，允差为 0 至 50000 毫克，非法输入须返回能定位具体字段的结构化错误。以前 20 个样本的较小中位数为皮重，仅在后续样本中搜索至少 30 点、最大重量与最小重量之差不超过 4 毫克的连续区间；选择点数最多者，并列时选择起始下标最小者，毛重取所选区间的较小中位数。平台首尾下标均采用原请求样本数组的零基下标并包含两端。净重为毛重减皮重，落入目标值加减允差的闭区间即合格。响应返回平台首尾下标、皮重、毛重、净重和结论；无合格平台时明确返回不可判定且不得猜值，禁止占位实现，使结果可逐样本复算。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "330bbb202ebe", "repo_name": "stage-cable-cut-planner", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, TypeScript, React, Vite, pytest, Vitest, Playwright", "summary": "舞台换景前，布线领班必须把若干条指定长度的信号线分配到标准线卷上；少算一次锯口会导致最后一条线无法交付，而不同人员给出的等价方案也不便复核。 … 非法长度、重复编号或某段超过单卷可用长度时，API 返回定位到字段或线段的错误且不写入记录，前端保留原输入；禁止调用外部优化服务或返回占位方案，最终领班看到的每一卷都能逐段复算且总目标与决胜规则一致。"} -->
+## 0009 · stage-cable-cut-planner
+
+- 创建时间：2026-09-12 20:37:44 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, TypeScript, React, Vite, pytest, Vitest, Playwright
+
+### User Prompt
+
+<!-- prompt-start -->
+舞台换景前，布线领班必须把若干条指定长度的信号线分配到标准线卷上；少算一次锯口会导致最后一条线无法交付，而不同人员给出的等价方案也不便复核。请从空仓库实现 React 前端与 FastAPI API，表单接收卷长、锯口宽度和最多 12 条带唯一编号的需求线段，所有长度均为 1 至 100000 的整数毫米。每卷内相邻两段之间消耗一次锯口，卷首卷尾不消耗；任何线段不得拆分。核心算法须先最少使用线卷，再最小化总余料；仍并列时，先将每卷内编号升序，再将各卷按编号序列字典序排序，选择整体字典序最小者，以产生唯一方案。方案需持久化并可由详情页回查，页面展示每卷裁切顺序、锯口次数和余料。仓库应在开发链路中配套 pytest、Vitest 与 Playwright，README 说明输入边界，.gitignore 排除产物，并以 Docker Compose 启动真实联调的前端、API 和 PostgreSQL；WEB_PORT、API_PORT 可覆盖宿主端口，另提供名为 verify 的一次性验收服务。非法长度、重复编号或某段超过单卷可用长度时，API 返回定位到字段或线段的错误且不写入记录，前端保留原输入；禁止调用外部优化服务或返回占位方案，最终领班看到的每一卷都能逐段复算且总目标与决胜规则一致。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "b4ec5805e5d8", "repo_name": "uplink-antenna-lease", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, pytest, Docker, Docker Compose", "summary": "卫星过站期间，两套上行控制程序可能同时争抢同一副天线，成功响应在链路中丢失后也不能因重试产生第二份控制权。 … 使用 Docker Compose 编排 API、数据库及名为 verify 的一次性验收服务，宿主端口由 API_PORT 覆盖；README 集中说明迁移、启动和调用方法。"} -->
+## 0010 · uplink-antenna-lease
+
+- 创建时间：2026-09-12 20:42:53 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Alembic, pytest, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+卫星过站期间，两套上行控制程序可能同时争抢同一副天线，成功响应在链路中丢失后也不能因重试产生第二份控制权。请从空仓库实现采用 Python 3.12、FastAPI、SQLAlchemy、PostgreSQL 与 Alembic 的纯后端服务，以数据库时间作为唯一时钟。预置天线编号；获取接口接收天线、控制者、5 至 120 秒租期和幂等键，并返回不可预测的租约令牌及到期时间。同一幂等键与相同参数重试必须返回原令牌和原到期时间，参数不同则稳定冲突。任一时刻每副天线至多存在一个未过期租约，仅在没有租约或数据库时间达到 expires_at 时允许原子获取，到期边界归新请求；未到期争抢不得改写现有记录。未知天线和越界租期须返回稳定错误且不落库。pytest 必须连接真实 PostgreSQL 制造并发争抢，并验证幂等重放、参数冲突、到期交接和输入拒绝，禁止固定响应或假接口。使用 Docker Compose 编排 API、数据库及名为 verify 的一次性验收服务，宿主端口由 API_PORT 覆盖；README 集中说明迁移、启动和调用方法。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
 <!-- task-entry-start {"run_id": "e817c746e4b2", "repo_name": "fiber-route-ambiguity-tracer", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, React, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "临时展会布线结束后，同色跳纤穿过多个转接箱，场馆弱电布线工程师需要确认两端之间究竟无路、仅有一条通路，还是存在会让切换不确定的多条路径。 … 使用 Docker Compose 运行应用，宿主端口可由 WEB_PORT 覆盖，并提供名为 verify 的一次性验收服务。"} -->
 ## 0045 · fiber-route-ambiguity-tracer
 
@@ -824,6 +929,126 @@
 
 <!-- prompt-start -->
 临时展会布线结束后，同色跳纤穿过多个转接箱，场馆弱电布线工程师需要确认两端之间究竟无路、仅有一条通路，还是存在会让切换不确定的多条路径。请从空仓库起步，使用 TypeScript、React、Vite 实现纯前端单页应用，通过表单建立最多 30 个端点和 60 条无向连接边，并选择两个不同端点核查。端点标识限 1 至 20 位 ASCII 字母、数字或连字符且区分大小写；录入控件只能从已有端点选择边的两端，禁用自环和已存在的无向端点对，使用户无法构造未知引用或重复边。核查时路径不得重复经过端点：零条显示“无路”，一条显示“唯一通路”及完整端点顺序，搜索到两条即可停止并显示“存在歧义”及两条证据路径；邻接端点按标识的 ASCII 码位升序搜索，起点和终点固定。任何拓扑编辑都应立即清除旧结论，删除关键连接后重新核查可观察到歧义转为唯一通路或无路。使用 Vitest 验证路径判定，Playwright 覆盖建图、核查、编辑失效与结果变化，禁止固定结果或假接口。使用 Docker Compose 运行应用，宿主端口可由 WEB_PORT 覆盖，并提供名为 verify 的一次性验收服务。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "4368141fd0e7", "repo_name": "rail-bearing-impulse-audit", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Go 1.25, Gin, testify, Docker, Docker Compose", "summary": "轨旁拾音器偶尔把车轮接缝与轴承冲击混在同一段采样中，车辆段声学检测工程师需要一个可逐点复核的纯后端 HTTP API。 … Docker Compose 运行 API，宿主端口可由 API_PORT 覆盖，并提供名为 verify 的一次性验收服务；不得依赖外部信号库代算、固定响应或占位实现。"} -->
+## 0011 · rail-bearing-impulse-audit
+
+- 创建时间：2026-09-12 21:23:17 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Go 1.25, Gin, testify, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+轨旁拾音器偶尔把车轮接缝与轴承冲击混在同一段采样中，车辆段声学检测工程师需要一个可逐点复核的纯后端 HTTP API。项目从空仓库起步，使用 Go 1.25、Gin、testify、Docker 与 Docker Compose；接口以 JSON 接收 1000 至 48000 Hz 的采样率和 64 至 20000 个有限浮点振幅，非法输入须定位到字段或样本下标。基线取全序列绝对值的中位数，偶数项取中间两项的算术平均；阈值为基线的 6 倍，仅绝对值严格大于阈值的连续样本构成候选区间，相邻候选之间不超过 3 个未超阈样本时合并。按合并后闭区间包含的样本数计算长度，少于 4 个样本则丢弃。峰值取区间内最大绝对值；如多个样本并列，固定选择最早下标。峰值严格大于基线的 12 倍判为严重，否则判为一般。基线为零或没有保留区间时返回不可判定，且不得制造脉冲。响应按起点升序返回每个脉冲的闭区间、峰值下标、峰值、等级及基线，同一输入必须得到逐字段一致的唯一结果。Docker Compose 运行 API，宿主端口可由 API_PORT 覆盖，并提供名为 verify 的一次性验收服务；不得依赖外部信号库代算、固定响应或占位实现。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "3847a54d7e87", "repo_name": "stained-glass-palette-drafter", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "老建筑彩窗只留下低分辨率 PNG 复原稿，而仓库可供应的玻璃颜色有限；制版师需要把每个像素归入唯一色号，并获得稳定的采购数量。 … 非 PNG、解码失败、尺寸越界或色板非法时须清除旧版图并明确报错；合法输入的网格、统计与导出内容必须逐格一致。"} -->
+## 0012 · stained-glass-palette-drafter
+
+- 创建时间：2026-09-12 21:42:11 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+老建筑彩窗只留下低分辨率 PNG 复原稿，而仓库可供应的玻璃颜色有限；制版师需要把每个像素归入唯一色号，并获得稳定的采购数量。项目从空仓库起步，以 TypeScript、Vue 3 和 Vite 构建纯前端工具，文件仅在浏览器内用标准能力解码，不上传或调用外部服务；通过 Docker Compose 发布页面，宿主端口可由 WEB_PORT 覆盖，并提供名为 verify 的一次性验收服务，使用 Vitest、Playwright 覆盖映射与导出。用户上传宽高各 1 至 128 的 PNG，并输入 2 至 16 个依次排列、互不重复的六位大写十六进制色值。完全透明像素作为空格；任一像素透明度不是 0 或 255 时拒绝整图。不透明像素直接采用 8 位 sRGB 整数，计算其与各色板颜色的三通道差值平方和并取最小者；并列时取色板中最靠前者，不做伽马转换、抖动或邻域修正。页面显示可缩放编号网格，悬停展示行列、原色和目标色，并汇总各色片数。导出文本按行优先记录非空格像素，行号、列号、色板序号均从 1 开始，三个字段以单个制表符分隔，记录以 LF 分隔，文件末尾不换行；无不透明像素时导出空文件。非 PNG、解码失败、尺寸越界或色板非法时须清除旧版图并明确报错；合法输入的网格、统计与导出内容必须逐格一致。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "25e4f31af8ce", "repo_name": "interpreter-handoff-aligner", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright, Docker", "summary": "一场多语发布会结束后，两名口译员各自记录了交接附近听到的事件，漏记、补记与时间偏移让组长无法确认双方笔记如何对应。 … 页面逐行展示配对、两类空缺、单步代价与总代价；结构错误、超限、重复或非递增时间只产生一次明确失败，保留原输入并标出首个错误路径，合法交接最终呈现可逐步复算且唯一的时间轴。"} -->
+## 0013 · interpreter-handoff-aligner
+
+- 创建时间：2026-09-12 21:50:51 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright, Docker
+
+### User Prompt
+
+<!-- prompt-start -->
+一场多语发布会结束后，两名口译员各自记录了交接附近听到的事件，漏记、补记与时间偏移让组长无法确认双方笔记如何对应。请从空仓库实现一个真实联调的全栈工具：页面接收两组 JSON 数组，每项仅含递增且不可重复的整数毫秒 time 与非空 text，单组最多 200 项。项目采用 Python 3.12、FastAPI、TypeScript、React 与 Vite；README 在此说明输入示例和启动方法，.gitignore 排除构建产物，pytest、Vitest 与 Playwright 覆盖算法及联调。Docker Compose 启动前端和 API，WEB_PORT、API_PORT 可覆盖宿主端口，并提供名为 verify 的一次性验收服务，禁止外部匹配库和占位实现。API 用动态规划生成全局对齐：相同 text 配对代价为时间差绝对值，不同 text 配对代价为该差值加 3000，任一侧单项留空代价为 2000；总成本最小优先，平局依次优先配对、左侧留空、右侧留空，动作仍相同时取前驱坐标字典序较小者。页面逐行展示配对、两类空缺、单步代价与总代价；结构错误、超限、重复或非递增时间只产生一次明确失败，保留原输入并标出首个错误路径，合法交接最终呈现可逐步复算且唯一的时间轴。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "f28ad67ae1c9", "repo_name": "cold-chain-frame-inspector", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "冷库记录器升级后偶尔导出肉眼无法核对的二进制片段，固件测试工程师必须知道故障来自哪一帧、哪一个字节，而不能让解析器跳过坏数据继续给出似是而非的温度。 … 文件长度不是 12 的倍数，或魔数、版本、保留位、湿度首次非法时，解析必须停在对应帧的字段首字节，保留此前合法帧但判定整文件失败且禁止下载；完全合法时按原顺序列出字段与起始偏移，下载 JSON 与表格"} -->
+## 0008 · cold-chain-frame-inspector
+
+- 创建时间：2026-09-12 20:29:49 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+冷库记录器升级后偶尔导出肉眼无法核对的二进制片段，固件测试工程师必须知道故障来自哪一帧、哪一个字节，而不能让解析器跳过坏数据继续给出似是而非的温度。代码从空仓库起步，使用 TypeScript、Vue 3、Vite 制作纯前端页面，文件只在浏览器内读取，不上传或访问外部服务。每帧固定 12 字节：偏移 0 至 1 必须为 A5 5A，偏移 2 为版本 01，偏移 3 的位 0 表示高温、位 1 表示低温、位 2 表示低电量，位 3 至 7 必须为零；偏移 4 至 7 是小端无符号秒时间，8 至 9 是小端有符号温度原始值，显示摄氏度为原始值除以 10 且固定一位小数，偏移 10 是 0 至 100 的湿度整数，偏移 11 是序号。Vitest 覆盖字节序、负数和错误偏移，Playwright 验证拖放、换文件与下载；Docker Compose 运行页面，WEB_PORT 可覆盖宿主端口，并提供名为 verify 的一次性验收服务。文件长度不是 12 的倍数，或魔数、版本、保留位、湿度首次非法时，解析必须停在对应帧的字段首字节，保留此前合法帧但判定整文件失败且禁止下载；完全合法时按原顺序列出字段与起始偏移，下载 JSON 与表格一致。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "69bcdf688f00", "repo_name": "fabric-clear-span-cutter", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Go 1.25, Gin, testify, Docker, Docker Compose", "summary": "成衣裁床收到的布卷疵点常被重复标记，扩张安全余量后还可能覆盖；排料工程师需要纯后端 API 得到唯一可下刀净段。 … 禁止外部排料库、固定响应及占位实现，合法结果必须可逐区间复算。"} -->
+## 0014 · fabric-clear-span-cutter
+
+- 创建时间：2026-09-13 05:07:53 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Go 1.25, Gin, testify, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+成衣裁床收到的布卷疵点常被重复标记，扩张安全余量后还可能覆盖；排料工程师需要纯后端 API 得到唯一可下刀净段。项目从空仓库起步，使用 Go 1.25、Gin 与 testify。单次 JSON 请求包含整数毫米布卷长度、安全余量、最短净段及编号唯一的疵点区间；长度为 1 至 10000000，余量为 0 至 10000，最短净段为 1 至布卷长度，区间采用 [start,end)，且 0≤start<end≤布卷长度。各疵点向两侧扩张余量并裁剪到布卷边界，按起点、终点升序排序，合并相交或首尾相接区间，再按起点升序生成补集；最短净段只执行长度大于或等于阈值的直接过滤，不另设裁决体系。响应返回扩张区间、合并区间、保留净段、各段长度和可用总长度，均为整数且不换算单位。任一字段越界、空区间或重复编号须使整次请求失败，返回可定位错误且不泄露部分结果。使用 Docker Compose 运行 API，宿主端口可由 API_PORT 覆盖，并提供名为 verify 的一次性验收服务；README 给出请求示例与计算规则。禁止外部排料库、固定响应及占位实现，合法结果必须可逐区间复算。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "153d36a044f7", "repo_name": "exhibit-shortcut-reader", "task_type": "0-1 代码生成", "project_category": "纯前端", "language_framework": "TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose", "summary": "互动展项上线前，测试员发现同一快捷键在不同浏览器里会出现左右修饰键、字母大小写和排列次序差异，人工抄录常把兼容问题判错；请从空仓库实现一个纯前端判读器，用户先填写一个由加号连接的目标组合，再在可聚焦采集区按下一次真实组合，全程不得调用外部在线服务。 … 完成判读后可下载 UTF-8 JSON，包含规范目标、规范实际组合和布尔结论，使任一单次按键都得到唯一、可核对的兼容结果。"} -->
+## 0018 · exhibit-shortcut-reader
+
+- 创建时间：2026-09-13 06:38:25 +0800
+- 项目类别：纯前端
+- 任务难度：待评估
+- 语言/框架：TypeScript, Vue 3, Vite, Vitest, Playwright, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+互动展项上线前，测试员发现同一快捷键在不同浏览器里会出现左右修饰键、字母大小写和排列次序差异，人工抄录常把兼容问题判错；请从空仓库实现一个纯前端判读器，用户先填写一个由加号连接的目标组合，再在可聚焦采集区按下一次真实组合，全程不得调用外部在线服务。修饰键仅允许 Control、Alt、Shift、Meta，主键仅允许 A 至 Z、0 至 9、Enter、Space、Escape；解析时忽略大小写，左右侧同名修饰键视为同键，规范结果固定按 Control、Alt、Shift、Meta 排列，字母主键转为大写。目标中重复修饰键、未知名称、缺少或含多个主键、超过三个修饰键均立即报错并清除旧结果。采用 TypeScript、Vue 3 与 Vite，在采集区监听 keydown；单独按修饰键不判读，焦点位于区外的事件忽略，收到主键后只比较规范字符串并显示匹配或不匹配，同时列出目标值和实际值。Vitest 覆盖规范化边界，Playwright 验证焦点与真实按键；Docker Compose 的静态前端端口由 WEB_PORT 覆盖，并提供名为 verify 的一次性验收服务。完成判读后可下载 UTF-8 JSON，包含规范目标、规范实际组合和布尔结论，使任一单次按键都得到唯一、可核对的兼容结果。
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "a7957d41a1b6", "repo_name": "fly-system-clearance-checker", "task_type": "0-1 代码生成", "project_category": "全栈", "language_framework": "Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright, Docker", "summary": "舞台换景彩排中，矩形吊景沿直线升降可能擦碰禁入区，安全员需在执行前获得唯一的首次越界位置。 … 用 pytest、Vitest、Playwright 覆盖临界值和联调；Docker Compose 编排前端、API 及一次性 verify 服务，WEB_PORT、API_PORT 可覆盖宿主端"} -->
+## 0019 · fly-system-clearance-checker
+
+- 创建时间：2026-09-13 07:10:24 +0800
+- 项目类别：全栈
+- 任务难度：待评估
+- 语言/框架：Python 3.12, FastAPI, Pydantic, TypeScript, React, Vite, pytest, Vitest, Playwright, Docker
+
+### User Prompt
+
+<!-- prompt-start -->
+舞台换景彩排中，矩形吊景沿直线升降可能擦碰禁入区，安全员需在执行前获得唯一的首次越界位置。请从空仓库实现 React 前端与 FastAPI API。前端上传 UTF-8 JSON：stage 含固定为 10000 的 width、height；fly 含整数 width、height、start{x,y}、end{x,y}；zones 为含字符串 id 与 vertices[{x,y}] 的数组。坐标和吊景尺寸均为整数且须使运动全程位于台口内；多边形按输入顺序连边，至少三点、面积非零且不自交。吊景以左下角为基准匀速平移、不旋转，t∈[0,1]；边界接触或内部重叠均算碰撞。自行实现连续扫掠判定，返回最小 t，展示值按十进制 half-up 保留六位。责任对象先取 id 字典序较小的禁入区，再取从零开始的边序号较小者；若 t=0 时矩形严格位于禁入区内部且不接触其边，该区责任边规定为 0，再按同一规则决胜。页面真实调用 API，以可缩放俯视图绘制起终姿态、完整路径、首次碰撞姿态、毫米坐标和责任边；无碰撞时路径全绿。缺字段、非整数、越界、自交或退化须返回首个字段路径，保留本次原文并清除旧图。用 pytest、Vitest、Playwright 覆盖临界值和联调；Docker Compose 编排前端、API 及一次性 verify 服务，WEB_PORT、API_PORT 可覆盖宿主端
+<!-- prompt-end -->
+<!-- task-entry-end -->
+
+<!-- task-entry-start {"run_id": "758f892c331e", "repo_name": "dripline-uniformity-verdict", "task_type": "0-1 代码生成", "project_category": "纯后端", "language_framework": "Go 1.25, Gin, shopspring/decimal, testify, Docker, Docker Compose", "summary": "温室滴灌验收时，各测点流量虽都接近标称值，最低一组却可能暴露堵塞，调试工程师需要纯后端 API 给出可复算的支路均匀度裁决。 … 数量、id 或流量任一非法时返回定位首个字段路径的 422，整次不输出部分均值，使临界支路最终只有一个明确验收结论。"} -->
+## 0021 · dripline-uniformity-verdict
+
+- 创建时间：2026-09-13 07:36:06 +0800
+- 项目类别：纯后端
+- 任务难度：待评估
+- 语言/框架：Go 1.25, Gin, shopspring/decimal, testify, Docker, Docker Compose
+
+### User Prompt
+
+<!-- prompt-start -->
+温室滴灌验收时，各测点流量虽都接近标称值，最低一组却可能暴露堵塞，调试工程师需要纯后端 API 给出可复算的支路均匀度裁决。请从空仓库实现 Go 1.25、Gin 服务；Docker Compose 运行 API 并提供名为 verify 的一次性验收服务，宿主端口由 API_PORT 覆盖，testify 覆盖计算边界，README 在实现旁说明请求示例，禁止固定响应和占位实现。一次 JSON 输入 4 至 64 个测点，每项含唯一非空 id 与流量 flow_lph；流量为大于 0 且不超过 100、最多三位小数的十进制数。按流量升序取前 ceil(n/4) 项，分别以精确十进制计算该组均值与全体均值，DU=组均值÷全体均值×100，仅最终 DU 按十进制 ROUND_HALF_UP 保留两位。DU 大于等于 90.00 判定通过，80.00 至 89.99 判定复查，低于 80.00 判定不通过。响应须返回样本数、最低组数量及其测点 id、两个未提前舍入的均值、DU 和裁决；并列最低值按输入次序进入最低组。数量、id 或流量任一非法时返回定位首个字段路径的 422，整次不输出部分均值，使临界支路最终只有一个明确验收结论。
 <!-- prompt-end -->
 <!-- task-entry-end -->
 

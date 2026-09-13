@@ -12,7 +12,7 @@
 1. 在 Chrome 打开 `chrome://extensions`。
 2. 开启右上角“开发者模式”。
 3. 点击“加载已解压的扩展程序”。
-4. 选择本目录：`/Users/zhangxinyu/claude code/claude-eval-console/chrome-solo-qa-helper`。
+4. 选择本目录：`/Users/studio1/Library/Application Support/Claude Eval Console/chrome-solo-qa-helper`。
 5. 刷新 `http://127.0.0.1:8765/#exports`。
 
 安装后，导出页会显示“提交助手已连接”。历史状态只在点击“同步我的提交”时手动核对；提交按钮仅对本次所选轮次按 SessionID 和 TurnID 检查重复，然后上传并创建记录。

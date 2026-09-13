@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <title>Claude Eval Console</title>
-    <link rel="stylesheet" href="/styles.css?v=38" />
+    <link rel="stylesheet" href="/styles.css?v=40" />
   </head>
   <body>
     <div class="shell">
@@ -19,7 +19,7 @@
             </div>
           </div>
           <div class="header-tools">
-            <div class="model-chip parallel-chip"><span></span><b id="parallel-status">并行 0 / 4</b></div>
+            <div class="model-chip parallel-chip"><span></span><b id="parallel-status">并行 0 / 6</b></div>
             <form class="model-switcher" id="model-form">
               <label for="global-model">全局模型</label>
               <select id="global-model" name="model" aria-label="全局模型" required>
@@ -54,9 +54,9 @@
           <div class="quick-create">
             <label for="project-directory">保存到</label>
             <div class="quick-directory">
-              <span>/Users/zhangxinyu/claude code /</span>
-              <input id="project-directory" list="project-directory-options" autocomplete="off" value="zzzz" aria-label="本地保存目录" />
-              <datalist id="project-directory-options"><option value="zzzz"></option></datalist>
+              <span id="projects-root-label"></span>
+              <input id="project-directory" list="project-directory-options" autocomplete="off" value="" aria-label="本地保存目录" />
+              <datalist id="project-directory-options"></datalist>
             </div>
             <button class="new-run-button" id="new-run-button" type="button"><span>＋</span> 新建任务</button>
             <small id="directory-preview">项目文件夹编号会自动递增，难度由完成后的轨迹和产物评定。</small>
@@ -66,7 +66,7 @@
               <span class="auto-refill-indicator" aria-hidden="true"></span>
               <div>
                 <strong>自动补题</strong>
-                <small id="auto-refill-detail">并行不足 4 时优先续作；每链最多 6 轮，默认按 Feature、Bug 修复和完整模块混合安排。</small>
+                <small id="auto-refill-detail">并行不足 6 时优先续作；每链最多 6 轮，默认按 Feature、Bug 修复和完整模块混合安排。</small>
                 <small class="auto-refill-deadline hidden" id="auto-refill-deadline"></small>
               </div>
             </div>
@@ -180,15 +180,15 @@
             <div class="export-heading">
               <div>
                 <span>COMPLETED TURNS</span>
-                <h2>导出已完成轮次</h2>
-                <p>每个已完成轮次占一行；不能导出的轮次会在状态下方直接列出缺失资料。</p>
+                <h2>复核与正式提交</h2>
+                <p>每个已完成轮次占一行；复核副本可直接导出，资料问题会阻止人工确认和正式提交。</p>
               </div>
               <div class="export-actions">
                 <b id="export-selection-count">已选 0 项</b>
                 <button class="danger-button" id="delete-selected-export-turns" type="button" disabled>删除所选</button>
                 <button class="secondary-button" id="preflight-export" type="button">提交前检查</button>
                 <button class="secondary-button" id="select-preflight-passed" type="button" disabled>只选择检查通过项</button>
-                <button class="primary-button" id="download-export" type="button" disabled>导出 Excel</button>
+                <button class="primary-button" id="download-export" type="button" disabled>导出复核副本</button>
               </div>
             </div>
             <form class="export-filters" id="export-filters">
@@ -220,11 +220,11 @@
                 </select>
               </label>
               <label>
-                <span>资料状态</span>
+                <span>正式资料状态</span>
                 <select id="export-filter-readiness">
-                  <option value="">全部资料状态</option>
-                  <option value="ready">可导出</option>
-                  <option value="blocked">待补资料</option>
+                  <option value="">全部正式资料状态</option>
+                  <option value="ready">可确认</option>
+                  <option value="blocked">待补正式资料</option>
                 </select>
               </label>
               <label>
@@ -392,6 +392,6 @@
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=70" defer></script>
+    <script src="/app.js?v=83" defer></script>
   </body>
 </html>

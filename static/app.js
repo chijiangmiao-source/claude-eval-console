@@ -1,4 +1,4 @@
-const UI_VERSION = "20260912.2";
+const UI_VERSION = "20260913.31";
 const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 
@@ -324,6 +324,7 @@ function renderHealth() {
   }
   const directoryOptions = $("#project-directory-options");
   const directoryInput = $("#project-directory");
+  $("#projects-root-label").textContent = `${state.health.projects_root || ""} /`;
   if (directoryOptions) {
     directoryOptions.innerHTML = (state.health.project_directories || []).map((directory) =>
       `<option value="${escapeHtml(directory)}"></option>`
@@ -646,8 +647,17 @@ function reviewHtml(review, title = "自动检查结果") {
   </div>`;
 }
 
-function evaluationHtml(evaluation, title) {
+function evaluationConfirmationLabel(status) {
+  if (status === "pending_human_confirmation") return "待人工二次确认";
+  if (status === "human_confirmed") return "已人工确认";
+  if (status === "human_confirmation_stale") return "确认已失效";
+  if (status === "quality_platform_review") return "默认通过 · 平台复核";
+  return "";
+}
+
+function evaluationHtml(evaluation, title, confirmationStatus = "") {
   if (!evaluation) return "";
+  const confirmationLabel = evaluationConfirmationLabel(confirmationStatus);
   const dimensions = [
     ["交付完整性", evaluation.delivery],
     ["指令遵循", evaluation.instruction_following],
@@ -656,7 +666,7 @@ function evaluationHtml(evaluation, title) {
     ["执行能力", evaluation.execution],
   ];
   return `<div class="review-panel evaluation-panel">
-    <div class="review-heading"><h3>${escapeHtml(title)}</h3><span>${escapeHtml(evaluation.task_type || "待判定")}</span></div>
+    <div class="review-heading"><h3>${escapeHtml(title)}${confirmationLabel ? ` · ${escapeHtml(confirmationLabel)}` : ""}</h3><span>${escapeHtml(evaluation.task_type || "待判定")}</span></div>
     <p>${escapeHtml(evaluation.task_difficulty || "未记录")} · ${escapeHtml(evaluation.language_framework || "未记录")} · ${escapeHtml(evaluation.environment_reproducibility || "未记录")}</p>
     <div class="review-bugs">${dimensions.map(([label, item]) => `
       <div class="review-bug score-item">
@@ -667,9 +677,30 @@ function evaluationHtml(evaluation, title) {
   </div>`;
 }
 
+function evaluationDraftHtml(evaluation, blocker) {
+  if (!evaluation) return "";
+  const dimensions = [
+    ["交付完整性", evaluation.delivery],
+    ["指令遵循", evaluation.instruction_following],
+    ["任务规划", evaluation.planning],
+    ["推理能力", evaluation.reasoning],
+    ["执行能力", evaluation.execution],
+  ];
+  return `<div class="review-panel evaluation-panel evaluation-draft-panel" role="note">
+    <div class="review-heading"><h3>评分草稿，待证据确认</h3><span>不可导出</span></div>
+    <p class="evaluation-draft-notice">关键证据尚未确认。这份内容只用于人工复核，不会作为正式评分或导出数据。</p>
+    <div class="evaluation-draft-blocker"><b>阻塞原因</b><span>${escapeHtml(blocker || "缺少可核验的评分证据")}</span></div>
+    <div class="review-bugs">${dimensions.map(([label, item]) => `
+      <div class="review-bug score-item">
+        <div><span>${escapeHtml(item?.score || "-")} 分</span><b>${label}</b></div>
+        <p>${escapeHtml(item?.description || "等待补充")}</p>
+      </div>`).join("")}</div>
+  </div>`;
+}
+
 function turnDeliveryRows(run, turn) {
   const turnNumber = Number(turn?.turn_number || 1);
-  const evaluation = turn?.review_result?.evaluation;
+  const evaluation = turn?.effective_evaluation || turn?.review_result?.evaluation;
   const value = (field, fallback = "") => evaluation?.[field] || fallback;
   const score = (field) => evaluation?.[field]?.score || "";
   const description = (field) => evaluation?.[field]?.description || "";
@@ -699,7 +730,7 @@ function turnDeliveryRows(run, turn) {
     ["执行能力", score("execution")],
     ["执行能力 - 描述", description("execution")],
     ["其他问题", ""],
-    ["提交人", state.health?.submitter || "张鑫宇"],
+    ["提交人", state.health?.submitter || "刘昱"],
   ];
 }
 
@@ -721,20 +752,29 @@ function turnHistoryHtml(runId, turns) {
   if (!turns?.length) return '<div class="side-empty">暂无逐轮记录</div>';
   return `<div class="turn-history">${turns.map((turn) => {
     const review = turn.review_result || {};
+    const evaluation = turn.effective_evaluation || review.evaluation;
+    const hasEffectiveEvaluation = Boolean(evaluation?.delivery);
+    const evaluationDraft = !hasEffectiveEvaluation && review.evaluation_draft
+      ? review.evaluation_draft
+      : null;
     const bugs = review.bugs || review.remaining_bugs || [];
     const reviewRecord = review.summary ? { ...review, bugs } : null;
     const statusLabels = {
       queued: "排队中",
       running: "Claude 执行中",
       reviewing: "GPT 检查中",
+      manual_review: "待人工确认",
       complete: "本轮已归档",
       failed: "本轮失败",
       stopped: "已终止",
     };
+    const turnStatusLabel = evaluationDraft
+      ? "待人工确认"
+      : (statusLabels[turn.status] || turn.status || "未记录");
     return `<section class="turn-record">
       <div class="turn-record-heading">
         <div><span>TURN ${escapeHtml(turn.turn_number)}</span><h3>第 ${escapeHtml(turn.turn_number)} 轮 · ${escapeHtml(turn.intent_type || "未记录")}</h3></div>
-        <b>${escapeHtml(statusLabels[turn.status] || turn.status || "未记录")}</b>
+        <b>${escapeHtml(turnStatusLabel)}</b>
       </div>
       <details class="turn-block turn-prompt-block" data-detail-key="turn-${turn.turn_number}-prompt" ${detailOpenAttribute(runId, `turn-${turn.turn_number}-prompt`, true)}>
         <summary>本轮题面（User Prompt） <span>${turn.prompt_id ? "已发送" : "待发送"}</span></summary>
@@ -746,13 +786,14 @@ function turnHistoryHtml(runId, turns) {
         ${metadataItem("轨迹检查点", turn.trajectory_path, `turn-${turn.turn_number}-trajectory`)}
         ${metadataItem("轨迹 SHA-256", turn.trajectory_sha256, `turn-${turn.turn_number}-trajectory-sha`)}
         ${metadataItem("Claude 模型", turn.model, `turn-${turn.turn_number}-model`)}
-        ${metadataItem("本轮任务类型", review.evaluation?.task_type || turn.intent_type, `turn-${turn.turn_number}-type`)}
+        ${metadataItem("本轮任务类型", evaluation?.task_type || turn.intent_type, `turn-${turn.turn_number}-type`)}
         ${metadataItem("后台任务", turn.agent_id, `turn-${turn.turn_number}-agent`)}
       </div>
       ${turn.result ? `<details class="turn-block" data-detail-key="turn-${turn.turn_number}-result" ${detailOpenAttribute(runId, `turn-${turn.turn_number}-result`)}><summary>Claude 执行结果 <span>展开查看</span></summary><div class="turn-content">${escapeHtml(turn.result)}</div></details>` : ""}
       ${validationHtml(turn.verification, `第 ${turn.turn_number} 轮 Docker 验收`)}
       ${reviewRecord ? reviewHtml(reviewRecord, `第 ${turn.turn_number} 轮 GPT 检查`) : ""}
-      ${evaluationHtml(review.evaluation, `第 ${turn.turn_number} 轮评分`)}
+      ${hasEffectiveEvaluation ? evaluationHtml(evaluation, `第 ${turn.turn_number} 轮评分`, turn.evaluation_confirmation_status) : ""}
+      ${evaluationDraftHtml(evaluationDraft, review.evaluation_blocker)}
     </section>`;
   }).join("")}</div>`;
 }
@@ -1218,7 +1259,7 @@ function renderExportPreflightSummary() {
   panel.className = `export-preflight-panel ${failed ? "failed" : (warning ? "warning" : "passed")}`;
   panel.innerHTML = `
     <strong>检查完成：通过 ${escapeHtml(summary.passed || 0)}，提醒 ${escapeHtml(warning)}，不通过 ${escapeHtml(failed)}</strong>
-    <span>${escapeHtml(result.checked_at || "")} · 不通过项会阻止导出和 SOLO-QA 提交。</span>`;
+    <span>${escapeHtml(result.checked_at || "")} · 不通过项会阻止人工确认和 SOLO-QA 正式提交；复核副本仍可导出。</span>`;
 }
 
 function updateExportSelectionControls() {
@@ -1228,14 +1269,14 @@ function updateExportSelectionControls() {
   const visibleSelectedCount = [...state.selectedExportTurns]
     .filter((key) => visibleKeys.has(key)).length;
   const selectedTurns = state.completedTurns.filter((turn) => state.selectedExportTurns.has(turn.key));
-  const selectedReady = selectedTurns.filter((turn) => turn.export_ready).length;
+  const selectedReady = selectedTurns.filter((turn) => turn.review_copy_ready).length;
   $("#export-selection-count").textContent = `已选 ${selectedCount} 项${selectedCount !== visibleSelectedCount ? `（当前筛选内 ${visibleSelectedCount}）` : ""}`;
   const download = $("#download-export");
   download.disabled = selectedCount === 0
     || selectedReady !== selectedCount
     || state.exportPreflightBusy
     || state.exportDeleteBusy;
-  download.title = selectedReady !== selectedCount ? "所选轮次中有待补资料项" : "";
+  download.title = selectedReady !== selectedCount ? "所选轮次尚无评分内容" : "导出用于人工复核的副本";
   const deleteButton = $("#delete-selected-export-turns");
   deleteButton.disabled = selectedCount === 0 || state.exportDeleteBusy || state.exportPreflightBusy;
   deleteButton.textContent = state.exportDeleteBusy ? "正在删除…" : `删除所选${selectedCount ? `（${selectedCount}）` : ""}`;
@@ -1339,7 +1380,7 @@ function renderExportPage() {
           : ""));
     const readinessContent = preflight
       ? `<span class="preflight-result ${escapeHtml(preflightTone)}">${escapeHtml(preflightLabel)}</span>${preflightIssues.length ? `<span class="export-issues-inline">：${escapeHtml(preflightIssues.join("；"))}</span>` : ""}`
-      : `<span class="export-readiness ${turn.export_ready ? "ready" : "blocked"}">${turn.export_ready ? "可导出 · 尚未深度检查" : `待补资料（${escapeHtml(exportIssues.length)}）`}</span>${exportIssueDetails}`;
+      : `<span class="export-readiness ${turn.export_ready ? "ready" : "blocked"}">${turn.export_ready ? "可确认 · 尚未深度检查" : `待补资料（${escapeHtml(exportIssues.length)}）`}</span>${exportIssueDetails}`;
     const promptExpanded = state.expandedExportPrompts.has(turn.key);
     const promptRowId = `export-prompt-${turn.run_id}-${turn.turn_number}`;
     const evaluationEditor = promptExpanded ? exportEvaluationEditorHtml(turn) : "";
@@ -1369,6 +1410,7 @@ const exportEvaluationDimensions = [
   ["reasoning", "推理能力"],
   ["execution", "执行能力"],
 ];
+const EXPORT_EVALUATION_UNSAVED_MESSAGE = "评分有未保存修改，请先保存评分";
 
 function exportEvaluationDraft(turn) {
   const saved = state.exportEvaluationDrafts.get(turn.key);
@@ -1389,17 +1431,45 @@ function exportEvaluationEditorHtml(turn) {
   }
   const draft = exportEvaluationDraft(turn);
   const busy = state.exportEvaluationBusy.has(turn.key);
+  const dirty = state.exportEvaluationDrafts.has(turn.key);
+  const confirmationLabel = evaluationConfirmationLabel(turn.evaluation_confirmation_status);
+  const confirmation = turn.evaluation_confirmation || {};
+  const evidenceIssues = Array.isArray(turn.evaluation_evidence_issues)
+    ? turn.evaluation_evidence_issues : [];
+  const formalIssues = Array.isArray(turn.export_issues) ? turn.export_issues : [];
+  const confirmationIssues = [
+    ...(dirty ? [EXPORT_EVALUATION_UNSAVED_MESSAGE] : []),
+    ...(Array.isArray(turn.evaluation_confirmation_issues)
+      ? turn.evaluation_confirmation_issues : [...formalIssues, ...evidenceIssues]),
+  ];
+  const confirmationReady = !dirty && (typeof turn.evaluation_confirmation_ready === "boolean"
+    ? turn.evaluation_confirmation_ready : turn.export_ready && !evidenceIssues.length);
+  const confirmationAccepted = ["confirmed", "platform_review"].includes(confirmation.status);
   const status = turn.evaluation_overridden
     ? `<span class="manual">已人工修改${turn.evaluation_override_updated_at ? ` · ${escapeHtml(turn.evaluation_override_updated_at)}` : ""}</span>`
     : "<span>当前为自动评分</span>";
   return `<section class="export-evaluation-editor" data-evaluation-editor="${escapeHtml(turn.key)}">
-    <div class="export-evaluation-heading"><div><strong>五维评分与描述</strong>${status}</div><small>保存后，Excel 导出和 SOLO-QA 提交均使用这里的内容。</small></div>
+    <div class="export-evaluation-heading"><div><strong>五维评分与描述${confirmationLabel ? ` · ${escapeHtml(confirmationLabel)}` : ""}</strong>${status}</div><small>五维评分随任务完成；具体问题步骤由质检平台二次确认。</small></div>
+    ${evidenceIssues.length ? `<div class="evaluation-draft-blocker"><b>证据未对齐</b><span>${escapeHtml(evidenceIssues.join("；"))}</span></div>` : ""}
     <div class="export-evaluation-grid">${exportEvaluationDimensions.map(([key, label]) => {
       const item = draft[key] || {};
       return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数">${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="6" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述">${escapeHtml(item.description || "")}</textarea></label>`;
     }).join("")}</div>
-    <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${busy ? "保存中…" : "保存评分修改"}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<span>原始自动评分不会被覆盖。</span></div>
+    <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${busy ? "保存中…" : "保存评分"}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<button class="secondary-button" type="button" data-confirm-evaluation="${escapeHtml(turn.key)}" title="${escapeHtml(confirmationIssues.join("；"))}" ${busy || confirmationAccepted || !confirmationReady ? "disabled" : ""}>${confirmationAccepted ? "已通过" : "确认用于正式提交"}</button><span data-evaluation-save-reminder="${escapeHtml(turn.key)}" aria-live="polite" ${dirty ? "" : "hidden"}>${escapeHtml(EXPORT_EVALUATION_UNSAVED_MESSAGE)}</span><span>原始自动评分不会被覆盖。</span></div>
   </section>`;
+}
+
+function showExportEvaluationUnsavedState(turnKey) {
+  const editor = [...document.querySelectorAll("[data-evaluation-editor]")]
+    .find((item) => item.dataset.evaluationEditor === turnKey);
+  if (!editor) return;
+  const confirmButton = editor.querySelector("[data-confirm-evaluation]");
+  if (confirmButton) {
+    confirmButton.disabled = true;
+    confirmButton.title = EXPORT_EVALUATION_UNSAVED_MESSAGE;
+  }
+  const reminder = editor.querySelector("[data-evaluation-save-reminder]");
+  if (reminder) reminder.hidden = false;
 }
 
 function updateEvaluationDraft(input) {
@@ -1414,6 +1484,7 @@ function updateEvaluationDraft(input) {
     [field]: field === "score" ? Number(input.value) : input.value,
   };
   state.exportEvaluationDrafts.set(key, draft);
+  showExportEvaluationUnsavedState(key);
 }
 
 async function saveExportEvaluation(turnKey, reset = false) {
@@ -1434,7 +1505,36 @@ async function saveExportEvaluation(turnKey, reset = false) {
     state.exportEvaluationDrafts.delete(turnKey);
     state.exportPreflight = null;
     await loadCompletedTurns();
-    showNotice(reset ? "已恢复自动评分；后续导出和提交将使用自动版本" : "评分修改已保存；后续导出和提交将使用人工版本");
+    showNotice(reset ? "已恢复自动评分，人工确认已清除" : "评分草稿已保存，人工确认已清除；复核后再确认正式提交");
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    state.exportEvaluationBusy.delete(turnKey);
+    renderExportPage();
+  }
+}
+
+async function confirmExportEvaluation(turnKey) {
+  if (state.exportEvaluationBusy.has(turnKey)) return;
+  if (state.exportEvaluationDrafts.has(turnKey)) {
+    showExportEvaluationUnsavedState(turnKey);
+    showNotice(EXPORT_EVALUATION_UNSAVED_MESSAGE);
+    return;
+  }
+  const turn = state.completedTurns.find((item) => item.key === turnKey);
+  const expected = turn?.evaluation_confirmation?.current_sha256;
+  if (!turn || !expected) return;
+  state.exportEvaluationBusy.add(turnKey);
+  renderExportPage();
+  try {
+    await api("/api/exports/turns/evaluation/confirm", {
+      method: "POST",
+      body: JSON.stringify({ turn_key: turnKey, expected_sha256: expected }),
+    });
+    state.exportEvaluationDrafts.delete(turnKey);
+    state.exportPreflight = null;
+    await loadCompletedTurns();
+    showNotice("评分与当前证据已人工确认，可在项目收尾后正式提交");
   } catch (error) {
     showNotice(error.message);
   } finally {
@@ -1669,7 +1769,7 @@ async function showExportPage() {
   analyticsView.classList.add("hidden");
   exportView.classList.remove("hidden");
   setActiveModuleTab("exports");
-  setPageHeader("导出与提交", "选择一个或多个已完成轮次，导出 Excel 或提交到 SOLO-QA。", true);
+  setPageHeader("导出与提交", "可随时导出复核副本；正式提交前须检查证据、人工确认并完成项目收尾。", true);
   $("#export-turn-list").innerHTML = '<tr><td colspan="11" class="table-empty">正在读取已完成轮次…</td></tr>';
   await loadCompletedTurns();
   pingSoloQaBridge();
@@ -2202,7 +2302,6 @@ async function downloadSelectedTurns() {
   const button = $("#download-export");
   const turnKeys = [...state.selectedExportTurns];
   if (!turnKeys.length) return;
-  if (!await selectedTurnsPassPreflight(turnKeys)) return;
   button.disabled = true;
   button.textContent = "正在生成 Excel…";
   try {
@@ -2218,7 +2317,7 @@ async function downloadSelectedTurns() {
     }
     const disposition = response.headers.get("Content-Disposition") || "";
     const match = disposition.match(/filename="([^"]+)"/i);
-    const filename = match?.[1] || "completed-turns.xlsx";
+    const filename = match?.[1] || "review-copy-completed-turns.xlsx";
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2228,11 +2327,11 @@ async function downloadSelectedTurns() {
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showNotice(`已导出 ${turnKeys.length} 个完成轮次`);
+    showNotice(`已导出 ${turnKeys.length} 个完成轮次的复核副本`);
   } catch (error) {
     showNotice(error.message);
   } finally {
-    button.textContent = "导出 Excel";
+    button.textContent = "导出复核副本";
     updateExportSelectionControls();
   }
 }
@@ -2432,6 +2531,11 @@ $("#export-turn-list").addEventListener("click", (event) => {
   if (resetEvaluation) {
     if (!window.confirm("恢复自动评分？已保存的人工修改将被移除。")) return;
     saveExportEvaluation(resetEvaluation.dataset.resetEvaluation, true);
+    return;
+  }
+  const confirmEvaluation = event.target.closest("[data-confirm-evaluation]");
+  if (confirmEvaluation) {
+    confirmExportEvaluation(confirmEvaluation.dataset.confirmEvaluation);
     return;
   }
   const promptButton = event.target.closest("[data-export-prompt-key]");

@@ -564,6 +564,13 @@ textarea { padding: 13px 14px; border-radius: 10px; resize: vertical; line-heigh
 .review-bug b { font-size: 10px; }
 .review-bug p { margin: 7px 0 5px; color: #56635f; font-size: 9px; line-height: 1.6; }
 .review-bug small { color: #7c8884; font-size: 9px; line-height: 1.55; }
+.evaluation-draft-panel { border-color: #e7cf98; background: #fffaf0; }
+.evaluation-draft-panel .review-heading h3 { color: #765719; }
+.evaluation-draft-panel .review-heading > span { color: #765719; background: #f5e5bd; }
+.evaluation-draft-panel > .evaluation-draft-notice { color: #6f5d39; }
+.evaluation-draft-blocker { margin-top: 11px; padding: 10px 12px; display: flex; align-items: flex-start; gap: 9px; border: 1px solid #ead7aa; border-radius: 8px; color: #745821; background: #fffdf8; font-size: 9px; line-height: 1.6; }
+.evaluation-draft-blocker b { flex: 0 0 auto; }
+.evaluation-draft-blocker span { min-width: 0; overflow-wrap: anywhere; }
 .second-turn-box { margin-top: 16px; padding: 21px; border: 1px solid #cfe2dc; border-radius: 13px; background: #f2f8f6; }
 .second-turn-box h3 { margin: 0 0 6px; color: #245a4e; }
 .second-turn-box p { max-width: 820px; margin: 0 0 13px; color: #71827d; font-size: 10px; line-height: 1.7; }

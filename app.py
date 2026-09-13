@@ -88,6 +88,9 @@ POLL_SECONDS = 3
 RUN_TIMEOUT_SECONDS = 6 * 60 * 60
 INACTIVITY_WARNING_SECONDS = 30 * 60
 TERMINAL_ATTENTION_ALERT_INTERVAL_SECONDS = 60
+TERMINAL_IDLE_STABLE_SECONDS = 15
+TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS = 60
+COMPLETION_RECOVERY_PROMPT_PREFIX = "[CLAUDE-EVAL-COMPLETE-TURN]"
 TERMINAL_ATTENTION_SOUND_PATH = Path(
     os.environ.get(
         "CLAUDE_EVAL_ATTENTION_SOUND",
@@ -128,7 +131,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.39"
+APP_VERSION = "20260914.40"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -10285,13 +10288,35 @@ def export_readiness(row: Dict[str, Any]) -> Tuple[bool, List[str]]:
     return not issues, issues
 
 
+def trace_is_automatic_continuation_prompt(text: str) -> bool:
+    """Recognize only controller-owned prompts that continue one logical turn."""
+    stripped = str(text or "").lstrip()
+    if stripped.startswith(COMPLETION_RECOVERY_PROMPT_PREFIX):
+        return True
+    return any(
+        stripped.startswith(prefix)
+        for prefix in (
+            "[Your previous response had no visible output. Please continue and produce a user-visible response.]",
+            "现有实现与测试已经完成。请不要再修改代码，立即输出一段简洁、非空的最终交付摘要",
+            "继续完成原任务：补齐尚未写完的 Playwright 端到端验收",
+        )
+    )
+
+
 def trace_human_prompt_text(event: Dict[str, Any]) -> Optional[str]:
-    if event.get("type") != "user" or event.get("isSidechain") is True:
+    if (
+        event.get("type") != "user"
+        or event.get("isSidechain") is True
+        or event.get("isMeta") is True
+        or event.get("turnCompanion") is True
+    ):
         return None
     message = event.get("message") if isinstance(event.get("message"), dict) else {}
     content = message.get("content")
     if isinstance(content, str):
         if content.lstrip().startswith("<task-notification>"):
+            return None
+        if trace_is_automatic_continuation_prompt(content):
             return None
         if content.strip().casefold() in {
             "[request interrupted by user]",
@@ -10315,6 +10340,8 @@ def trace_human_prompt_text(event: Dict[str, Any]) -> Optional[str]:
         if isinstance(block, dict) and block.get("type") == "text"
     ]
     text = "\n".join(text_blocks) if text_blocks else ""
+    if trace_is_automatic_continuation_prompt(text):
+        return None
     if text.strip().casefold() in {
         "[request interrupted by user]",
         "[request interrupted by user for tool use]",
@@ -10323,6 +10350,20 @@ def trace_human_prompt_text(event: Dict[str, Any]) -> Optional[str]:
     if re.sub(r"[\s。！？!?]+", "", text) == "继续":
         return None
     return text or None
+
+
+def trace_next_human_prompt_index(
+    events: List[Dict[str, Any]], start_index: int
+) -> int:
+    """Return the next real user-turn boundary, excluding controlled continuations."""
+    return next(
+        (
+            index
+            for index in range(start_index + 1, len(events))
+            if trace_human_prompt_text(events[index]) is not None
+        ),
+        len(events),
+    )
 
 
 def read_trace_events(path: Path) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -10439,10 +10480,7 @@ def completed_turn_preflight(row: Dict[str, Any]) -> Dict[str, Any]:
                 actual = positions[0] if positions else "未找到"
                 block(f"轨迹中的真实提问顺序为 {actual}，数据库记录为第 {turn_number} 轮")
 
-            next_prompt_index = next(
-                (item[0] for item in human_prompts if item[0] > target_index),
-                len(events),
-            )
+            next_prompt_index = trace_next_human_prompt_index(events, target_index)
             final_indexes: List[int] = []
             for index in range(target_index + 1, next_prompt_index):
                 event = events[index]
@@ -11174,6 +11212,19 @@ def terminal_attention_reason_from_text(value: Any) -> str:
     return ""
 
 
+def terminal_idle_prompt_visible(value: Any) -> bool:
+    """Recognize a settled Claude prompt without mistaking active work for idle."""
+    visible = TERMINAL_ANSI_ESCAPE_RE.sub("", str(value or "")).replace("\x00", " ")
+    tail = "\n".join(visible.splitlines()[-10:]).casefold()
+    compact_tail = re.sub(r"\s+", "", tail)
+    return bool(
+        "bypasspermissionson" in compact_tail
+        and ("new task?" in tail or re.search(r"\bdone\b", tail))
+        and "esc to interrupt" not in tail
+        and not terminal_attention_reason_from_text(tail)
+    )
+
+
 def terminal_screen_text(run_id: str, screen_name: str) -> str:
     """Read the current screen without sending keys to the running conversation."""
     try:
@@ -11835,6 +11886,27 @@ def send_api_resume_to_screen(run_id: str, screen_name: str) -> None:
     run_command(["screen", "-S", screen_name, "-p", "0", "-X", "stuff", "\r"])
 
 
+def send_completion_recovery_to_screen(run_id: str, screen_name: str) -> None:
+    """Ask one idle session to emit a durable final response for the current turn."""
+    if not screen_session_running(screen_name):
+        raise WorkflowError("对话终端已关闭，无法自动催收最终回复")
+    paths = terminal_asset_paths(run_id)
+    paths["root"].mkdir(parents=True, exist_ok=True)
+    recovery_prompt = paths["root"] / "completion-recovery-prompt.txt"
+    recovery_prompt.write_text(
+        f"{COMPLETION_RECOVERY_PROMPT_PREFIX} "
+        "当前任务终端已回到空闲界面，但轨迹没有记录可归档的最终回复。"
+        "请检查当前工作，必要时完成剩余操作，然后直接给出本轮最终结果并结束回复。",
+        encoding="utf-8",
+    )
+    run_command(
+        ["screen", "-S", screen_name, "-p", "0", "-X", "readbuf", str(recovery_prompt)]
+    )
+    run_command(["screen", "-S", screen_name, "-p", "0", "-X", "paste", "."])
+    time.sleep(0.5)
+    run_command(["screen", "-S", screen_name, "-p", "0", "-X", "stuff", "\r"])
+
+
 def copy_container_traces(row: sqlite3.Row, destination: Path) -> Path:
     container_name = str(row["container_name"] or "")
     if not container_name:
@@ -11933,11 +12005,13 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
         if not prompt_matches:
             continue
         start_index, prompt_id = prompt_matches[-1]
+        next_prompt_index = trace_next_human_prompt_index(events, start_index)
         final_text = ""
         final_index: Optional[int] = None
         api_error = ""
         api_error_index: Optional[int] = None
-        for index, event in enumerate(events[start_index + 1 :], start=start_index + 1):
+        for index in range(start_index + 1, next_prompt_index):
+            event = events[index]
             message = event.get("message") if isinstance(event.get("message"), dict) else {}
             content = message.get("content")
             if event.get("type") != "assistant" or not isinstance(content, list):
@@ -11962,12 +12036,15 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
                 event.get("type") == "system"
                 and event.get("subtype") == "turn_duration"
             )
-            for event in events[(final_index + 1) if final_index is not None else len(events) :]
+            for event in events[
+                (final_index + 1) if final_index is not None else next_prompt_index
+                : next_prompt_index
+            ]
         )
         complete = bool(final_index is not None and turn_finished)
         api_error_resumed = bool(
             api_error_index is not None
-            and trace_has_api_resume(events, api_error_index)
+            and trace_has_api_resume(events[:next_prompt_index], api_error_index)
         )
         unresolved_api_error = bool(
             not complete
@@ -11975,7 +12052,9 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
             and (final_index is None or api_error_index > final_index)
             and not api_error_resumed
         )
-        interruption_reason = trace_user_interruption(events, start_index)
+        interruption_reason = trace_user_interruption(
+            events[:next_prompt_index], start_index
+        )
         return {
             "session_id": path.stem,
             "prompt_id": prompt_id,
@@ -12076,6 +12155,22 @@ def api_resume_already_attempted(run_id: str, turn_number: int) -> bool:
             (run_id, marker),
         ).fetchone()
     return bool(found)
+
+
+def completion_recovery_event_message(turn_number: int) -> str:
+    return f"第 {turn_number} 轮终端已空闲但缺少合格最终回复，已自动催收一次"
+
+
+def completion_recovery_sent_epoch(run_id: str, turn_number: int) -> Optional[float]:
+    marker = completion_recovery_event_message(turn_number)
+    with db_connection() as database:
+        row = database.execute(
+            "SELECT created_at FROM events WHERE run_id = ? AND message = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (run_id, marker),
+        ).fetchone()
+    sent_at = parse_time(str(row["created_at"] or "")) if row else None
+    return sent_at.timestamp() if sent_at else None
 
 
 def resume_after_api_error(
@@ -12263,6 +12358,8 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
     last_activity_signature: Optional[Tuple[int, int, int]] = None
     inactivity_reported = False
     long_running_reported = False
+    idle_visible_since: Optional[float] = None
+    completion_recovery_epoch = completion_recovery_sent_epoch(run_id, turn_number)
     last_prompt_id = ""
     attention_reason = ""
     last_attention_alert_at = 0.0
@@ -12516,9 +12613,8 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
             return
 
         now = time.monotonic()
-        visible_attention_reason = terminal_attention_reason_from_text(
-            terminal_screen_text(run_id, str(row["screen_name"] or ""))
-        )
+        screen_text = terminal_screen_text(run_id, str(row["screen_name"] or ""))
+        visible_attention_reason = terminal_attention_reason_from_text(screen_text)
         if visible_attention_reason:
             if visible_attention_reason != attention_reason:
                 add_event(
@@ -12545,6 +12641,50 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
             add_event(run_id, "终端确认已处理，继续只读监控", "success")
             attention_reason = ""
             last_attention_alert_at = 0.0
+
+        if terminal_idle_prompt_visible(screen_text):
+            if idle_visible_since is None:
+                idle_visible_since = now
+            elif now - idle_visible_since >= TERMINAL_IDLE_STABLE_SECONDS:
+                if completion_recovery_epoch is None:
+                    try:
+                        send_completion_recovery_to_screen(
+                            run_id,
+                            str(row["screen_name"] or ""),
+                        )
+                    except WorkflowError as exc:
+                        preserve_interrupted_docker_turn(
+                            run_id,
+                            turn_number,
+                            f"终端已空闲但自动催收最终回复失败：{exc}",
+                        )
+                        return
+                    add_event(
+                        run_id,
+                        completion_recovery_event_message(turn_number),
+                        "warning",
+                    )
+                    completion_recovery_epoch = time.time()
+                    idle_visible_since = None
+                    update_run_if_phase(
+                        run_id,
+                        observed_phase,
+                        status_detail=f"第 {turn_number} 轮正在自动催收最终回复",
+                    )
+                    time.sleep(POLL_SECONDS)
+                    continue
+                if (
+                    time.time() - completion_recovery_epoch
+                    >= TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS
+                ):
+                    preserve_interrupted_docker_turn(
+                        run_id,
+                        turn_number,
+                        "终端在自动催收后仍回到空闲界面，轨迹没有合格最终回复",
+                    )
+                    return
+        else:
+            idle_visible_since = None
 
         signature = trace_activity_signature(snapshot) if snapshot else None
         if signature and signature != last_activity_signature:
@@ -12913,12 +13053,7 @@ def write_trace_through_turn(source: Path, destination: Path, prompt: str) -> Pa
         raise WorkflowError("轨迹中没有找到本轮 Prompt，未生成检查点")
     start_index = prompt_matches[-1][0]
 
-    next_prompt_index = len(records)
-    for index in range(start_index + 1, len(records)):
-        event = records[index][1]
-        if event and trace_human_prompt_text(event) is not None:
-            next_prompt_index = index
-            break
+    next_prompt_index = trace_next_human_prompt_index(trace_events, start_index)
 
     final_index: Optional[int] = None
     for index in range(start_index + 1, next_prompt_index):

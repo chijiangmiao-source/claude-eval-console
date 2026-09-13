@@ -6534,6 +6534,57 @@ class ParsingTests(unittest.TestCase):
             with self.subTest(content=content):
                 self.assertIsNone(app.trace_human_prompt_text(event))
 
+    def test_trace_human_prompt_text_ignores_only_known_completion_recoveries(self):
+        controlled_prompts = (
+            {
+                "isMeta": True,
+                "turnCompanion": True,
+                "content": (
+                    "[Your previous response had no visible output. "
+                    "Please continue and produce a user-visible response.]"
+                ),
+            },
+            {
+                "content": (
+                    f"{app.COMPLETION_RECOVERY_PROMPT_PREFIX} "
+                    "请直接给出本轮最终结果。"
+                ),
+            },
+            {
+                "content": (
+                    "现有实现与测试已经完成。请不要再修改代码，立即输出一段简洁、"
+                    "非空的最终交付摘要，说明改动和已运行的验证。原始题面"
+                ),
+            },
+            {
+                "content": (
+                    "继续完成原任务：补齐尚未写完的 Playwright 端到端验收。"
+                    "原始题面"
+                ),
+            },
+        )
+        for details in controlled_prompts:
+            event = {
+                "type": "user",
+                "promptId": "recovery-prompt",
+                "message": {"content": details["content"]},
+                **{key: value for key, value in details.items() if key != "content"},
+            }
+            with self.subTest(content=details["content"]):
+                self.assertIsNone(app.trace_human_prompt_text(event))
+
+        genuine_next_prompt = {
+            "type": "user",
+            "promptId": "next-turn",
+            "message": {
+                "content": "继续完成新的第二轮需求，并输出最终摘要中的变更说明。"
+            },
+        }
+        self.assertEqual(
+            app.trace_human_prompt_text(genuine_next_prompt),
+            "继续完成新的第二轮需求，并输出最终摘要中的变更说明。",
+        )
+
     def test_parse_agents_json_with_prefix(self):
         value = app.parse_json_output('warning\n[{"id":"abc","status":"busy"}]')
         self.assertEqual(value[0]["id"], "abc")
@@ -6633,6 +6684,79 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(state["session_id"], "session-duration")
         self.assertEqual(state["prompt_id"], "prompt-duration")
         self.assertEqual(state["result"], "实现和测试均已完成。")
+        self.assertTrue(state["complete"])
+
+    def test_container_trace_keeps_completion_recovery_in_original_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_root = Path(directory)
+            transcript = trace_root / "project" / "session-recovery.jsonl"
+            transcript.parent.mkdir()
+            events = [
+                {
+                    "type": "user",
+                    "promptId": "prompt-original",
+                    "message": {"content": "完成这个项目"},
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": ""}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "isMeta": True,
+                    "turnCompanion": True,
+                    "promptId": "prompt-original",
+                    "message": {
+                        "content": (
+                            "[Your previous response had no visible output. "
+                            "Please continue and produce a user-visible response.]"
+                        )
+                    },
+                },
+                {
+                    "type": "user",
+                    "promptId": "prompt-recovery",
+                    "message": {
+                        "content": (
+                            "现有实现与测试已经完成。请不要再修改代码，立即输出一段简洁、"
+                            "非空的最终交付摘要，说明改动和已运行的验证。完成这个项目"
+                        )
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "第一轮交付摘要。"}],
+                    },
+                },
+                {"type": "system", "subtype": "turn_duration"},
+                {
+                    "type": "user",
+                    "promptId": "prompt-next",
+                    "message": {"content": "实现真正的第二轮需求"},
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "第二轮交付摘要。"}],
+                    },
+                },
+                {"type": "system", "subtype": "turn_duration"},
+            ]
+            transcript.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events),
+                encoding="utf-8",
+            )
+
+            state = app.trace_turn_state(trace_root, "完成这个项目")
+
+        self.assertEqual(state["prompt_id"], "prompt-original")
+        self.assertEqual(state["result"], "第一轮交付摘要。")
         self.assertTrue(state["complete"])
 
     def test_container_trace_completes_legacy_multiline_terminal_paste(self):
@@ -7197,6 +7321,156 @@ class ParsingTests(unittest.TestCase):
         self.assertIn("等待人工确认", stored["status_detail"])
         sound.assert_called_once_with()
         send_prompt.assert_not_called()
+
+    def test_docker_monitor_requests_one_final_response_after_stable_idle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "idle-final-recovery-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+
+                def send_once(run_id, _screen_name):
+                    app.update_run(run_id, phase="stopped")
+
+                idle_screen = (
+                    "bypass permissions on (shift+tab to cycle)  "
+                    "new task? /clear to save tokens"
+                )
+                with mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, None)
+                ), mock.patch.object(
+                    app, "docker_container_running", return_value=True
+                ), mock.patch.object(
+                    app, "terminal_screen_text", return_value=idle_screen
+                ), mock.patch.object(
+                    app.time,
+                    "monotonic",
+                    side_effect=[0, 0, app.TERMINAL_IDLE_STABLE_SECONDS + 1],
+                ), mock.patch.object(
+                    app.time, "sleep"
+                ), mock.patch.object(
+                    app, "send_completion_recovery_to_screen", side_effect=send_once
+                ) as recover, mock.patch.object(
+                    app, "preserve_interrupted_docker_turn"
+                ) as preserve:
+                    app.monitor_docker_turn(created["id"], 1)
+
+                with app.db_connection() as database:
+                    recovery_events = database.execute(
+                        "SELECT COUNT(*) FROM events WHERE run_id = ? AND message = ?",
+                        (created["id"], app.completion_recovery_event_message(1)),
+                    ).fetchone()[0]
+
+        recover.assert_called_once_with(created["id"], created["screen_name"])
+        preserve.assert_not_called()
+        self.assertEqual(recovery_events, 1)
+
+    def test_docker_monitor_preserves_turn_when_recovery_returns_to_idle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "idle-final-timeout-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+                idle_screen = (
+                    "bypass permissions on (shift+tab to cycle)  "
+                    "new task? /clear to save tokens"
+                )
+                with mock.patch.object(
+                    app, "completion_recovery_sent_epoch", return_value=100.0
+                ), mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, None)
+                ), mock.patch.object(
+                    app, "docker_container_running", return_value=True
+                ), mock.patch.object(
+                    app, "terminal_screen_text", return_value=idle_screen
+                ), mock.patch.object(
+                    app.time,
+                    "monotonic",
+                    side_effect=[0, 0, app.TERMINAL_IDLE_STABLE_SECONDS + 1],
+                ), mock.patch.object(
+                    app.time,
+                    "time",
+                    return_value=100.0 + app.TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS + 1,
+                ), mock.patch.object(
+                    app.time, "sleep"
+                ), mock.patch.object(
+                    app, "send_completion_recovery_to_screen"
+                ) as recover, mock.patch.object(
+                    app, "preserve_interrupted_docker_turn"
+                ) as preserve:
+                    app.monitor_docker_turn(created["id"], 1)
+
+        recover.assert_not_called()
+        preserve.assert_called_once_with(
+            created["id"],
+            1,
+            "终端在自动催收后仍回到空闲界面，轨迹没有合格最终回复",
+        )
+
+    def test_docker_monitor_does_not_recover_while_terminal_is_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "active-terminal-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+
+                def finish_monitor(_seconds):
+                    app.update_run(created["id"], phase="stopped")
+
+                active_screen = (
+                    "Stewing (3m 5s)\n"
+                    "bypass permissions on (shift+tab to cycle)  "
+                    "esc to interrupt for agents  new task?"
+                )
+                with mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, None)
+                ), mock.patch.object(
+                    app, "docker_container_running", return_value=True
+                ), mock.patch.object(
+                    app, "terminal_screen_text", return_value=active_screen
+                ), mock.patch.object(
+                    app.time, "monotonic", side_effect=[0, 1]
+                ), mock.patch.object(
+                    app.time, "sleep", side_effect=finish_monitor
+                ), mock.patch.object(
+                    app, "send_completion_recovery_to_screen"
+                ) as recover, mock.patch.object(
+                    app, "preserve_interrupted_docker_turn"
+                ) as preserve:
+                    app.monitor_docker_turn(created["id"], 1)
+
+        recover.assert_not_called()
+        preserve.assert_not_called()
 
     def test_six_hour_notice_keeps_read_only_monitor_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -11290,6 +11564,174 @@ class RepositoryTests(unittest.TestCase):
         self.assertIn("恢复后完成全部工作", content)
         self.assertNotIn("修复下一问题", content)
 
+    def test_trace_checkpoint_keeps_known_completion_recoveries_in_original_turn(self):
+        recovery_prompts = (
+            (
+                "现有实现与测试已经完成。请不要再修改代码，立即输出一段简洁、"
+                "非空的最终交付摘要，说明改动和已运行的验证。完成这个项目"
+            ),
+            (
+                "继续完成原任务：补齐尚未写完的 Playwright 端到端验收。"
+                "完成这个项目"
+            ),
+            (
+                f"{app.COMPLETION_RECOVERY_PROMPT_PREFIX} "
+                "请直接给出本轮最终结果并结束回复。"
+            ),
+        )
+        for recovery_prompt in recovery_prompts:
+            with self.subTest(recovery_prompt=recovery_prompt), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "full.jsonl"
+                destination = root / "turn-01.jsonl"
+                events = [
+                    {
+                        "type": "user",
+                        "promptId": "prompt-original",
+                        "message": {"content": "完成这个项目"},
+                    },
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "stop_reason": "end_turn",
+                            "content": [{"type": "text", "text": ""}],
+                        },
+                    },
+                    {"type": "system", "subtype": "turn_duration"},
+                    {
+                        "type": "user",
+                        "promptId": "prompt-recovery",
+                        "message": {"content": recovery_prompt},
+                    },
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "stop_reason": "end_turn",
+                            "content": [{"type": "text", "text": "原轮次最终摘要。"}],
+                        },
+                    },
+                    {"type": "system", "subtype": "turn_duration"},
+                    {
+                        "type": "user",
+                        "promptId": "prompt-next",
+                        "message": {"content": "真正的第二轮题面"},
+                    },
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "stop_reason": "end_turn",
+                            "content": [{"type": "text", "text": "第二轮最终摘要。"}],
+                        },
+                    },
+                    {"type": "system", "subtype": "turn_duration"},
+                ]
+                source.write_text(
+                    "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+                app.write_trace_through_turn(source, destination, "完成这个项目")
+                content = destination.read_text(encoding="utf-8")
+
+                self.assertIn(recovery_prompt, content)
+                self.assertIn("原轮次最终摘要。", content)
+                self.assertNotIn("真正的第二轮题面", content)
+                self.assertNotIn("第二轮最终摘要。", content)
+
+    def test_completed_turn_preflight_accepts_recovery_checkpoint_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_trace = root / "traces" / "-workspace" / "session-recovery.jsonl"
+            turn_trace = root / "traces" / "session-recovery" / "turn-01.jsonl"
+            raw_trace.parent.mkdir(parents=True)
+            events = [
+                {
+                    "type": "user",
+                    "sessionId": "session-recovery",
+                    "version": "2.1.269",
+                    "promptId": "prompt-original",
+                    "message": {"content": "完成这个项目"},
+                },
+                {
+                    "type": "assistant",
+                    "sessionId": "session-recovery",
+                    "version": "2.1.269",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": ""}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "sessionId": "session-recovery",
+                    "version": "2.1.269",
+                    "promptId": "prompt-recovery",
+                    "message": {
+                        "content": (
+                            f"{app.COMPLETION_RECOVERY_PROMPT_PREFIX} "
+                            "请直接给出本轮最终结果并结束回复。"
+                        )
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "sessionId": "session-recovery",
+                    "version": "2.1.269",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "原轮次最终摘要。"}],
+                    },
+                },
+                {
+                    "type": "system",
+                    "subtype": "turn_duration",
+                    "sessionId": "session-recovery",
+                    "version": "2.1.269",
+                },
+                {
+                    "type": "user",
+                    "sessionId": "session-recovery",
+                    "version": "2.1.269",
+                    "promptId": "prompt-next",
+                    "message": {"content": "真正的第二轮题面"},
+                },
+            ]
+            raw_trace.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
+                + "\n",
+                encoding="utf-8",
+            )
+            app.write_trace_through_turn(raw_trace, turn_trace, "完成这个项目")
+            row = {
+                "id": "recovery1111",
+                "run_id": "recovery1111",
+                "repo_name": "recovery-demo",
+                "repo_path": "",
+                "source_run_id": "",
+                "task_type": "0-1 代码生成",
+                "session_id": "session-recovery",
+                "turn_number": 1,
+                "turn_prompt": "完成这个项目",
+                "turn_prompt_id": "prompt-original",
+                "turn_trajectory_path": str(turn_trace),
+                "turn_trajectory_sha256": hashlib.sha256(
+                    turn_trace.read_bytes()
+                ).hexdigest(),
+                "run_trajectory_path": str(raw_trace),
+                "harness_version": "2.1.269",
+            }
+
+            with mock.patch.object(app, "export_readiness", return_value=(True, [])):
+                result = app.completed_turn_preflight(row)
+
+        self.assertTrue(result["eligible"])
+        self.assertEqual(result["blockers"], [])
+        self.assertTrue(result["checks"]["prompt_matches"])
+        self.assertTrue(result["checks"]["turn_order_matches"])
+        self.assertTrue(result["checks"]["completion_boundary"])
+        self.assertTrue(result["checks"]["raw_trace_preserved"])
+
     def test_trace_checkpoint_keeps_final_reply_after_cli_interruption_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -12201,6 +12643,24 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(
             app.terminal_attention_reason_from_text("正在继续生成页面和检查内容"),
             "",
+        )
+
+    def test_terminal_idle_detection_rejects_active_and_attention_states(self):
+        idle = (
+            "Worked for 26m 32s\n"
+            "bypass permissions on  3 shells  for agents  "
+            "new task? /clear to save tokens"
+        )
+        active = idle + "  esc to interrupt for agents"
+        attention = idle + "  Do you want to proceed?"
+        compact_idle = "Sauted for 8m 34s  done\nbypass permissions on  for agents"
+
+        self.assertTrue(app.terminal_idle_prompt_visible(idle))
+        self.assertTrue(app.terminal_idle_prompt_visible(compact_idle))
+        self.assertFalse(app.terminal_idle_prompt_visible(active))
+        self.assertFalse(app.terminal_idle_prompt_visible(attention))
+        self.assertFalse(
+            app.terminal_idle_prompt_visible("bypass permissions on  for agents")
         )
 
     def test_terminal_screen_capture_uses_hardcopy_without_sending_keys(self):

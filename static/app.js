@@ -1,4 +1,4 @@
-const UI_VERSION = "20260913.36";
+const UI_VERSION = "20260913.37";
 const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 
@@ -33,8 +33,11 @@ const state = {
     dateTo: "",
   },
   exportPreflight: null,
+  exportPreflightTurnKeys: null,
   exportPreflightBusy: false,
   exportDeleteBusy: false,
+  exportEvaluationRepairRequest: null,
+  exportEvaluationRepairPoller: null,
   hourlyAnalytics: null,
   analyticsDate: "",
   analyticsChartType: "bar",
@@ -1107,10 +1110,13 @@ function renderSoloQaControls() {
   const selectedRepairs = state.completedTurns.filter((turn) =>
     state.selectedExportTurns.has(turn.key) && soloQaRepairable(turn)
   ).length;
+  const selectedAutomaticRepairs = state.completedTurns.filter((turn) =>
+    state.selectedExportTurns.has(turn.key) && evaluationRepairIsActive(turn)
+  ).length;
   syncButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy;
-  repairButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy || state.exportPreflightBusy || selectedRepairs === 0;
+  repairButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy || state.exportPreflightBusy || selectedAutomaticRepairs > 0 || selectedRepairs === 0;
   repairButton.textContent = selectedRepairs > 0 ? `返修所选轮次（${selectedRepairs}）` : "返修所选轮次";
-  submitButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy || state.exportPreflightBusy || selected === 0;
+  submitButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy || state.exportPreflightBusy || selectedAutomaticRepairs > 0 || selected === 0;
   submitButton.textContent = selected > 0 ? `提交所选轮次（${selected}）` : "提交所选轮次";
 }
 
@@ -1272,7 +1278,105 @@ window.addEventListener("message", (event) => {
   }
 });
 
-async function loadCompletedTurns() {
+function evaluationRepairIsActive(turn) {
+  return ["queued", "running"].includes(turn?.evaluation_repair?.status);
+}
+
+function activeEvaluationRepairTurns() {
+  return state.completedTurns.filter(evaluationRepairIsActive);
+}
+
+async function watchAutomaticEvaluationRepairs(preflightKeys = null) {
+  if (state.exportEvaluationRepairPoller) return state.exportEvaluationRepairPoller;
+  const checkedKeys = preflightKeys?.length
+    ? [...preflightKeys]
+    : (state.exportPreflight?.results || []).map((item) => item.key);
+  const poller = (async () => {
+    let observedActive = false;
+    while (activeEvaluationRepairTurns().length) {
+      observedActive = true;
+      await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      await loadCompletedTurns({ autoRepair: false });
+    }
+    if (!observedActive) return;
+    const failures = state.completedTurns.filter(
+      (turn) => turn.evaluation_repair?.status === "failed"
+    );
+    state.exportPreflight = null;
+    renderExportPage();
+    if (window.location.hash === "#exports" && checkedKeys.length) {
+      await runExportPreflight(checkedKeys, { announce: false });
+    }
+    if (window.location.hash === "#exports") {
+      showNotice(failures.length
+        ? `评分描述自动修复完成，但有 ${failures.length} 条需要人工处理`
+        : "评分描述已自动修复并重新检查");
+    }
+    await queueAutomaticEvaluationRepairs();
+  })().finally(() => {
+    state.exportEvaluationRepairPoller = null;
+    if (activeEvaluationRepairTurns().length) {
+      window.setTimeout(
+        () => watchAutomaticEvaluationRepairs(state.exportPreflightTurnKeys),
+        0,
+      );
+    }
+  });
+  state.exportEvaluationRepairPoller = poller;
+  return poller;
+}
+
+async function queueAutomaticEvaluationRepairs() {
+  if (state.exportEvaluationRepairRequest) return state.exportEvaluationRepairRequest;
+  const candidates = state.completedTurns.filter((turn) =>
+    turn.evaluation_repair?.status === "needed"
+    && turn.evaluation_repair?.can_start
+    && !state.exportEvaluationDrafts.has(turn.key)
+    && !state.exportEvaluationBusy.has(turn.key)
+  );
+  if (!candidates.length) {
+    if (activeEvaluationRepairTurns().length) {
+      watchAutomaticEvaluationRepairs(state.exportPreflightTurnKeys);
+    }
+    return null;
+  }
+  const turnKeys = candidates.map((turn) => turn.key);
+  const checkedKeys = state.exportPreflightTurnKeys
+    || (state.exportPreflight?.results || []).map((item) => item.key);
+  const request = (async () => {
+    try {
+      const result = await api("/api/exports/evaluation-repairs", {
+        method: "POST",
+        body: JSON.stringify({ turn_keys: turnKeys }),
+      });
+      state.exportPreflight = null;
+      await loadCompletedTurns({ autoRepair: false });
+      if (activeEvaluationRepairTurns().length) {
+        if (window.location.hash === "#exports") {
+          showNotice(`发现 ${turnKeys.length} 条评分描述问题，已开始自动修复`);
+        }
+        watchAutomaticEvaluationRepairs(checkedKeys);
+      } else if (
+        window.location.hash === "#exports"
+        && state.completedTurns.some((turn) => turn.evaluation_repair?.status === "failed")
+      ) {
+        showNotice("评分描述自动修复未完成，请展开失败项目查看原因或人工修改");
+      } else if (window.location.hash === "#exports" && Number(result.queued || 0) > 0) {
+        showNotice("评分描述已自动修复并复检");
+      }
+      return result;
+    } catch (error) {
+      if (window.location.hash === "#exports") showNotice(error.message);
+      return null;
+    }
+  })().finally(() => {
+    state.exportEvaluationRepairRequest = null;
+  });
+  state.exportEvaluationRepairRequest = request;
+  return request;
+}
+
+async function loadCompletedTurns({ autoRepair = true } = {}) {
   try {
     state.completedTurns = await api("/api/exports/turns");
     state.exportLastLoadedAt = Date.now();
@@ -1284,6 +1388,7 @@ async function loadCompletedTurns() {
       [...state.expandedExportPrompts].filter((key) => validKeys.has(key))
     );
     renderExportPage();
+    if (autoRepair) queueAutomaticEvaluationRepairs();
   } catch (error) {
     showNotice(error.message);
     $("#export-turn-list").innerHTML = '<tr><td colspan="11" class="table-empty">已完成轮次读取失败</td></tr>';
@@ -1300,6 +1405,12 @@ function renderExportPreflightSummary() {
   if (state.exportPreflightBusy) {
     panel.className = "export-preflight-panel checking";
     panel.innerHTML = "<strong>正在核对轨迹与标识…</strong><span>检查过程只读取本地数据库和 JSONL 文件。</span>";
+    return;
+  }
+  const activeRepairs = activeEvaluationRepairTurns();
+  if (activeRepairs.length) {
+    panel.className = "export-preflight-panel repairing";
+    panel.innerHTML = `<strong>正在自动修复 ${escapeHtml(activeRepairs.length)} 条评分描述</strong><span>只重写命中维度的公开描述，分数与内部证据保持不变。</span>`;
     return;
   }
   const result = state.exportPreflight;
@@ -1325,19 +1436,21 @@ function updateExportSelectionControls() {
     .filter((key) => visibleKeys.has(key)).length;
   const selectedTurns = state.completedTurns.filter((turn) => state.selectedExportTurns.has(turn.key));
   const selectedReady = selectedTurns.filter((turn) => turn.review_copy_ready).length;
+  const selectedRepairing = selectedTurns.some(evaluationRepairIsActive);
   $("#export-selection-count").textContent = `已选 ${selectedCount} 项${selectedCount !== visibleSelectedCount ? `（当前筛选内 ${visibleSelectedCount}）` : ""}`;
   const download = $("#download-export");
   download.disabled = selectedCount === 0
     || selectedReady !== selectedCount
     || state.exportPreflightBusy
-    || state.exportDeleteBusy;
+    || state.exportDeleteBusy
+    || selectedRepairing;
   download.title = selectedReady !== selectedCount ? "所选轮次尚无评分内容" : "导出用于人工复核的副本";
   const deleteButton = $("#delete-selected-export-turns");
-  deleteButton.disabled = selectedCount === 0 || state.exportDeleteBusy || state.exportPreflightBusy;
+  deleteButton.disabled = selectedCount === 0 || state.exportDeleteBusy || state.exportPreflightBusy || selectedRepairing;
   deleteButton.textContent = state.exportDeleteBusy ? "正在删除…" : `删除所选${selectedCount ? `（${selectedCount}）` : ""}`;
   const preflightButton = $("#preflight-export");
   const selectPassedButton = $("#select-preflight-passed");
-  preflightButton.disabled = state.exportPreflightBusy || state.exportDeleteBusy || visibleTurns.length === 0;
+  preflightButton.disabled = state.exportPreflightBusy || state.exportDeleteBusy || activeEvaluationRepairTurns().length > 0 || visibleTurns.length === 0;
   preflightButton.textContent = state.exportPreflightBusy
     ? "正在检查…"
     : (selectedCount ? `检查所选轮次（${selectedCount}）` : `检查筛选结果（${visibleTurns.length}）`);
@@ -1358,6 +1471,9 @@ async function runExportPreflight(turnKeys = null, { announce = true } = {}) {
       method: "POST",
       body: JSON.stringify(turnKeys?.length ? { turn_keys: turnKeys } : {}),
     });
+    state.exportPreflightTurnKeys = turnKeys?.length
+      ? [...turnKeys]
+      : (result.results || []).map((item) => item.key);
     state.exportPreflight = result;
     renderExportPage();
     if (announce) {
@@ -1433,9 +1549,16 @@ function renderExportPage() {
         : (preflightTone === "failed"
           ? `检查不通过（${preflight.blockers?.length || 0} 项）`
           : ""));
-    const readinessContent = preflight
-      ? `<span class="preflight-result ${escapeHtml(preflightTone)}">${escapeHtml(preflightLabel)}</span>${preflightIssues.length ? `<span class="export-issues-inline">：${escapeHtml(preflightIssues.join("；"))}</span>` : ""}`
-      : `<span class="export-readiness ${turn.export_ready ? "ready" : "blocked"}">${turn.export_ready ? "可确认 · 尚未深度检查" : `待补资料（${escapeHtml(exportIssues.length)}）`}</span>${exportIssueDetails}`;
+    const repair = turn.evaluation_repair || {};
+    const repairActive = evaluationRepairIsActive(turn);
+    const repairFailed = repair.status === "failed";
+    const readinessContent = repairActive
+      ? `<span class="export-readiness repairing">评分描述自动修复中</span><span class="export-issues-inline repair-message">：${escapeHtml(repair.message || "正在依据本轮轨迹重写")}</span>`
+      : (repairFailed
+        ? `<span class="export-readiness blocked">自动修复失败</span><span class="export-issues-inline">：${escapeHtml(repair.message || "请展开评分后人工处理")}</span>`
+        : (preflight
+          ? `<span class="preflight-result ${escapeHtml(preflightTone)}">${escapeHtml(preflightLabel)}</span>${preflightIssues.length ? `<span class="export-issues-inline">：${escapeHtml(preflightIssues.join("；"))}</span>` : ""}`
+          : `<span class="export-readiness ${turn.export_ready ? "ready" : "blocked"}">${turn.export_ready ? (repair.status === "succeeded" ? "可确认 · 描述已自动修复" : "可确认 · 尚未深度检查") : `待补资料（${escapeHtml(exportIssues.length)}）`}</span>${exportIssueDetails}`));
     const promptExpanded = state.expandedExportPrompts.has(turn.key);
     const promptRowId = `export-prompt-${turn.run_id}-${turn.turn_number}`;
     const evaluationEditor = promptExpanded ? exportEvaluationEditorHtml(turn) : "";
@@ -1485,7 +1608,8 @@ function exportEvaluationEditorHtml(turn) {
     return '<div class="export-evaluation-empty">该轮尚无可编辑评分。</div>';
   }
   const draft = exportEvaluationDraft(turn);
-  const busy = state.exportEvaluationBusy.has(turn.key);
+  const repairBusy = evaluationRepairIsActive(turn);
+  const busy = state.exportEvaluationBusy.has(turn.key) || repairBusy;
   const dirty = state.exportEvaluationDrafts.has(turn.key);
   const confirmationLabel = evaluationConfirmationLabel(turn.evaluation_confirmation_status);
   const confirmation = turn.evaluation_confirmation || {};
@@ -1500,17 +1624,21 @@ function exportEvaluationEditorHtml(turn) {
   const confirmationReady = !dirty && (typeof turn.evaluation_confirmation_ready === "boolean"
     ? turn.evaluation_confirmation_ready : turn.export_ready && !evidenceIssues.length);
   const confirmationAccepted = ["confirmed", "platform_review"].includes(confirmation.status);
-  const status = turn.evaluation_overridden
-    ? `<span class="manual">已人工修改${turn.evaluation_override_updated_at ? ` · ${escapeHtml(turn.evaluation_override_updated_at)}` : ""}</span>`
-    : "<span>当前为自动评分</span>";
+  const status = repairBusy
+    ? '<span class="repairing">评分描述自动修复中</span>'
+    : (turn.evaluation_repair?.status === "failed"
+      ? '<span class="repair-failed">自动修复失败 · 可人工修改</span>'
+      : (turn.evaluation_overridden
+        ? `<span class="manual">已人工修改${turn.evaluation_override_updated_at ? ` · ${escapeHtml(turn.evaluation_override_updated_at)}` : ""}</span>`
+        : "<span>当前为自动评分</span>"));
   return `<section class="export-evaluation-editor" data-evaluation-editor="${escapeHtml(turn.key)}">
     <div class="export-evaluation-heading"><div><strong>五维评分与描述${confirmationLabel ? ` · ${escapeHtml(confirmationLabel)}` : ""}</strong>${status}</div><small>五维评分随任务完成；具体问题步骤由质检平台二次确认。</small></div>
     ${evidenceIssues.length ? `<div class="evaluation-draft-blocker"><b>证据未对齐</b><span>${escapeHtml(evidenceIssues.join("；"))}</span></div>` : ""}
     <div class="export-evaluation-grid">${exportEvaluationDimensions.map(([key, label]) => {
       const item = draft[key] || {};
-      return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数">${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="6" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述">${escapeHtml(item.description || "")}</textarea></label>`;
+      return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数" ${repairBusy ? "disabled" : ""}>${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="6" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述" ${repairBusy ? "disabled" : ""}>${escapeHtml(item.description || "")}</textarea></label>`;
     }).join("")}</div>
-    <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${busy ? "保存中…" : "保存评分"}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<button class="secondary-button" type="button" data-confirm-evaluation="${escapeHtml(turn.key)}" title="${escapeHtml(confirmationIssues.join("；"))}" ${busy || confirmationAccepted || !confirmationReady ? "disabled" : ""}>${confirmationAccepted ? "已通过" : "确认用于正式提交"}</button><span data-evaluation-save-reminder="${escapeHtml(turn.key)}" aria-live="polite" ${dirty ? "" : "hidden"}>${escapeHtml(EXPORT_EVALUATION_UNSAVED_MESSAGE)}</span><span>原始自动评分不会被覆盖。</span></div>
+    <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${repairBusy ? "自动修复中…" : (state.exportEvaluationBusy.has(turn.key) ? "保存中…" : "保存评分")}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<button class="secondary-button" type="button" data-confirm-evaluation="${escapeHtml(turn.key)}" title="${escapeHtml(confirmationIssues.join("；"))}" ${busy || confirmationAccepted || !confirmationReady ? "disabled" : ""}>${confirmationAccepted ? "已通过" : "确认用于正式提交"}</button><span data-evaluation-save-reminder="${escapeHtml(turn.key)}" aria-live="polite" ${dirty ? "" : "hidden"}>${escapeHtml(EXPORT_EVALUATION_UNSAVED_MESSAGE)}</span><span>${repairBusy ? "完成前不会接受人工修改。" : "原始自动评分不会被覆盖。"}</span></div>
   </section>`;
 }
 
@@ -1546,6 +1674,10 @@ async function saveExportEvaluation(turnKey, reset = false) {
   if (state.exportEvaluationBusy.has(turnKey)) return;
   const turn = state.completedTurns.find((item) => item.key === turnKey);
   if (!turn) return;
+  if (evaluationRepairIsActive(turn)) {
+    showNotice("评分描述正在自动修复，请等待完成后再编辑");
+    return;
+  }
   state.exportEvaluationBusy.add(turnKey);
   renderExportPage();
   try {
@@ -1559,6 +1691,7 @@ async function saveExportEvaluation(turnKey, reset = false) {
     });
     state.exportEvaluationDrafts.delete(turnKey);
     state.exportPreflight = null;
+    state.exportPreflightTurnKeys = null;
     await loadCompletedTurns();
     showNotice(reset ? "已恢复自动评分，人工确认已清除" : "评分草稿已保存，人工确认已清除；复核后再确认正式提交");
   } catch (error) {
@@ -1577,6 +1710,10 @@ async function confirmExportEvaluation(turnKey) {
     return;
   }
   const turn = state.completedTurns.find((item) => item.key === turnKey);
+  if (evaluationRepairIsActive(turn)) {
+    showNotice("评分描述正在自动修复，请等待完成后再确认");
+    return;
+  }
   const expected = turn?.evaluation_confirmation?.current_sha256;
   if (!turn || !expected) return;
   state.exportEvaluationBusy.add(turnKey);
@@ -1588,6 +1725,7 @@ async function confirmExportEvaluation(turnKey) {
     });
     state.exportEvaluationDrafts.delete(turnKey);
     state.exportPreflight = null;
+    state.exportPreflightTurnKeys = null;
     await loadCompletedTurns();
     showNotice("评分与当前证据已人工确认，可在项目收尾后正式提交");
   } catch (error) {
@@ -2343,6 +2481,7 @@ async function deleteExportTurns(turnKeys) {
     });
     uniqueKeys.forEach((key) => state.selectedExportTurns.delete(key));
     state.exportPreflight = null;
+    state.exportPreflightTurnKeys = null;
     await loadCompletedTurns();
     showNotice(`已从导出列表隐藏 ${result.changed || 0} 个轮次；代码、轨迹和远端提交均未删除`);
   } catch (error) {

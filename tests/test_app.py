@@ -15802,6 +15802,394 @@ class ExportTests(unittest.TestCase):
             "expected_sha256": app.evaluation_confirmation_digest(row),
         })
 
+    def record_solo_description_rejection(
+        self,
+        summary,
+        *,
+        run_id="abc123abc123",
+        remote_id="repair-9001",
+    ):
+        timestamp = app.now_text()
+        with app.db_connection() as database:
+            database.execute(
+                """INSERT INTO solo_qa_submissions(
+                     run_id, turn_number, remote_submission_id, remote_status,
+                     state, qc_summary, error, created_at, updated_at
+                   ) VALUES (?, 1, ?, 'PENDING_FIX', 'needs_fix', ?, '', ?, ?)
+                   ON CONFLICT(run_id, turn_number) DO UPDATE SET
+                     remote_submission_id = excluded.remote_submission_id,
+                     remote_status = excluded.remote_status,
+                     state = excluded.state,
+                     qc_summary = excluded.qc_summary,
+                     error = '', updated_at = excluded.updated_at""",
+                (run_id, remote_id, summary, timestamp, timestamp),
+            )
+        return app.completed_turn_row(f"{run_id}:1")
+
+    def test_solo_qa_description_repair_targets_only_explicit_dimensions(self):
+        row = {
+            "solo_qa_state": "needs_fix",
+            "solo_qa_remote_submission_id": "9001",
+            "solo_qa_remote_status": "PENDING_FIX",
+            "solo_qa_remote_updated_at": "2026-09-13T22:00:00",
+            "solo_qa_qc_summary": (
+                "描述与轨迹不符（一致性抽检）：【交付完整性】构建依据未找到；"
+                "【推理能力】定位依据未找到。请修改对应维度的描述。"
+            ),
+        }
+
+        issues = app.solo_qa_returned_evaluation_repair_issues(
+            row,
+            with_score_stage(sample_evaluation()),
+        )
+
+        self.assertEqual(len(issues), 2)
+        self.assertIn("交付完整性", issues[0])
+        self.assertIn("推理能力", issues[1])
+        self.assertFalse(any("指令遵循" in issue for issue in issues))
+        self.assertFalse(any("任务规划" in issue for issue in issues))
+        self.assertFalse(any("执行能力" in issue for issue in issues))
+
+    def test_solo_qa_abbreviated_multi_dimension_repair_targets_all_five(self):
+        row = {
+            "solo_qa_state": "needs_fix",
+            "solo_qa_remote_submission_id": "9002",
+            "solo_qa_remote_status": "PENDING_FIX",
+            "solo_qa_remote_updated_at": "2026-09-13T22:01:00",
+            "solo_qa_qc_summary": (
+                "执行能力描述等 3 个维度的描述与已交付数据 #8018 重复，"
+                "命中公共长片段。"
+            ),
+        }
+
+        issues = app.solo_qa_returned_evaluation_repair_issues(
+            row,
+            with_score_stage(sample_evaluation()),
+        )
+
+        self.assertEqual(len(issues), len(app.EVALUATION_DIMENSION_KEYS))
+        for label in app.EVALUATION_DIMENSION_LABELS.values():
+            self.assertTrue(any(label in issue for issue in issues), label)
+
+    def test_completed_description_repair_queue_is_idempotent_per_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "schedule_evaluation_repair") as schedule:
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                self.record_solo_description_rejection(
+                    "描述与轨迹不符：【任务规划】步骤依据未找到。"
+                )
+
+                first = app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]}
+                )
+                second = app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]}
+                )
+
+        self.assertEqual(first["queued"], 1)
+        self.assertEqual(second["queued"], 0)
+        self.assertEqual(second["results"][0]["status"], "queued")
+        schedule.assert_called_once()
+
+    def test_completed_description_repair_cas_rejects_manual_or_remote_races(self):
+        for race in ("manual", "remote"):
+            with self.subTest(race=race), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with mock.patch.object(
+                    app, "DB_PATH", root / "test.db"
+                ), mock.patch.object(app, "DATA_DIR", root), mock.patch.object(
+                    app, "schedule_evaluation_repair"
+                ):
+                    app.initialize_database()
+                    self.insert_completed_turn(root)
+                    self.record_solo_description_rejection(
+                        "描述与轨迹不符：【任务规划】步骤依据未找到。"
+                    )
+                    app.queue_completed_turn_evaluation_repairs(
+                        {"turn_keys": ["abc123abc123:1"]},
+                        schedule_jobs=False,
+                    )
+                    original_row = app.completed_turn_row("abc123abc123:1")
+                    original_review = original_row["turn_review_result"]
+                    source_sha256 = original_row["evaluation_repair_source_sha256"]
+                    with app.db_connection() as database:
+                        database.execute(
+                            """UPDATE evaluation_repair_jobs SET status = 'running'
+                                 WHERE run_id = 'abc123abc123' AND turn_number = 1"""
+                        )
+                        if race == "manual":
+                            database.execute(
+                                """UPDATE run_turns
+                                      SET manual_evaluation = ?,
+                                          manual_evaluation_updated_at = ?
+                                    WHERE run_id = 'abc123abc123'
+                                      AND turn_number = 1""",
+                                (
+                                    json.dumps(
+                                        {
+                                            key: dict(sample_evaluation()[key])
+                                            for key in app.EVALUATION_DIMENSION_KEYS
+                                        },
+                                        ensure_ascii=False,
+                                    ),
+                                    app.now_text(),
+                                ),
+                            )
+                        else:
+                            database.execute(
+                                """UPDATE solo_qa_submissions
+                                      SET state = 'qc_pending',
+                                          remote_status = 'SUBMITTED',
+                                          updated_at = ?
+                                    WHERE run_id = 'abc123abc123'
+                                      AND turn_number = 1""",
+                                (app.now_text(),),
+                            )
+                    repaired = app.automatic_turn_evaluation(original_row)
+                    repaired["planning"]["description"] = "修正后的任务规划描述。"
+                    repaired["descriptions"][2] = repaired["planning"]["description"]
+
+                    with self.assertRaisesRegex(
+                        app.WorkflowError,
+                        "(?:人工评分|远端质检|提交状态|变化|作废)",
+                    ):
+                        app.persist_completed_turn_evaluation_repair(
+                            original_row,
+                            source_sha256,
+                            repaired,
+                            repaired_dimensions=["planning"],
+                        )
+                    stored = app.completed_turn_row("abc123abc123:1")
+
+                self.assertEqual(stored["turn_review_result"], original_review)
+
+    def test_completed_description_repair_persists_only_public_descriptions(self):
+        summary = (
+            "描述与轨迹不符（一致性抽检）：【交付完整性】构建依据未找到；"
+            "【推理能力】定位依据未找到。请修改对应维度的描述。"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "schedule_evaluation_repair"):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                self.confirm_turn()
+                row = self.record_solo_description_rejection(summary)
+                original = app.automatic_turn_evaluation(row)
+                original_copy = json.loads(json.dumps(original, ensure_ascii=False))
+                app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]},
+                    schedule_jobs=False,
+                )
+                row = app.completed_turn_row("abc123abc123:1")
+                source_sha256 = row["evaluation_repair_source_sha256"]
+                with app.db_connection() as database:
+                    database.execute(
+                        """UPDATE evaluation_repair_jobs SET status = 'running'
+                             WHERE run_id = 'abc123abc123' AND turn_number = 1"""
+                    )
+                repaired = json.loads(json.dumps(original, ensure_ascii=False))
+                changed = {
+                    "delivery": "交付描述仅依据本轮 app.py 的可见结果完成改写。",
+                    "reasoning": "推理描述仅依据本轮 save_order 函数输出完成改写。",
+                }
+                for key, description in changed.items():
+                    repaired[key]["description"] = description
+                    repaired["descriptions"][
+                        app.EVALUATION_DIMENSION_KEYS.index(key)
+                    ] = description
+                repaired["_solo_qa_repair_qc_sha256"] = (
+                    app.solo_qa_returned_evaluation_fingerprint(row)
+                )
+
+                app.persist_completed_turn_evaluation_repair(
+                    row,
+                    source_sha256,
+                    repaired,
+                    repaired_dimensions=list(changed),
+                )
+                stored_row = app.completed_turn_row("abc123abc123:1")
+                stored = app.automatic_turn_evaluation(stored_row)
+                turn = app.turn_row("abc123abc123", 1)
+
+        for key in app.EVALUATION_DIMENSION_KEYS:
+            expected_description = changed.get(
+                key,
+                original_copy[key]["description"],
+            )
+            self.assertEqual(stored[key]["description"], expected_description)
+            self.assertEqual(
+                stored["descriptions"][app.EVALUATION_DIMENSION_KEYS.index(key)],
+                expected_description,
+            )
+        self.assertEqual(stored["scores"], original_copy["scores"])
+        for field in app.EVALUATION_SCORE_STAGE_DETAIL_FIELDS:
+            self.assertEqual(stored[field], original_copy[field])
+        self.assertEqual(stored["processFindings"], original_copy["processFindings"])
+        self.assertEqual(stored["artifactFindings"], original_copy["artifactFindings"])
+        self.assertIsNone(turn["evaluation_confirmed_at"])
+        self.assertIsNone(turn["evaluation_confirmed_by"])
+        self.assertIsNone(turn["evaluation_confirmation_sha256"])
+
+    def test_completed_description_repair_worker_rewrites_each_target_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(
+                app,
+                "run_codex_evaluation_description_repair",
+                return_value="本轮在 app.py 中完成目标流程，实际结果与题面一致。",
+            ) as repair, mock.patch.object(
+                app, "recent_qc_passed_public_evaluation_history",
+                return_value={key: [] for key in app.EVALUATION_DIMENSION_KEYS},
+            ), mock.patch.object(app, "add_event"):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                self.record_solo_description_rejection(
+                    "描述与轨迹不符：【任务规划】步骤依据未找到。"
+                )
+                original = app.automatic_turn_evaluation(
+                    app.completed_turn_row("abc123abc123:1")
+                )
+                app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]},
+                    schedule_jobs=False,
+                )
+                row = app.completed_turn_row("abc123abc123:1")
+                app.evaluation_repair_worker(
+                    "abc123abc123:1",
+                    row["evaluation_repair_source_sha256"],
+                )
+                stored_row = app.completed_turn_row("abc123abc123:1")
+                stored = app.automatic_turn_evaluation(stored_row)
+
+        repair.assert_called_once()
+        self.assertEqual(
+            stored["planning"]["description"],
+            "本轮在 app.py 中完成目标流程，实际结果与题面一致。",
+        )
+        self.assertEqual(stored["scores"], original["scores"])
+        for field in app.EVALUATION_SCORE_STAGE_DETAIL_FIELDS:
+            self.assertEqual(stored[field], original[field])
+        self.assertEqual(stored_row["evaluation_repair_job_status"], "succeeded")
+
+    def test_quality_platform_review_does_not_trigger_strict_auto_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "schedule_evaluation_repair") as schedule:
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                evaluation = app.automatic_turn_evaluation(
+                    app.completed_turn_rows()[0]
+                )
+                evaluation["score_validation_mode"] = "quality_platform_review"
+                evaluation["planning"]["score"] = 4
+                evaluation["scores"][2] = 4
+                evaluation["planning"]["description"] = "规划状态更新不够。"
+                evaluation["descriptions"][2] = "规划状态更新不够。"
+                app.update_turn(
+                    "abc123abc123",
+                    1,
+                    review_result=json.dumps(
+                        {"evaluation": evaluation}, ensure_ascii=False
+                    ),
+                )
+                row = app.completed_turn_row("abc123abc123:1")
+
+                repairable, policy_issues = (
+                    app.completed_turn_repairable_evaluation_issues(row)
+                )
+                queued = app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]}
+                )
+                stored = app.automatic_turn_evaluation(
+                    app.completed_turn_row("abc123abc123:1")
+                )
+
+        self.assertEqual(repairable, [])
+        self.assertEqual(policy_issues, [])
+        self.assertEqual(queued["queued"], 0)
+        self.assertEqual(queued["results"][0]["status"], "skipped")
+        self.assertEqual(stored["score_validation_mode"], "quality_platform_review")
+        schedule.assert_not_called()
+
+    def test_clear_public_prose_issue_is_advisory_and_auto_repairable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                row = app.completed_turn_row("abc123abc123:1")
+                evaluation = app.automatic_turn_evaluation(row)
+                evaluation["score_validation_mode"] = "quality_platform_review"
+                evaluation["reasoning"]["description"] = (
+                    "后续独立验收运行 `pytest` 后确认结果。"
+                )
+                evaluation["descriptions"][3] = evaluation["reasoning"]["description"]
+                app.update_turn(
+                    "abc123abc123",
+                    1,
+                    review_result=json.dumps({"evaluation": evaluation}, ensure_ascii=False),
+                )
+
+                completed = app.completed_turns()[0]
+
+        self.assertTrue(completed["export_ready"])
+        self.assertEqual(completed["evaluation_repair"]["status"], "needed")
+        self.assertTrue(completed["evaluation_repair"]["can_start"])
+        self.assertTrue(
+            any(
+                "推理能力" in issue
+                for issue in completed["evaluation_repair"]["repairable_issues"]
+            )
+        )
+
+    def test_evaluation_repair_recovery_resumes_active_jobs_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "schedule_evaluation_repair") as schedule:
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                self.record_solo_description_rejection(
+                    "描述与轨迹不符：【任务规划】步骤依据未找到。"
+                )
+                app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]},
+                    schedule_jobs=False,
+                )
+                with app.db_connection() as database:
+                    database.execute(
+                        """UPDATE evaluation_repair_jobs SET status = 'running'
+                             WHERE run_id = 'abc123abc123' AND turn_number = 1"""
+                    )
+
+                recovered = app.recover_evaluation_repair_jobs()
+                schedule.assert_called_once()
+                with app.db_connection() as database:
+                    database.execute(
+                        """UPDATE evaluation_repair_jobs SET status = 'failed'
+                             WHERE run_id = 'abc123abc123' AND turn_number = 1"""
+                    )
+                schedule.reset_mock()
+                recovered_failed = app.recover_evaluation_repair_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(recovered_failed, 0)
+        schedule.assert_not_called()
+
     def test_completed_turn_list_and_delivery_row_use_reviewed_values(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

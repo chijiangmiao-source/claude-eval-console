@@ -17168,6 +17168,20 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(len(payload["payload_sha256"]), 64)
         self.assertEqual(payload["trajectory"]["name"], "turn-01.jsonl")
 
+    def test_solo_qa_payload_declares_helper_readiness_after_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                self.confirm_turn()
+
+                payload = app.solo_qa_turn_payload("abc123abc123:1")
+
+        self.assertIs(payload["ready"], True)
+
     def test_solo_qa_state_is_saved_and_detects_later_local_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

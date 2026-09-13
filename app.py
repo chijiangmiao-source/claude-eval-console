@@ -88,8 +88,9 @@ POLL_SECONDS = 3
 RUN_TIMEOUT_SECONDS = 6 * 60 * 60
 INACTIVITY_WARNING_SECONDS = 30 * 60
 TERMINAL_ATTENTION_ALERT_INTERVAL_SECONDS = 60
-TERMINAL_IDLE_STABLE_SECONDS = 15
-TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS = 60
+TERMINAL_IDLE_STABLE_SECONDS = 5 * 60
+TERMINAL_RECOVERY_IDLE_STABLE_SECONDS = 15
+TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS = 120
 COMPLETION_RECOVERY_PROMPT_PREFIX = "[CLAUDE-EVAL-COMPLETE-TURN]"
 TERMINAL_ATTENTION_SOUND_PATH = Path(
     os.environ.get(
@@ -131,7 +132,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.40"
+APP_VERSION = "20260914.41"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -12645,8 +12646,20 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
         if terminal_idle_prompt_visible(screen_text):
             if idle_visible_since is None:
                 idle_visible_since = now
-            elif now - idle_visible_since >= TERMINAL_IDLE_STABLE_SECONDS:
-                if completion_recovery_epoch is None:
+            else:
+                required_idle_seconds = (
+                    TERMINAL_RECOVERY_IDLE_STABLE_SECONDS
+                    if completion_recovery_epoch is not None
+                    else TERMINAL_IDLE_STABLE_SECONDS
+                )
+                idle_is_stable = now - idle_visible_since >= required_idle_seconds
+                if not idle_is_stable:
+                    update_run_if_phase(
+                        run_id,
+                        observed_phase,
+                        status_detail=f"第 {turn_number} 轮终端已空闲，等待确认稳定状态",
+                    )
+                elif completion_recovery_epoch is None:
                     try:
                         send_completion_recovery_to_screen(
                             run_id,
@@ -12673,7 +12686,7 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
                     )
                     time.sleep(POLL_SECONDS)
                     continue
-                if (
+                elif (
                     time.time() - completion_recovery_epoch
                     >= TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS
                 ):

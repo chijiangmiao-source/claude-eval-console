@@ -7406,7 +7406,11 @@ class ParsingTests(unittest.TestCase):
                 ), mock.patch.object(
                     app.time,
                     "monotonic",
-                    side_effect=[0, 0, app.TERMINAL_IDLE_STABLE_SECONDS + 1],
+                    side_effect=[
+                        0,
+                        0,
+                        app.TERMINAL_RECOVERY_IDLE_STABLE_SECONDS + 1,
+                    ],
                 ), mock.patch.object(
                     app.time,
                     "time",
@@ -12657,6 +12661,8 @@ class RepositoryTests(unittest.TestCase):
 
         self.assertTrue(app.terminal_idle_prompt_visible(idle))
         self.assertTrue(app.terminal_idle_prompt_visible(compact_idle))
+        self.assertEqual(app.TERMINAL_IDLE_STABLE_SECONDS, 5 * 60)
+        self.assertEqual(app.TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS, 120)
         self.assertFalse(app.terminal_idle_prompt_visible(active))
         self.assertFalse(app.terminal_idle_prompt_visible(attention))
         self.assertFalse(

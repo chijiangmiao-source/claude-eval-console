@@ -128,7 +128,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260913.35"
+APP_VERSION = "20260913.36"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -188,6 +188,7 @@ CONTROL_STAGE_RETRY_BASE_SECONDS = 15
 EVALUATION_SCORING_TRAJECTORY_MAX_CHARS = 60_000
 EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS = 24_000
 EVALUATION_PUBLIC_HISTORY_LIMIT = 20
+EVALUATION_PUBLIC_HISTORY_MAX_CHARS = 6_000
 EVALUATION_REGRADE_RETRY_LIMIT = 2
 EVALUATION_REGRADE_RETRY_BASE_SECONDS = 15
 EVALUATION_SPLIT_MAX_CONCURRENCY = 5
@@ -939,7 +940,12 @@ EVALUATION_PUBLIC_SCORE_GUARDRAILS = """公开点评还必须遵守以下边界�
 
 严格按维度归因：交付完整性只评价产物是否覆盖需求、必要边界及完成声明是否真实，错误目录、失败命令或补跑后成功不能单独降低交付完整性；指令遵循只评价题面及有效上下文约束；任务规划只评价拆解、阶段安排、状态同步和必要澄清；推理能力只评价需求理解、因果判断和根因定位；执行能力只评价操作是否精准精简、是否存在无效重复以及能否按报错恢复。同一个客观事实的存在与否在五维中必须一致；已经保存的代码复核若没有确认某项产物缺陷，任何维度都不得自行断言该缺陷存在，更不能一维说材料不支持、另一维又说缺陷确实存在。"""
 EVALUATION_PUBLIC_HISTORY_GUIDANCE = """历史同维公开点评只用于检查措辞雷同，不能作为本轮事实或评分依据，也不得在本轮输出中引用历史编号或复述历史内容。返回前逐条比较，不得复用历史中的连续长片段、通用句干、固定开头或固定收尾，也不能只替换项目名和业务名词；应改用本轮独有的对象、操作、可见结果和证据组织自然表达。"""
-EVALUATION_FACT_ATTRIBUTION_GUIDANCE = """同时区分五类来源：原作业实际操作、面向使用人员的完成声明、源码事实、后续独立验收、环境或网关故障。后续同类检查决定当前产物的最终状态，但不会抹掉原作业已经发生的失败、漏验、锁文件不匹配或虚假完成声明；描述后续结果时必须明确写“后续独立验收”或同义来源。检查脚本自身故障不能自动成为推理、指令或产品缺陷，也不能统一压低五维上限。504 后自动继续属于同一业务轮次，要保留继续前后的完整操作和原始输出。历史点评只用于检查套话与雷同，不作为本轮事实来源。先核验事实，再定分，再写公开点评；润色只能调整表达，不能改变分数、需求、事实、缺陷或验证范围。"""
+EVALUATION_FACT_ATTRIBUTION_GUIDANCE = """同时区分五类来源：原作业实际操作、面向使用人员的完成声明、源码事实、后续独立验收、环境或网关故障。后续同类检查决定当前产物的最终状态，但不会抹掉原作业已经发生的失败、漏验、锁文件不匹配或虚假完成声明；在 artifactFindings 或内部字段描述后续结果时必须明确写“后续独立验收”或同义来源。检查脚本自身故障不能自动成为推理、指令或产品缺陷，也不能统一压低五维上限。504 后自动继续属于同一业务轮次，要保留继续前后的完整操作和原始输出。历史点评只用于检查套话与雷同，不作为本轮事实来源。先核验事实，再定分，再写公开点评；润色只能调整表达，不能改变分数、需求、事实、缺陷或验证范围。"""
+EVALUATION_PUBLIC_TRAJECTORY_ONLY_GUIDANCE = """公开 description 中的步骤、工具调用、文件修改、命令、构建、测试数字和运行结果只能引用本轮原始轨迹里可直接核验的内容。后续独立验收或独立复核只用于判断分数、artifactFindings 和内部证据，不得写入公开 description，也不得改写成原作业已经执行；即使下方复核摘要或验收材料包含这些事实也必须遵守此边界。"""
+EVALUATION_PUBLIC_EXTERNAL_VALIDATION_RE = re.compile(
+    r"(?:后续|事后)\s*(?:独立)?\s*(?:验收|复核|检查|测试)"
+    r"|独立\s*(?:验收|复核|检查|测试)"
+)
 EVALUATION_INTERNAL_EVIDENCE_GUIDANCE = """除兼容页面的五个命名维度外，输出 score_stage_version=2，并按同一固定顺序填写五项 scores、descriptions、when、behavior、impact、expected、evidenceRefs。scores/descriptions 必须与五个命名维度逐项一致；other 与 other_issues 表达同一内容。when 必须写明“第几轮、第几步”以及当时的具体工具调用、命令或操作，其中第几步必须使用轨迹给出的 STEP N 序号；behavior 必须写实际行为，并用真实文件名、函数名、命令、报错原文、接口路由、页面入口或控件动作之一准确定位，不能为了满足格式机械复用同一个文件名。impact 写已发生影响，expected 写正确做法。evidenceRefs 每项写 1～8 个真实存在且行号有效的“文件路径:行号”，多个引用用英文分号分隔。源码必须使用仓库相对路径，过程事实必须使用轨迹中 SOURCE 后的永久轨迹路径和原始行号；不能引用当前轮次 SOURCE 列表之外的旧轮次轨迹行。processFindings 必须以“评分版本 2；”开头，再以“维度名=N分；事实=具体依据；相邻M分差别=具体依据”的格式按五维顺序逐项填写；2～4 分同时写高低两个相邻档，1 分或 5 分只写实际存在的一侧，每个事实和差别都要带真实文件、函数、命令、报错、接口或页面操作，不能只写“已核对”。相邻档中的文件、函数、命令、报错或结果数字必须来自同维事实证据；“达到或未达到 M 分标准”属于评分判断，不要求这些评分表文字出现在源码。artifactFindings 必须原样包含“N 项通过、N 项失败、N 项跳过”的三个阿拉伯整数，并记录“当前产物为 commit <本轮40位SHA>”、实际运行条件和真实命令、检查覆盖的后端/前端/浏览器/一次性验收范围及未验证范围；同类检查采用最后结果，多个范围汇总时不能重复计算聚合验收。没有相应结果时写 0 并明确未运行，不能用“有、无、没有”代替数量。内部字段可以保留精确命令、数量和来源；缺少关键证据时不得补造引用或通过结论。"""
 TASK_DIFFICULTY_GUIDANCE = """task_difficulty 必须在检查真实代码、验收结果和本轮轨迹后独立判定，不采用题面、自报或历史记录中的难度标签。简单表示改动集中、路径直接且验证成本低；中等表示跨模块完成一条工程链路并处理常见失败路径；困难表示存在较多状态不变量、恢复逻辑或复杂跨层协作；地狱只用于产物确实同时包含多组深层机制且实现与验证负担显著的情况。"""
 DEVELOPER_PROMPT_STYLE_GUIDANCE = """题面使用自然、简洁的开发交接口吻，像项目负责人结合当前场景向开发者说明下一步工作。按业务因果和操作流程组织内容，不把数据库、接口、页面、异常、测试等字段机械地逐项拼接，不连续堆叠“必须”“不得”“须”“需要”等命令句，不使用“新增某模块，使用户能够”“提供某接口并覆盖”等模板反复起句，也不在结尾集中罗列通用工程或测试清单。技术约束、失败现象、兼容边界和验收证据仍要具体，但应放在它们对应的业务行为附近。"""
@@ -7809,10 +7815,16 @@ def public_turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def recent_qc_passed_public_evaluation_history(
     limit: int = EVALUATION_PUBLIC_HISTORY_LIMIT,
+    max_chars: int = EVALUATION_PUBLIC_HISTORY_MAX_CHARS,
 ) -> Dict[str, List[str]]:
-    """Collect recent accepted prose by dimension for scorer wording checks."""
+    """Collect a bounded, varied prose history for scorer wording checks."""
     history = {key: [] for key in EVALUATION_DIMENSION_KEYS}
-    if limit <= 0:
+    try:
+        limit = int(limit)
+        max_chars = int(max_chars)
+    except (TypeError, ValueError):
+        return history
+    if limit <= 0 or max_chars <= 0:
         return history
     try:
         rows = completed_turn_rows()
@@ -7823,12 +7835,158 @@ def recent_qc_passed_public_evaluation_history(
         remote_id = str(row.get("solo_qa_remote_submission_id") or "").strip()
         return (int(remote_id) if remote_id.isdigit() else -1, remote_id)
 
-    for row in sorted(rows, key=remote_order, reverse=True):
-        if str(row.get("solo_qa_state") or "") != "qc_passed":
+    def row_order(row: Dict[str, Any]) -> Tuple[str, int, str]:
+        updated_at = str(
+            row.get("turn_manual_evaluation_updated_at")
+            or row.get("turn_updated_at")
+            or row.get("solo_qa_remote_updated_at")
+            or row.get("solo_qa_submitted_at")
+            or ""
+        )
+        numeric_remote, remote_id = remote_order(row)
+        return (updated_at, numeric_remote, remote_id)
+
+    def row_identity(row: Dict[str, Any]) -> Tuple[str, str, str]:
+        run_id = str(row.get("run_id") or row.get("id") or "").strip()
+        turn_number = str(row.get("turn_number") or "").strip()
+        remote_id = str(row.get("solo_qa_remote_submission_id") or "").strip()
+        return (run_id, turn_number, remote_id)
+
+    ordered_rows = sorted(rows, key=row_order, reverse=True)
+    rows_by_remote_id = {
+        str(row.get("solo_qa_remote_submission_id") or "").strip(): row
+        for row in ordered_rows
+        if str(row.get("solo_qa_remote_submission_id") or "").strip()
+    }
+    b5_pattern = re.compile(
+        r"(?:\bB\s*[-_]\s*5\b|公共长片段|模板(?:相似|雷同|重复)|套(?:用)?模板)",
+        re.I,
+    )
+    b5_reference_pattern = re.compile(
+        r"#\s*([A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*)|"
+        r"(?:提交|记录)(?:ID|编号)\s*[:：]?\s*"
+        r"([A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*)",
+        re.I,
+    )
+    b5_rows = [
+        row
+        for row in ordered_rows
+        if b5_pattern.search(str(row.get("solo_qa_qc_summary") or ""))
+    ]
+
+    candidates_by_group: List[List[Tuple[str, Dict[str, Any]]]] = []
+    b5_candidates: List[Tuple[str, Dict[str, Any]]] = []
+    for rejected_row in b5_rows:
+        summary = str(rejected_row.get("solo_qa_qc_summary") or "")
+        for match in b5_reference_pattern.finditer(summary):
+            referenced_id = next(
+                (value for value in match.groups() if value),
+                "",
+            )
+            referenced_row = rows_by_remote_id.get(referenced_id)
+            if referenced_row is not None:
+                b5_candidates.append(
+                    (f"B-5引用 #{referenced_id}", referenced_row)
+                )
+        rejected_id = str(
+            rejected_row.get("solo_qa_remote_submission_id") or ""
+        ).strip()
+        rejected_label = (
+            f"B-5反例 #{rejected_id}"
+            if rejected_id
+            else "B-5反例"
+        )
+        b5_candidates.append((rejected_label, rejected_row))
+    candidates_by_group.append(b5_candidates)
+
+    terminal_states = {"qc_passed", "needs_fix", "discarded"}
+    terminal_remote_statuses = {"QC_PASSED", "PENDING_FIX", "DISCARDED"}
+    inflight_candidates: List[Tuple[str, Dict[str, Any]]] = []
+    for row in ordered_rows:
+        state = str(row.get("solo_qa_state") or "not_submitted").strip()
+        remote_status = str(row.get("solo_qa_remote_status") or "").strip()
+        if state in terminal_states or remote_status in terminal_remote_statuses:
             continue
         remote_id = str(row.get("solo_qa_remote_submission_id") or "").strip()
-        if not remote_id:
-            continue
+        turn_key = (
+            f"{str(row.get('run_id') or row.get('id') or '').strip()}:"
+            f"{str(row.get('turn_number') or '').strip()}"
+        ).strip(":")
+        label = f"在途 #{remote_id}" if remote_id else f"在途 {turn_key}"
+        inflight_candidates.append((label.rstrip(), row))
+    candidates_by_group.append(inflight_candidates)
+
+    passed_rows = [
+        row
+        for row in ordered_rows
+        if str(row.get("solo_qa_state") or "").strip() == "qc_passed"
+        and str(row.get("solo_qa_remote_submission_id") or "").strip()
+    ]
+    recent_window = max(limit, 4)
+    recent_passed = passed_rows[:recent_window]
+    recent_candidates = [
+        (
+            f"#{str(row.get('solo_qa_remote_submission_id') or '').strip()}",
+            row,
+        )
+        for row in recent_passed
+    ]
+    candidates_by_group.append(recent_candidates)
+
+    older_rows = passed_rows[recent_window:]
+    old_sample_size = min(len(older_rows), max(1, round(limit * 0.15)))
+    if old_sample_size == 1:
+        old_sample = older_rows[-1:]
+    elif old_sample_size > 1:
+        old_sample = [
+            older_rows[round(index * (len(older_rows) - 1) / (old_sample_size - 1))]
+            for index in range(old_sample_size)
+        ]
+    else:
+        old_sample = []
+    old_candidates = [
+        (
+            f"旧样本 #{str(row.get('solo_qa_remote_submission_id') or '').strip()}",
+            row,
+        )
+        for row in old_sample
+    ]
+    candidates_by_group.append(old_candidates)
+
+    # Reserve part of the count budget for each category, then backfill in
+    # priority order. This keeps explicit B-5 collisions and pending prose at
+    # the front without allowing either group to erase all accepted history.
+    quota_weights = (0.40, 0.25, 0.20, 0.15)
+    preferred: List[Tuple[str, Dict[str, Any]]] = []
+    remainders: List[List[Tuple[str, Dict[str, Any]]]] = []
+    selected_rows: set[Tuple[str, str, str]] = set()
+    for group, weight in zip(candidates_by_group, quota_weights):
+        quota = max(1, int(round(limit * weight)))
+        remainder: List[Tuple[str, Dict[str, Any]]] = []
+        taken = 0
+        for candidate in group:
+            identity = row_identity(candidate[1])
+            if identity in selected_rows:
+                continue
+            if taken < quota and len(preferred) < limit:
+                preferred.append(candidate)
+                selected_rows.add(identity)
+                taken += 1
+            else:
+                remainder.append(candidate)
+        remainders.append(remainder)
+    candidates = list(preferred)
+    for remainder in remainders:
+        for candidate in remainder:
+            identity = row_identity(candidate[1])
+            if identity in selected_rows:
+                continue
+            candidates.append(candidate)
+            selected_rows.add(identity)
+
+    used_chars = {key: 0 for key in EVALUATION_DIMENSION_KEYS}
+    seen_descriptions = {key: set() for key in EVALUATION_DIMENSION_KEYS}
+    for label, row in candidates:
         evaluation = public_turn_evaluation(row)
         for key in EVALUATION_DIMENSION_KEYS:
             if len(history[key]) >= limit:
@@ -7839,9 +7997,16 @@ def recent_qc_passed_public_evaluation_history(
             description = re.sub(
                 r"\s+", " ", str(item.get("description") or "")
             ).strip()
-            entry = f"#{remote_id} {description}" if description else ""
-            if entry and entry not in history[key]:
-                history[key].append(entry)
+            normalized_description = description.casefold()
+            if not description or normalized_description in seen_descriptions[key]:
+                continue
+            entry = f"{label} {description}".strip()
+            added_chars = len(entry) + (1 if history[key] else 0)
+            if used_chars[key] + added_chars > max_chars:
+                continue
+            history[key].append(entry)
+            seen_descriptions[key].add(normalized_description)
+            used_chars[key] += added_chars
         if all(len(history[key]) >= limit for key in EVALUATION_DIMENSION_KEYS):
             break
     return history
@@ -19809,7 +19974,6 @@ def run_codex_split_regrade(
     call_prefix: str = "turn-regrade",
 ) -> Dict[str, Any]:
     """Score five dimensions and shared metadata in six bounded outputs."""
-    del repair_notifier  # Targeted validation repairs run after assembly.
     verification_text = json.dumps(verification, ensure_ascii=False)
     if len(verification_text) > 24000:
         verification_text = verification_text[-24000:]
@@ -19837,7 +20001,7 @@ def run_codex_split_regrade(
             + json.dumps(compact_findings, ensure_ascii=False)
             + "\n"
         )
-    def material_for_trajectory(trajectory_text: str) -> str:
+    def metadata_material_for_trajectory(trajectory_text: str) -> str:
         return f"""本轮当前产物 commit：{commit_sha}
 
 本轮 User Prompt：
@@ -19853,7 +20017,18 @@ def run_codex_split_regrade(
 本轮操作轨迹：
 {trajectory_text or '未取得轨迹内容'}"""
 
-    material = material_for_trajectory(trajectory)
+    def dimension_material_for_trajectory(trajectory_text: str) -> str:
+        return f"""本轮当前产物 commit：{commit_sha}
+
+本轮 User Prompt：
+{current_prompt}
+{original_context}{findings_context}
+
+本轮原始操作轨迹：
+{trajectory_text or '未取得轨迹内容'}"""
+
+    metadata_material = metadata_material_for_trajectory(trajectory)
+    dimension_material = dimension_material_for_trajectory(trajectory)
     direct_output = (
         "材料已经备齐；不得调用 shell、浏览器、网络、文件读取或其他工具，"
         "不得再次检查仓库，直接按 schema 一次返回 JSON。"
@@ -19865,7 +20040,7 @@ def run_codex_split_regrade(
 
 task_type 只按本轮题面主要意图判断；language_framework 使用英文逗号分隔；environment_reproducibility 按仓库实际运行方式判断。other_issues 只记录五维之外的真实问题，没有则写“无”。artifactFindings 必须原样包含“N 项通过、N 项失败、N 项跳过”三个阿拉伯整数，并写明“当前产物为 commit {commit_sha}”、实际运行条件、真实命令、后端/前端/浏览器/一次性验收的检查覆盖和未验证范围；同类检查只采用最后一次结果，不重复累计。
 
-{material}"""
+{metadata_material}"""
     rubric = evaluation_rubric_text()
     public_description_history = recent_qc_passed_public_evaluation_history()
     parent_job_key = current_job_key()
@@ -19900,24 +20075,25 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
         dimension_label = EVALUATION_DIMENSION_LABELS[dimension_key]
         history_text = "\n".join(
             public_description_history.get(dimension_key, [])
-        ) or "（暂无已通过质检的同维公开点评）"
+        ) or "（暂无同维公开点评避重样本）"
         dimension_prompt = f"""只独立评定第 {turn_number} 轮的“{dimension_label}”一个维度，不输出其他维度或共用元数据。{direct_output}
 
 {EVALUATION_SCORE_GUIDANCE}
 {EVALUATION_DESCRIPTION_GUIDANCE}
 {EVALUATION_PUBLIC_SCORE_GUARDRAILS}
 {EVALUATION_FACT_ATTRIBUTION_GUIDANCE}
+{EVALUATION_PUBLIC_TRAJECTORY_ONLY_GUIDANCE}
 {EVALUATION_PUBLIC_HISTORY_GUIDANCE}
 
 本轮评分表：
 {rubric}
 
-最近已通过质检的“{dimension_label}”公开点评：
+同维公开点评避重样本（B-5 反例仅用于避免复用其措辞，不能作为本轮事实）：
 {history_text}
 
 公开 description 写一小段自然点评；低于 5 分必须明确第 {turn_number} 轮的具体不足、证据和已经发生的影响，5 分只能保留有核验依据的正向事实。when 必须从“第 {turn_number} 轮第 N 步执行”或“第 {turn_number} 轮第 N 步调用”开始，N 必须来自轨迹 STEP，并控制在 220 字以内。behavior、impact、expected 分别写实际行为、已发生后果和正确做法，各控制在 380 字以内。所有自然语言字段都必须在长度上限前结束完整句子，不能在连接词、命令、路径或半句话处收尾。evidenceRefs 写 1～8 个真实“文件路径:行号”，多个用英文分号分隔。processFinding 必须写成“{dimension_label}=N分；事实=具体依据；相邻M分差别=具体依据”；2～4 分写高低两个相邻档，1 分或 5 分只写存在的一侧，事实与相邻差别都必须带本维证据中的真实文件、函数、命令、报错、接口或页面操作。
 
-{material}"""
+{dimension_material}"""
         dimension_prefix = f"{call_prefix}-{dimension_key}"
         try:
             return run_split_call(
@@ -19936,8 +20112,8 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
                 EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS,
             )
             compact_dimension_prompt = dimension_prompt.replace(
-                material,
-                material_for_trajectory(compact_trajectory),
+                dimension_material,
+                dimension_material_for_trajectory(compact_trajectory),
                 1,
             )
             return run_codex_split_dimension_output_fallback(
@@ -19946,6 +20122,73 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
                 dimension_prefix,
                 run_split_call,
             )
+
+    def repair_external_public_description(
+        dimension_key: str,
+        item: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        description = re.sub(
+            r"\s+", " ", str(item.get("description") or "")
+        ).strip()
+        if not EVALUATION_PUBLIC_EXTERNAL_VALIDATION_RE.search(description):
+            return item
+        dimension_label = EVALUATION_DIMENSION_LABELS[dimension_key]
+        if repair_notifier:
+            repair_notifier(
+                dimension_label,
+                "公开点评引用了后续独立验收，正在只重写该维 description",
+            )
+        prompt = f"""只重写第 {turn_number} 轮“{dimension_label}”的公开 description。现有分数固定为 {int(item['score'])} 分，不得改分，也不得返回或改写 when、behavior、impact、expected、evidenceRefs、processFinding、其他维度或共用元数据。材料已经备齐；不得调用工具，直接按 schema 返回 JSON。
+
+{EVALUATION_PUBLIC_TRAJECTORY_ONLY_GUIDANCE}
+
+删除“后续独立验收”“独立复核”及同义来源的操作或结果，只用本轮原始轨迹中真实存在的步骤、文件、函数、命令、页面动作和结果重写一小段自然点评。保持现有评分含义；5 分只写正向事实，低于 5 分保留轨迹可核验的具体不足及已经发生的影响。不要使用反引号。
+
+现有 description：
+{description}
+
+现有本维内部事实：
+{json.dumps({field: item.get(field) for field in EVALUATION_SCORE_STAGE_DETAIL_FIELDS}, ensure_ascii=False)}
+
+本轮 User Prompt：
+{current_prompt}
+
+本轮原始操作轨迹：
+{trajectory or '未取得轨迹内容'}"""
+        schema = {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600,
+                },
+            },
+            "required": ["description"],
+            "additionalProperties": False,
+        }
+        try:
+            repaired = run_split_call(
+                prompt,
+                schema,
+                f"{call_prefix}-{dimension_key}-public-source-repair",
+                dimension_key,
+            )
+        except Exception:
+            return item
+        repaired_description = re.sub(
+            r"\s+", " ", str(repaired.get("description") or "")
+        ).strip()
+        if (
+            not repaired_description
+            or EVALUATION_PUBLIC_EXTERNAL_VALIDATION_RE.search(
+                repaired_description
+            )
+        ):
+            return item
+        result = dict(item)
+        result["description"] = repaired_description
+        return result
 
     dimension_results: Dict[str, Dict[str, Any]] = {}
     metadata: Optional[Dict[str, Any]] = None
@@ -19982,6 +20225,12 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
 
     if metadata is None:
         raise WorkflowError("评分共用元数据没有返回有效结果")
+
+    for dimension_key in EVALUATION_DIMENSION_KEYS:
+        dimension_results[dimension_key] = repair_external_public_description(
+            dimension_key,
+            dimension_results[dimension_key],
+        )
 
     evaluation: Dict[str, Any] = dict(metadata)
     evaluation["score_stage_version"] = 2

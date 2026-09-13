@@ -7273,6 +7273,143 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(all(len(history[key]) == 1 for key in app.EVALUATION_DIMENSION_KEYS))
         self.assertFalse(any("6546" in entry for values in history.values() for entry in values))
 
+    def test_public_evaluation_history_prioritizes_b5_inflight_and_old_samples(self):
+        def history_row(
+            run_id,
+            remote_id,
+            state,
+            updated_at,
+            description,
+            *,
+            remote_status="",
+            qc_summary="",
+        ):
+            evaluation = sample_evaluation()
+            for key in app.EVALUATION_DIMENSION_KEYS:
+                evaluation[key]["description"] = f"{description}-{key}"
+            return {
+                "run_id": run_id,
+                "turn_number": 1,
+                "turn_updated_at": updated_at,
+                "solo_qa_state": state,
+                "solo_qa_remote_status": remote_status,
+                "solo_qa_remote_submission_id": remote_id,
+                "solo_qa_qc_summary": qc_summary,
+                "turn_review_result": json.dumps(
+                    {"evaluation": evaluation}, ensure_ascii=False
+                ),
+                "turn_manual_evaluation": "",
+            }
+
+        rows = [
+            history_row(
+                "b5-rejected",
+                "900",
+                "needs_fix",
+                "2026-09-13T12:30:00",
+                "B5被拒点评",
+                remote_status="PENDING_FIX",
+                qc_summary="B-5 公共长片段与已交付数据 #100 重复",
+            ),
+            history_row(
+                "inflight",
+                "",
+                "",
+                "2026-09-13T12:20:00",
+                "尚未提交点评",
+            ),
+            history_row(
+                "ordinary-rejected",
+                "901",
+                "needs_fix",
+                "2026-09-13T12:10:00",
+                "普通返修点评",
+                remote_status="PENDING_FIX",
+                qc_summary="事实措辞需要调整",
+            ),
+            history_row(
+                "discarded",
+                "902",
+                "discarded",
+                "2026-09-13T12:00:00",
+                "废弃点评",
+                remote_status="DISCARDED",
+            ),
+        ]
+        for index in range(10):
+            rows.append(
+                history_row(
+                    f"recent-{index}",
+                    str(800 - index),
+                    "qc_passed",
+                    f"2026-09-13T11:{59 - index:02d}:00",
+                    f"近期通过点评{index}",
+                    remote_status="QC_PASSED",
+                )
+            )
+        rows.extend([
+            history_row(
+                "b5-reference",
+                "100",
+                "qc_passed",
+                "2026-02-01T00:00:00",
+                "被B5引用的旧点评",
+                remote_status="QC_PASSED",
+            ),
+            history_row(
+                "oldest",
+                "50",
+                "qc_passed",
+                "2025-01-01T00:00:00",
+                "全量扫描抽到的旧点评",
+                remote_status="QC_PASSED",
+            ),
+        ])
+
+        with mock.patch.object(app, "completed_turn_rows", return_value=rows):
+            history = app.recent_qc_passed_public_evaluation_history(
+                limit=8,
+                max_chars=4_000,
+            )
+
+        delivery = history["delivery"]
+        self.assertTrue(any(entry.startswith("B-5引用 #100 ") for entry in delivery))
+        self.assertTrue(any(entry.startswith("B-5反例 #900 ") for entry in delivery))
+        self.assertTrue(any(entry.startswith("在途 inflight:1 ") for entry in delivery))
+        self.assertTrue(any(entry.startswith("旧样本 #50 ") for entry in delivery))
+        self.assertFalse(any("普通返修点评" in entry for entry in delivery))
+        self.assertFalse(any("废弃点评" in entry for entry in delivery))
+        self.assertTrue(all(len(values) <= 8 for values in history.values()))
+
+    def test_public_evaluation_history_enforces_per_dimension_character_budget(self):
+        rows = []
+        for index in range(12):
+            evaluation = sample_evaluation()
+            for key in app.EVALUATION_DIMENSION_KEYS:
+                evaluation[key]["description"] = f"第{index}条" + ("长点评" * 12)
+            rows.append({
+                "run_id": f"run-{index}",
+                "turn_number": 1,
+                "turn_updated_at": f"2026-09-13T11:{index:02d}:00",
+                "solo_qa_state": "qc_passed",
+                "solo_qa_remote_status": "QC_PASSED",
+                "solo_qa_remote_submission_id": str(700 + index),
+                "turn_review_result": json.dumps(
+                    {"evaluation": evaluation}, ensure_ascii=False
+                ),
+                "turn_manual_evaluation": "",
+            })
+
+        with mock.patch.object(app, "completed_turn_rows", return_value=rows):
+            history = app.recent_qc_passed_public_evaluation_history(
+                limit=20,
+                max_chars=180,
+            )
+
+        for values in history.values():
+            self.assertLessEqual(len("\n".join(values)), 180)
+            self.assertLess(len(values), len(rows))
+
     def test_regrade_uses_rubric_without_requesting_code_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "repo"
@@ -7313,6 +7450,14 @@ class ReviewTests(unittest.TestCase):
         calls = runner.call_args_list
         self.assertEqual(len(calls), 6)
         self.assertFalse(any(call.args[1] == app.evaluation_schema() for call in calls))
+        metadata_call = next(
+            call for call in calls if call.args[3].endswith("-metadata")
+        )
+        self.assertIn('"command": "make test"', metadata_call.args[0])
+        self.assertIn(
+            "后端检查：最后记录 12 项通过、0 项失败",
+            metadata_call.args[0],
+        )
         dimension_calls = [
             call for call in calls if not call.args[3].endswith("-metadata")
         ]
@@ -7328,11 +7473,71 @@ class ReviewTests(unittest.TestCase):
             self.assertIn(history[dimension_key][0], prompt)
             self.assertIn("错误目录、失败命令或补跑后成功不能单独降低交付完整性", prompt)
             self.assertIn("同一个客观事实的存在与否在五维中必须一致", prompt)
-            self.assertIn("后端检查：最后记录 12 项通过、0 项失败", prompt)
             self.assertIn(app.EVALUATION_FACT_ATTRIBUTION_GUIDANCE, prompt)
+            self.assertIn(app.EVALUATION_PUBLIC_TRAJECTORY_ONLY_GUIDANCE, prompt)
+            self.assertNotIn('"command": "make test"', prompt)
+            self.assertNotIn("本轮验收结果：", prompt)
             self.assertEqual(call.kwargs["sandbox"], "read-only")
             self.assertEqual(call.kwargs["reasoning_effort"], "low")
         self.assertEqual(result["task_type"], "Feature 迭代")
+
+    def test_regrade_rewrites_only_description_with_independent_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            repo.mkdir()
+            evaluation = with_score_stage(sample_evaluation("Bug 修复"))
+            original_description = (
+                "第 1 轮实现 save_order；后续独立验收执行 docker compose build。"
+            )
+            evaluation["delivery"]["description"] = original_description
+            evaluation["descriptions"][0] = original_description
+            evaluation["artifactFindings"] += " 后续独立验收执行 docker compose build。"
+            metadata, dimensions = split_evaluation_parts(evaluation)
+            replacement = "第 1 轮第 3 步执行 pytest，save_order 的验收结果通过。"
+
+            def structured_result(_prompt, schema, _cwd, prefix, _timeout, **_kwargs):
+                if prefix == "turn-regrade-metadata":
+                    return metadata
+                if prefix == "turn-regrade-delivery-public-source-repair":
+                    self.assertEqual(set(schema["properties"]), {"description"})
+                    return {"description": replacement}
+                return dimensions[prefix.removeprefix("turn-regrade-")]
+
+            with mock.patch.object(
+                app, "run_codex_structured", side_effect=structured_result
+            ) as runner, mock.patch.object(
+                app,
+                "recent_qc_passed_public_evaluation_history",
+                return_value={key: [] for key in app.EVALUATION_DIMENSION_KEYS},
+            ):
+                result = app.run_codex_split_regrade(
+                    repo,
+                    "修复订单保存",
+                    [
+                        {
+                            "command": "docker compose build",
+                            "exit_code": 0,
+                            "output": "built",
+                        }
+                    ],
+                    "STEP 3: 第 3 步执行 pytest\nTOOL RESULT: save_order passed",
+                    1,
+                    None,
+                    "a" * 40,
+                )
+
+        self.assertEqual(len(runner.call_args_list), 7)
+        self.assertEqual(result["delivery"]["score"], 5)
+        self.assertEqual(result["delivery"]["description"], replacement)
+        self.assertEqual(result["descriptions"][0], replacement)
+        self.assertEqual(result["when"][0], evaluation["when"][0])
+        self.assertIn("后续独立验收", result["artifactFindings"])
+        repair_call = next(
+            call
+            for call in runner.call_args_list
+            if call.args[3] == "turn-regrade-delivery-public-source-repair"
+        )
+        self.assertNotIn('"command": "docker compose build"', repair_call.args[0])
 
     def test_review_persists_versioned_score_stage_with_legacy_projection(self):
         with tempfile.TemporaryDirectory() as directory:

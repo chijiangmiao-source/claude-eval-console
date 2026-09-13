@@ -128,7 +128,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260913.37"
+APP_VERSION = "20260913.38"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -8347,6 +8347,7 @@ def solo_qa_returned_evaluation_fingerprint(row: Dict[str, Any]) -> str:
         "分段复读",
         "反引号",
         "满分描述",
+        "错别字",
         "B-5",
         "B5",
     )
@@ -8386,6 +8387,10 @@ def solo_qa_returned_evaluation_repair_issues(
         or re.search(r"(?:全部|所有|五)\s*个?维度|五维", summary)
     ):
         selected = list(EVALUATION_DIMENSION_KEYS)
+    if not selected and ("五段描述" in summary or "错别字" in summary):
+        # The platform's spelling check can report one aggregate result without
+        # naming the affected dimension, so rewrite the five public descriptions.
+        selected = list(EVALUATION_DIMENSION_KEYS)
     if not selected:
         return []
     if any(marker in summary for marker in ("重复", "公共长片段", "套模板", "模板相似", "分段复读", "B-5", "B5")) or re.search(
@@ -8396,6 +8401,8 @@ def solo_qa_returned_evaluation_repair_issues(
         reason = "满分描述含有与分数矛盾的扣分内容"
     elif "反引号" in summary:
         reason = "公开描述含有反引号"
+    elif "错别字" in summary:
+        reason = "公开描述含有错别字"
     else:
         reason = "描述中的具体依据未通过质检平台核对"
     return [
@@ -9726,6 +9733,12 @@ def solo_qa_state_summary(row: Dict[str, Any], ready: bool) -> Dict[str, Any]:
             changed = True
     if changed and state not in {"not_submitted", "failed", "remote_missing"}:
         state = "local_changed"
+    returned_fingerprint = solo_qa_returned_evaluation_fingerprint(row)
+    evaluation = turn_evaluation(row) if returned_fingerprint else {}
+    description_repair_applied = bool(
+        returned_fingerprint
+        and evaluation.get("_solo_qa_repair_qc_sha256") == returned_fingerprint
+    )
     remote_id = str(row.get("solo_qa_remote_submission_id") or "")
     return {
         "state": state,
@@ -9736,6 +9749,7 @@ def solo_qa_state_summary(row: Dict[str, Any], ready: bool) -> Dict[str, Any]:
         "last_synced_at": str(row.get("solo_qa_last_synced_at") or ""),
         "error": str(row.get("solo_qa_error") or ""),
         "payload_changed": changed,
+        "description_repair_applied": description_repair_applied,
         "detail_url": f"{SOLO_QA_ORIGIN}/app/submissions/{remote_id}" if remote_id else "",
     }
 
@@ -9834,7 +9848,10 @@ def record_solo_qa_state(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise WorkflowError("提交数据摘要格式不正确")
     if reported_digest and current_digest and reported_digest != current_digest:
         raise WorkflowError("本地轮次数据已变化，请刷新后重新提交")
-    digest = reported_digest or current_digest or None
+    # A failed submit or repair has not delivered the current payload. Keep the
+    # last successful remote fingerprint so the UI still detects local changes.
+    submitted_state = state in {"submitting", "qc_pending", "qc_passed", "discarded"}
+    digest = (reported_digest or current_digest or None) if submitted_state else None
     timestamp = now_text()
     error = str(payload.get("error") or "").strip()[:4000]
     qc_summary = str(payload.get("qc_summary") or "").strip()[:4000]
@@ -14398,6 +14415,9 @@ def naturalize_evaluation_description(value: Any) -> str:
     )
 
     def rewrite_prose(text: str) -> str:
+        # Keep the common phrase stable and repair text produced by older
+        # naturalization passes before applying the general substitutions.
+        text = text.replace("没有没有提交改动", "没有未提交改动")
         text = text.replace("尚未包含", "还没有").replace("还未包含", "还没有")
         text = text.replace("仍未包含", "仍然没有").replace("均未包含", "都没有")
         text = text.replace("不包含", "没有").replace("未包含", "没有")
@@ -14410,7 +14430,7 @@ def naturalize_evaluation_description(value: Any) -> str:
             lambda match: match.group(0)[:-1] + "还没",
             text,
         )
-        text = re.sub(r"未(?=(?:" + negative_verbs + r"))", "没有", text)
+        text = re.sub(r"(?<!没有)未(?=(?:" + negative_verbs + r"))", "没有", text)
         text = text.replace("均已", "都已经")
         text = re.sub(r"均(?=(?:" + uniform_verbs + r"))", "都", text)
         return text

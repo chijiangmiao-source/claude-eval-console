@@ -38,6 +38,7 @@ const requests = [];
 const submissionBodies = [];
 const repairBodies = [];
 let createdCount = 0;
+let transientRemoteReadFailures = 0;
 
 const payloads = {
   "abc123abc123:1": { session: "session-one", turn: "turn-one-1", round: 1, prompt: "完成真实提交链路 one-1", taskType: "Bug修复" },
@@ -46,6 +47,7 @@ const payloads = {
   "cafebabecafe:2": { session: "session-missing", turn: "turn-missing-2", round: 2, prompt: "缺少前序轮次", taskType: "Bug修复" },
   "facefeedcafe:1": { session: "session-choice", turn: "turn-choice-1", round: 1, prompt: "触发枚举错误", taskType: "未知类型" },
   "feedfacecafe:1": { session: "session-validation", turn: "turn-validation-1", round: 1, prompt: "触发远端字段错误", taskType: "Bug修复" },
+  "feedfacecafe:2": { session: "session-validation", turn: "turn-validation-2", round: 2, prompt: "同会话后续轮次不应越过失败前序", taskType: "Bug修复" },
   "deadbeefcafe:1": {
     session: "session-repair",
     turn: "turn-repair-1",
@@ -146,6 +148,10 @@ globalThis.fetch = async (url, options = {}) => {
   const repairMatch = href.match(/\/api\/v1\/submissions\/(7001|7002)$/);
   if (repairMatch && (options.method || "GET") === "GET") {
     const remoteId = repairMatch[1];
+    if (remoteId === "7001" && transientRemoteReadFailures > 0) {
+      transientRemoteReadFailures -= 1;
+      return jsonResponse({ detail: "502 Bad Gateway" }, 502);
+    }
     const config = remoteId === "7001" ? payloads["deadbeefcafe:1"] : payloads["decafbadcafe:1"];
     return jsonResponse({
       id: Number(remoteId),
@@ -270,10 +276,38 @@ assert.match(validationError, /^任务难度：当前轮次难度与会话不一
 assert.match(validationError, /提交数据校验未通过$/);
 assert.equal(submissionBodies.at(-1).data.user_prompt, "触发远端字段错误");
 
+const continuedBatchResponse = await new Promise((resolve) => {
+  listener(
+    {
+      type: "SOLO_QA_SUBMIT",
+      payload: {
+        turn_keys: ["feedfacecafe:1", "feedfacecafe:2", "def456def456:1"],
+      },
+    },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(continuedBatchResponse.ok, true);
+assert.equal(continuedBatchResponse.data.stopped, false);
+assert.equal(continuedBatchResponse.data.failed, 1);
+assert.deepEqual(
+  continuedBatchResponse.data.results.map((item) => item.outcome),
+  ["failed", "skipped", "submitted"],
+);
+assert.match(
+  continuedBatchResponse.data.results[1].reason,
+  /同一会话的前序轮次提交失败/,
+);
+
 const uploadCountBeforeRepair = requests.filter((item) => item.href.endsWith("/submissions/upload")).length;
 const createCountBeforeRepair = requests.filter(
   (item) => item.href.endsWith("/submissions") && item.method === "POST",
 ).length;
+const repairReadCountBefore = requests.filter(
+  (item) => item.href.endsWith("/submissions/7001") && item.method === "GET",
+).length;
+transientRemoteReadFailures = 1;
 const repairResponse = await new Promise((resolve) => {
   listener(
     { type: "SOLO_QA_REPAIR", payload: { turn_keys: ["deadbeefcafe:1", "deadbeefcafe:1"] } },
@@ -286,6 +320,12 @@ assert.equal(repairResponse.data.stopped, false);
 assert.equal(repairResponse.data.results.length, 1);
 assert.equal(repairResponse.data.results[0].outcome, "repaired");
 assert.equal(repairResponse.data.results[0].remote_id, "7001");
+assert.equal(
+  requests.filter(
+    (item) => item.href.endsWith("/submissions/7001") && item.method === "GET",
+  ).length,
+  repairReadCountBefore + 2,
+);
 assert.equal(
   requests.filter((item) => item.href.endsWith("/submissions/upload")).length,
   uploadCountBeforeRepair + 1,
@@ -320,7 +360,8 @@ const remoteMovedResponse = await new Promise((resolve) => {
   );
 });
 assert.equal(remoteMovedResponse.ok, true);
-assert.equal(remoteMovedResponse.data.stopped, true);
+assert.equal(remoteMovedResponse.data.stopped, false);
+assert.equal(remoteMovedResponse.data.failed, 1);
 assert.match(remoteMovedResponse.data.results[0].error, /远端提交已不是待返修状态/);
 assert.equal(
   requests.filter((item) => item.href.endsWith("/submissions/upload")).length,
@@ -338,7 +379,8 @@ const invalidRepairStateResponse = await new Promise((resolve) => {
   );
 });
 assert.equal(invalidRepairStateResponse.ok, true);
-assert.equal(invalidRepairStateResponse.data.stopped, true);
+assert.equal(invalidRepairStateResponse.data.stopped, false);
+assert.equal(invalidRepairStateResponse.data.failed, 1);
 assert.match(invalidRepairStateResponse.data.results[0].error, /只有需要返修或本地数据已变化/);
 assert.equal(
   requests.filter((item) => item.href.endsWith("/submissions/7003") && item.method === "GET").length,

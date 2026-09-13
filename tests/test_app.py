@@ -2868,6 +2868,14 @@ class ValidationTests(unittest.TestCase):
             'ConfigDict(extra="ignore") 没有修改。',
         )
 
+    def test_plain_wording_does_not_duplicate_a_nested_negation(self):
+        self.assertEqual(
+            app.naturalize_evaluation_description(
+                "代码复核确认没有未提交改动，也没有没有提交改动。"
+            ),
+            "代码复核确认没有未提交改动，也没有未提交改动。",
+        )
+
     def test_manual_evaluation_keeps_the_users_wording(self):
         evaluation = sample_evaluation()
         evaluation["delivery"]["description"] = "三个场景均已验证，尚未发现问题。"
@@ -5953,7 +5961,8 @@ class ValidationTests(unittest.TestCase):
         )[0]
 
         self.assertNotIn("syncSoloQa", bridge_ready)
-        self.assertIn("历史状态按需手动同步", source)
+        self.assertIn("同步会读取最新质检结论", source)
+        self.assertIn("autoRepairSyncedSoloQaReturns", source)
 
     def test_run_list_exposes_filters_delete_and_export_routes(self):
         html = (app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -6139,6 +6148,10 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("submitSelectedToSoloQa", javascript)
         self.assertIn("repairSelectedInSoloQa", javascript)
         self.assertIn("SOLO_QA_REPAIR", javascript)
+        self.assertIn("同步并自动返修", html)
+        self.assertIn("autoRepairSyncedSoloQaReturns", javascript)
+        self.assertIn("retry_failed: true", javascript)
+        self.assertIn('soloQaBatchOutcome(result, "repaired")', javascript)
         self.assertEqual(manifest["manifest_version"], 3)
         self.assertEqual(
             manifest["host_permissions"],
@@ -14380,6 +14393,37 @@ class AutoRefillTests(unittest.TestCase):
                     {"project_directory": "team-a", "_auto_refill": True}
                 )
 
+    def test_due_refill_schedule_enables_and_starts_a_new_project(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root):
+                app.initialize_database()
+                with mock.patch.object(app.time, "time", return_value=1_000):
+                    app.set_auto_refill({
+                        "enabled": False,
+                        "project_directory": "team-a",
+                        "enable_after_hours": 0.5,
+                    })
+                created = {"id": "new01111111", "project_number": "0009"}
+                with mock.patch.object(app.time, "time", return_value=2_801), mock.patch.object(
+                    app, "automatic_refill_occupancy", return_value=0
+                ), mock.patch.object(
+                    app, "auto_refill_iteration_candidate", return_value=None
+                ), mock.patch.object(
+                    app, "create_automatic_run", return_value=created
+                ) as create, mock.patch.object(app, "add_event"):
+                    result = app.automatic_refill_once()
+                    configuration = app.auto_refill_configuration()
+
+            self.assertEqual(result["action"], "0-1")
+            self.assertTrue(configuration["enabled"])
+            self.assertIsNone(configuration["enable_at"])
+            create.assert_called_once_with(
+                {"project_directory": "team-a", "_auto_refill": True}
+            )
+
     def test_refill_queue_uses_the_interleaved_task_type(self):
         source = {
             "id": "root11111111",
@@ -15871,6 +15915,23 @@ class ExportTests(unittest.TestCase):
         for label in app.EVALUATION_DIMENSION_LABELS.values():
             self.assertTrue(any(label in issue for issue in issues), label)
 
+    def test_solo_qa_spelling_return_rewrites_all_five_descriptions(self):
+        row = {
+            "solo_qa_state": "needs_fix",
+            "solo_qa_remote_submission_id": "9003",
+            "solo_qa_remote_status": "PENDING_FIX",
+            "solo_qa_remote_updated_at": "2026-09-13T22:43:13",
+            "solo_qa_qc_summary": "五段描述中检出 1 个错别字",
+        }
+
+        issues = app.solo_qa_returned_evaluation_repair_issues(
+            row,
+            with_score_stage(sample_evaluation()),
+        )
+
+        self.assertEqual(len(issues), len(app.EVALUATION_DIMENSION_KEYS))
+        self.assertTrue(all("公开描述含有错别字" in issue for issue in issues))
+
     def test_completed_description_repair_queue_is_idempotent_per_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -15893,6 +15954,44 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(first["queued"], 1)
         self.assertEqual(second["queued"], 0)
         self.assertEqual(second["results"][0]["status"], "queued")
+        schedule.assert_called_once()
+
+    def test_completed_description_repair_retries_failed_revision_only_when_requested(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "schedule_evaluation_repair") as schedule:
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                self.record_solo_description_rejection(
+                    "描述与轨迹不符：【任务规划】步骤依据未找到。"
+                )
+                app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]},
+                    schedule_jobs=False,
+                )
+                with app.db_connection() as database:
+                    database.execute(
+                        """UPDATE evaluation_repair_jobs
+                              SET status = 'failed', error = '临时网关故障'
+                            WHERE run_id = 'abc123abc123' AND turn_number = 1"""
+                    )
+
+                held = app.queue_completed_turn_evaluation_repairs(
+                    {"turn_keys": ["abc123abc123:1"]}
+                )
+                retried = app.queue_completed_turn_evaluation_repairs(
+                    {
+                        "turn_keys": ["abc123abc123:1"],
+                        "retry_failed": True,
+                    }
+                )
+
+        self.assertEqual(held["queued"], 0)
+        self.assertEqual(held["results"][0]["status"], "failed")
+        self.assertEqual(retried["queued"], 1)
+        self.assertEqual(retried["results"][0]["status"], "queued")
         schedule.assert_called_once()
 
     def test_completed_description_repair_cas_rejects_manual_or_remote_races(self):
@@ -16016,6 +16115,7 @@ class ExportTests(unittest.TestCase):
                 )
                 stored_row = app.completed_turn_row("abc123abc123:1")
                 stored = app.automatic_turn_evaluation(stored_row)
+                solo_qa = app.solo_qa_state_summary(stored_row, True)
                 turn = app.turn_row("abc123abc123", 1)
 
         for key in app.EVALUATION_DIMENSION_KEYS:
@@ -16033,6 +16133,7 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(stored[field], original_copy[field])
         self.assertEqual(stored["processFindings"], original_copy["processFindings"])
         self.assertEqual(stored["artifactFindings"], original_copy["artifactFindings"])
+        self.assertTrue(solo_qa["description_repair_applied"])
         self.assertIsNone(turn["evaluation_confirmed_at"])
         self.assertIsNone(turn["evaluation_confirmed_by"])
         self.assertIsNone(turn["evaluation_confirmation_sha256"])
@@ -17810,6 +17911,51 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(saved["remote_id"], "42")
         self.assertEqual(changed["state"], "local_changed")
         self.assertTrue(changed["payload_changed"])
+
+    def test_failed_solo_qa_repair_keeps_previous_remote_payload_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                self.confirm_turn()
+                original = app.solo_qa_turn_payload("abc123abc123:1")
+                app.record_solo_qa_state({
+                    "turn_key": "abc123abc123:1",
+                    "state": "qc_pending",
+                    "remote_id": "42",
+                    "remote_status": "SUBMITTED",
+                    "payload_sha256": original["payload_sha256"],
+                })
+                changed_evaluation = sample_evaluation()
+                changed_evaluation["delivery"]["description"] = (
+                    "本轮逐项核对了题面约束并完成项目验收，库存卡片交付结果已有对应记录。"
+                )
+                app.update_turn(
+                    "abc123abc123",
+                    1,
+                    review_result=json.dumps(
+                        {"evaluation": changed_evaluation}, ensure_ascii=False
+                    ),
+                )
+                self.confirm_turn()
+                changed_payload = app.solo_qa_turn_payload("abc123abc123:1")
+                app.record_solo_qa_state({
+                    "turn_key": "abc123abc123:1",
+                    "state": "needs_fix",
+                    "remote_id": "42",
+                    "remote_status": "PENDING_FIX",
+                    "payload_sha256": changed_payload["payload_sha256"],
+                    "error": "502 Bad Gateway",
+                })
+                row = app.completed_turn_rows()[0]
+                summary = app.completed_turns()[0]["solo_qa"]
+
+        self.assertEqual(row["solo_qa_payload_sha256"], original["payload_sha256"])
+        self.assertEqual(summary["state"], "local_changed")
+        self.assertTrue(summary["payload_changed"])
 
     def test_solo_qa_sync_matches_session_and_turn_and_marks_remote_missing(self):
         with tempfile.TemporaryDirectory() as directory:

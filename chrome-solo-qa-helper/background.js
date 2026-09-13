@@ -46,13 +46,38 @@ const FIELD_KEY_LABELS = {
 function errorMessage(body, fallback) {
   if (typeof body === "string" && body.trim()) return body;
   if (body && typeof body === "object") {
-    if (typeof body.error === "string" && body.error) return body.error;
-    if (typeof body.detail === "string" && body.detail) return body.detail;
-    if (Array.isArray(body.detail) && body.detail[0]?.msg) return body.detail[0].msg;
-    if (Array.isArray(body.errors) && body.errors.length) {
-      return body.errors.map((item) => item?.message || item?.msg || item?.field).filter(Boolean).join("；");
+    const messages = [];
+    const add = (value, field = "") => {
+      if (Array.isArray(value)) {
+        value.forEach((item) => add(item, field));
+        return;
+      }
+      if (value && typeof value === "object") {
+        const itemField = String(
+          value.field
+          || (Array.isArray(value.loc) ? value.loc.at(-1) : "")
+          || field
+          || "",
+        ).trim();
+        const itemMessage = value.message || value.msg || value.detail || value.error;
+        if (itemMessage) add(itemMessage, itemField);
+        return;
+      }
+      const message = String(value || "").trim();
+      if (!message) return;
+      const label = FIELD_KEY_LABELS[field] || field;
+      const rendered = label ? `${label}：${message}` : message;
+      if (!messages.includes(rendered)) messages.push(rendered);
+    };
+    if (Array.isArray(body.errors)) {
+      body.errors.forEach((item) => add(item));
+    } else if (body.errors && typeof body.errors === "object") {
+      Object.entries(body.errors).forEach(([field, value]) => add(value, field));
     }
-    if (typeof body.message === "string" && body.message) return body.message;
+    add(body.detail);
+    add(body.error);
+    add(body.message);
+    if (messages.length) return messages.join("；");
   }
   return fallback;
 }
@@ -242,7 +267,14 @@ function normalizeChoice(field, value) {
     const optionLabel = typeof option === "object" ? option.label : option;
     return normalizeLabel(optionValue) === wanted || normalizeLabel(optionLabel) === wanted;
   });
-  if (!match) return value;
+  if (!match) {
+    const label = String(field.label || FIELD_KEY_LABELS[field.field_key] || field.field_key || "选项");
+    const allowed = options.map((option) => (
+      typeof option === "object" ? (option.label ?? option.value) : option
+    )).map(String).filter(Boolean);
+    const allowedText = allowed.length ? `；当前可选：${allowed.join("、")}` : "";
+    throw new Error(`${label}的值“${String(value ?? "")}”不被 SOLO-QA 接受${allowedText}`);
+  }
   return typeof match === "object" ? match.value : match;
 }
 
@@ -382,6 +414,23 @@ async function findRemoteMatch(bundle) {
   ) || null;
 }
 
+async function remoteRoundsForSession(sessionId) {
+  if (!sessionId) return new Set();
+  const response = await remoteJson(
+    `/submissions?page=1&page_size=20&keyword=${encodeURIComponent(sessionId)}`,
+  );
+  const items = Array.isArray(response.items) ? response.items : [];
+  const listed = items.map(compactRemote);
+  const unresolved = items.filter((item) => !item.session_id || !Number(item.round_no));
+  let resolved = [];
+  if (unresolved.length) resolved = await remoteDetails(unresolved);
+  return new Set(
+    [...listed, ...resolved]
+      .filter((item) => item.session_id === sessionId && Number(item.round_no) > 0)
+      .map((item) => Number(item.round_no)),
+  );
+}
+
 async function uploadTrajectory(bundle, schema) {
   const limitMb = Number(schema.attachment_max_mb || 20);
   if (Number(bundle.trajectory.size) > limitMb * 1024 * 1024) {
@@ -399,8 +448,8 @@ async function uploadTrajectory(bundle, schema) {
   return remoteFile("/submissions/upload", blob, bundle.trajectory.name || "trajectory.jsonl");
 }
 
-async function submitOne(turnKey, loadFormSchema) {
-  const bundle = await loadLocalBundle(turnKey);
+async function submitOne(bundle, loadFormSchema, selectedRounds, loadRemoteRounds) {
+  const turnKey = bundle.key;
   if (bundle.solo_qa?.remote_id && !["failed", "remote_missing", "not_submitted"].includes(bundle.solo_qa.state)) {
     return { turn_key: turnKey, outcome: "skipped", reason: "本地已记录为提交过" };
   }
@@ -418,8 +467,24 @@ async function submitOne(turnKey, loadFormSchema) {
     });
     return { turn_key: turnKey, outcome: "recovered", remote_id: String(existing.id) };
   }
-  await recordLocal(bundle, { state: "submitting", error: "" });
   try {
+    const sessionId = String(bundle.values?.SessionID || "");
+    const roundNo = Number(bundle.values?.["当前对话轮次排序"] || 0);
+    if (roundNo > 1) {
+      const batchRounds = selectedRounds.get(sessionId) || new Set();
+      const notSelected = [];
+      for (let prior = 1; prior < roundNo; prior += 1) {
+        if (!batchRounds.has(prior)) notSelected.push(prior);
+      }
+      const remoteRounds = notSelected.length ? await loadRemoteRounds(sessionId) : new Set();
+      const missing = notSelected.filter((prior) => !remoteRounds.has(prior));
+      if (missing.length) {
+        throw new Error(
+          `第 ${roundNo} 轮提交前缺少已提交或本批次已勾选的第 ${missing.join("、")} 轮；请先勾选并提交前序轮次`,
+        );
+      }
+    }
+    await recordLocal(bundle, { state: "submitting", error: "" });
     const schema = await loadFormSchema();
     buildRemoteData(schema, bundle, { name: "pending", path: "pending", size: 0 });
     const uploaded = await uploadTrajectory(bundle, schema);
@@ -468,23 +533,54 @@ async function submitBatch(payload) {
   if (keys.length > 100 || keys.some((key) => !TURN_KEY_RE.test(key))) {
     throw new Error("提交轮次列表格式不正确");
   }
+  const loaded = [];
+  for (let index = 0; index < keys.length; index += 1) {
+    const bundle = await loadLocalBundle(keys[index]);
+    loaded.push({ bundle, index });
+  }
+  const sessionOrder = new Map();
+  const selectedRounds = new Map();
+  for (const item of loaded) {
+    const sessionId = String(item.bundle.values?.SessionID || item.bundle.key);
+    const roundNo = Number(item.bundle.values?.["当前对话轮次排序"] || 0);
+    if (!sessionOrder.has(sessionId)) sessionOrder.set(sessionId, sessionOrder.size);
+    if (!selectedRounds.has(sessionId)) selectedRounds.set(sessionId, new Set());
+    if (roundNo > 0) selectedRounds.get(sessionId).add(roundNo);
+  }
+  loaded.sort((left, right) => {
+    const leftSession = String(left.bundle.values?.SessionID || left.bundle.key);
+    const rightSession = String(right.bundle.values?.SessionID || right.bundle.key);
+    const sessionDifference = sessionOrder.get(leftSession) - sessionOrder.get(rightSession);
+    if (sessionDifference) return sessionDifference;
+    const leftRound = Number(left.bundle.values?.["当前对话轮次排序"] || 0);
+    const rightRound = Number(right.bundle.values?.["当前对话轮次排序"] || 0);
+    return leftRound - rightRound || left.index - right.index;
+  });
   const results = [];
   let schemaPromise = null;
   const loadFormSchema = () => {
     if (!schemaPromise) schemaPromise = remoteJson("/submissions/form-schema");
     return schemaPromise;
   };
-  for (let index = 0; index < keys.length; index += 1) {
-    const key = keys[index];
+  const remoteRoundPromises = new Map();
+  const loadRemoteRounds = (sessionId) => {
+    if (!remoteRoundPromises.has(sessionId)) {
+      remoteRoundPromises.set(sessionId, remoteRoundsForSession(sessionId));
+    }
+    return remoteRoundPromises.get(sessionId);
+  };
+  for (let index = 0; index < loaded.length; index += 1) {
+    const { bundle } = loaded[index];
+    const key = bundle.key;
     try {
-      results.push(await submitOne(key, loadFormSchema));
+      results.push(await submitOne(bundle, loadFormSchema, selectedRounds, loadRemoteRounds));
     } catch (error) {
       results.push({
         turn_key: key,
         outcome: "failed",
         error: error instanceof Error ? error.message : String(error),
       });
-      return { results, stopped: true, remaining: keys.length - index - 1 };
+      return { results, stopped: true, remaining: loaded.length - index - 1 };
     }
   }
   return { results, stopped: false, remaining: 0 };

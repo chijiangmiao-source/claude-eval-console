@@ -35,7 +35,17 @@ const traceBytes = Buffer.from(await trace.arrayBuffer());
 const traceDigest = createHash("sha256").update(traceBytes).digest("hex");
 const localStates = [];
 const requests = [];
+const submissionBodies = [];
 let createdCount = 0;
+
+const payloads = {
+  "abc123abc123:1": { session: "session-one", turn: "turn-one-1", round: 1, prompt: "完成真实提交链路 one-1", taskType: "Bug修复" },
+  "abc123abc123:2": { session: "session-one", turn: "turn-one-2", round: 2, prompt: "完成真实提交链路 one-2", taskType: "Bug修复" },
+  "def456def456:1": { session: "session-two", turn: "turn-two-1", round: 1, prompt: "完成真实提交链路 two-1", taskType: "Bug修复" },
+  "cafebabecafe:2": { session: "session-missing", turn: "turn-missing-2", round: 2, prompt: "缺少前序轮次", taskType: "Bug修复" },
+  "facefeedcafe:1": { session: "session-choice", turn: "turn-choice-1", round: 1, prompt: "触发枚举错误", taskType: "未知类型" },
+  "feedfacecafe:1": { session: "session-validation", turn: "turn-validation-1", round: 1, prompt: "触发远端字段错误", taskType: "Bug修复" },
+};
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -52,29 +62,32 @@ globalThis.fetch = async (url, options = {}) => {
     credentials: options.credentials || "",
     headers: Object.fromEntries(new Headers(options.headers || {}).entries()),
   });
-  const payloadMatch = href.match(/\/api\/solo-qa\/turns\/(abc123abc123|def456def456)\/1\/payload$/);
+  const payloadMatch = href.match(/\/api\/solo-qa\/turns\/([a-f0-9]{12})\/([1-9]\d*)\/payload$/);
   if (payloadMatch) {
     const runId = payloadMatch[1];
-    const suffix = runId === "abc123abc123" ? "one" : "two";
+    const round = Number(payloadMatch[2]);
+    const config = payloads[`${runId}:${round}`];
+    if (!config) throw new Error(`unexpected local payload: ${runId}:${round}`);
     return jsonResponse({
-      key: `${runId}:1`,
+      key: `${runId}:${round}`,
       values: {
-        "User Prompt": `完成真实提交链路 ${suffix}`,
-        "SessionID": `session-${suffix}`,
-        "TurnID/PromptID": `turn-${suffix}`,
-        "当前对话轮次排序": 1,
+        "任务类型": config.taskType,
+        "User Prompt": config.prompt,
+        "SessionID": config.session,
+        "TurnID/PromptID": config.turn,
+        "当前对话轮次排序": config.round,
       },
       payload_sha256: "a".repeat(64),
       trajectory: {
         name: "trace.jsonl",
         size: trace.size,
         sha256: traceDigest,
-        url: `http://127.0.0.1:8765/api/solo-qa/turns/${runId}/1/trajectory`,
+        url: `http://127.0.0.1:8765/api/solo-qa/turns/${runId}/${round}/trajectory`,
       },
       solo_qa: { state: "not_submitted", remote_id: "" },
     });
   }
-  if (/\/api\/solo-qa\/turns\/(abc123abc123|def456def456)\/1\/trajectory$/.test(href)) {
+  if (/\/api\/solo-qa\/turns\/[a-f0-9]{12}\/[1-9]\d*\/trajectory$/.test(href)) {
     return new Response(trace, { status: 200 });
   }
   if (href.endsWith("/api/solo-qa/state")) {
@@ -89,6 +102,7 @@ globalThis.fetch = async (url, options = {}) => {
       fingerprint: "schema-test",
       attachment_max_mb: 20,
       fields: [
+        { field_key: "task_type", label: "任务类型", field_type: "select", is_required: true, options: ["Bug修复"] },
         { field_key: "user_prompt", label: "User Prompt", field_type: "textarea", is_required: true },
         { field_key: "session_id", label: "SessionID", field_type: "text", is_required: true },
         { field_key: "turn_id", label: "TurnID/PromptID", field_type: "text", is_required: true },
@@ -104,9 +118,16 @@ globalThis.fetch = async (url, options = {}) => {
   }
   if (href.endsWith("/api/v1/submissions") && options.method === "POST") {
     const body = JSON.parse(options.body);
+    submissionBodies.push(body);
     assert.equal(body.schema_fingerprint, "schema-test");
-    assert.match(body.data.user_prompt, /^完成真实提交链路 (one|two)$/);
     assert.equal(body.data.trace_file[0].path, "uploads/trace.jsonl");
+    if (body.data.user_prompt === "触发远端字段错误") {
+      return jsonResponse({
+        detail: "提交数据校验未通过",
+        errors: [{ field: "difficulty", message: "当前轮次难度与会话不一致" }],
+      }, 422);
+    }
+    assert.match(body.data.user_prompt, /^完成真实提交链路 (one|two)-[12]$/);
     createdCount += 1;
     return jsonResponse({ id: 122 + createdCount, status: "SUBMITTED", message: "提交成功" });
   }
@@ -120,7 +141,7 @@ const response = await new Promise((resolve) => {
   const asynchronous = listener(
     {
       type: "SOLO_QA_SUBMIT",
-      payload: { turn_keys: ["abc123abc123:1", "def456def456:1"] },
+      payload: { turn_keys: ["abc123abc123:2", "def456def456:1", "abc123abc123:1"] },
     },
     { url: "http://127.0.0.1:8765/#exports" },
     resolve,
@@ -129,22 +150,76 @@ const response = await new Promise((resolve) => {
 });
 
 assert.equal(response.ok, true);
+assert.deepEqual(
+  response.data.results.map((item) => item.turn_key),
+  ["abc123abc123:1", "abc123abc123:2", "def456def456:1"],
+);
 assert.equal(response.data.results[0].outcome, "submitted");
 assert.equal(response.data.results[0].remote_id, "123");
 assert.equal(response.data.results[1].outcome, "submitted");
 assert.equal(response.data.results[1].remote_id, "124");
+assert.equal(response.data.results[2].outcome, "submitted");
+assert.equal(response.data.results[2].remote_id, "125");
 assert.deepEqual(
   localStates.map((item) => item.state),
-  ["submitting", "qc_pending", "submitting", "qc_pending"],
+  ["submitting", "qc_pending", "submitting", "qc_pending", "submitting", "qc_pending"],
 );
 assert.equal(requests.filter((item) => item.href.endsWith("/submissions/form-schema")).length, 1);
-assert.equal(requests.filter((item) => item.href.endsWith("/submissions/upload")).length, 2);
+assert.equal(requests.filter((item) => item.href.endsWith("/submissions/upload")).length, 3);
 assert.equal(
   requests.filter((item) => item.href.endsWith("/submissions") && item.method === "POST").length,
-  2,
+  3,
 );
-assert.equal(requests.filter((item) => /\/submissions\/(123|124)$/.test(item.href)).length, 0);
+assert.equal(requests.filter((item) => /\/submissions\/(123|124|125)$/.test(item.href)).length, 0);
 const remoteWrites = requests.filter((item) => item.href.startsWith("/api/v1/") && item.method === "POST");
 assert.ok(remoteWrites.length >= 2);
 assert.ok(remoteWrites.every((item) => item.credentials === "include"));
 assert.ok(remoteWrites.every((item) => item.headers["x-csrf-token"] === "csrf-test"));
+
+const uploadCountBeforeMissingRound = requests.filter((item) => item.href.endsWith("/submissions/upload")).length;
+const missingRoundResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_SUBMIT", payload: { turn_keys: ["cafebabecafe:2"] } },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(missingRoundResponse.ok, true);
+assert.equal(missingRoundResponse.data.results[0].outcome, "failed");
+assert.match(missingRoundResponse.data.results[0].error, /第 2 轮提交前缺少.*第 1 轮/);
+assert.equal(
+  requests.filter((item) => item.href.endsWith("/submissions/upload")).length,
+  uploadCountBeforeMissingRound,
+);
+assert.equal(localStates.at(-1).state, "failed");
+
+const uploadCountBeforeInvalidChoice = requests.filter((item) => item.href.endsWith("/submissions/upload")).length;
+const invalidChoiceResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_SUBMIT", payload: { turn_keys: ["facefeedcafe:1"] } },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(invalidChoiceResponse.ok, true);
+assert.equal(invalidChoiceResponse.data.results[0].outcome, "failed");
+assert.match(invalidChoiceResponse.data.results[0].error, /任务类型的值“未知类型”不被 SOLO-QA 接受/);
+assert.match(invalidChoiceResponse.data.results[0].error, /当前可选：Bug修复/);
+assert.equal(
+  requests.filter((item) => item.href.endsWith("/submissions/upload")).length,
+  uploadCountBeforeInvalidChoice,
+);
+
+const validationResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_SUBMIT", payload: { turn_keys: ["feedfacecafe:1"] } },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(validationResponse.ok, true);
+assert.equal(validationResponse.data.results[0].outcome, "failed");
+const validationError = validationResponse.data.results[0].error;
+assert.match(validationError, /^任务难度：当前轮次难度与会话不一致/);
+assert.match(validationError, /提交数据校验未通过$/);
+assert.equal(submissionBodies.at(-1).data.user_prompt, "触发远端字段错误");

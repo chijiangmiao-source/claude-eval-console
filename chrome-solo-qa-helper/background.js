@@ -13,6 +13,7 @@ const REMOTE_STATUS_TO_LOCAL = {
 };
 const TRANSIENT_REMOTE_STATUSES = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
 const REMOTE_RETRY_DELAYS_MS = [500, 1500, 3500];
+const SOLO_QA_SYNC_TIME_ZONE = "Asia/Shanghai";
 const FIELD_KEY_LABELS = {
   question_type: "任务类型",
   task_type: "任务类型",
@@ -381,10 +382,32 @@ function compactRemote(item) {
     turn_id: String(item.turn_id || "").slice(0, 128),
     round_no: item.round_no || 0,
     qc_summary: String(item.qc_summary || item.message || "").slice(0, 1000),
-    submitted_at: String(item.submitted_at || "").slice(0, 128),
+    submitted_at: String(item.submitted_at || item.created_at || "").slice(0, 128),
     updated_at: String(item.updated_at || item.qc_finished_at || "").slice(0, 128),
     current_version: Number(item.current_version || item.version_no || 0),
   };
+}
+
+function shanghaiDayKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: SOLO_QA_SYNC_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function remoteSubmittedDay(item) {
+  const text = String(item?.submitted_at || item?.created_at || "").trim();
+  if (!text) return "";
+  const calendarMatch = text.match(/^(\d{4}-\d{2}-\d{2})(?:[T\s]|$)/);
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+  if (calendarMatch && !hasExplicitZone) return calendarMatch[1];
+  return shanghaiDayKey(text);
 }
 
 async function remoteDetails(items) {
@@ -405,33 +428,64 @@ async function remoteDetails(items) {
   return details;
 }
 
-async function listAllRemote() {
+async function listTodayRemote() {
   const items = [];
   const pageSize = 20;
-  let remoteTotal = 0;
+  const scopeDate = shanghaiDayKey();
+  let accountTotal = null;
+  let inspected = 0;
+  let complete = false;
   for (let page = 1; page <= 25; page += 1) {
     const response = await remoteJson(`/submissions?page=${page}&page_size=${pageSize}`);
     const pageItems = Array.isArray(response.items) ? response.items : [];
-    items.push(...pageItems);
-    remoteTotal = Number(response.meta?.total ?? items.length);
-    if (!pageItems.length || items.length >= remoteTotal || items.length >= 500) break;
+    const reportedTotal = Number(response.meta?.total);
+    if (Number.isFinite(reportedTotal) && reportedTotal >= 0) accountTotal = reportedTotal;
+    inspected += pageItems.length;
+    if (!pageItems.length) {
+      complete = true;
+      break;
+    }
+
+    const pageDays = pageItems.map(remoteSubmittedDay);
+    if (pageDays.every((day) => day && day < scopeDate)) {
+      complete = true;
+      break;
+    }
+    const candidates = pageItems.filter((item, index) => {
+      const day = pageDays[index];
+      return !day || day === scopeDate;
+    });
+    const details = await remoteDetails(candidates);
+    for (const detail of details) {
+      const day = remoteSubmittedDay(detail);
+      if (day === scopeDate) items.push(detail);
+    }
+    if ((accountTotal !== null && inspected >= accountTotal) || pageItems.length < pageSize) {
+      complete = true;
+      break;
+    }
+    if (inspected >= 500) break;
   }
   return {
-    items: await remoteDetails(items.slice(0, 500)),
-    total: remoteTotal,
-    complete: items.length >= remoteTotal,
+    items: items.slice(0, 500),
+    total: Math.min(items.length, 500),
+    account_total: accountTotal,
+    scope_date: scopeDate,
+    complete,
   };
 }
 
 async function syncAllRemote() {
-  const remote = await listAllRemote();
+  const remote = await listTodayRemote();
   const local = await localJson("/sync", jsonOptions({
     items: remote.items,
-    complete: remote.complete,
+    complete: false,
   }));
   return {
     ...local,
     remote_total: remote.total,
+    account_total: remote.account_total,
+    scope_date: remote.scope_date,
     partial: !remote.complete,
   };
 }

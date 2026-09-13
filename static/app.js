@@ -1,4 +1,4 @@
-const UI_VERSION = "20260913.38";
+const UI_VERSION = "20260914.39";
 const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 const SOLO_QA_AUTO_REPAIR_POLL_MS = 3000;
@@ -1110,7 +1110,7 @@ function renderSoloQaControls() {
     bridgeStatus.textContent = "提交助手未连接";
   }
   detail.textContent = state.soloQaLastMessage || (state.soloQaBridgeReady
-    ? "同步会读取最新质检结论；可安全处理的退回项会自动重写、复检并提交返修。"
+    ? "同步只读取北京时间今天的提交；可安全处理的退回项会自动重写、复检并提交返修。"
     : "安装一次 Chrome 提交助手后，可同步历史提交并自动上传轨迹。");
   const selected = state.completedTurns.filter((turn) =>
     state.selectedExportTurns.has(turn.key) && soloQaSubmittable(turn)
@@ -1278,7 +1278,8 @@ async function syncSoloQa({ silent = false, autoRepair = true } = {}) {
   renderSoloQaControls();
   try {
     const result = await requestSoloQaBridge("SOLO_QA_SYNC", {}, 3 * 60 * 1000);
-    const syncMessage = `已同步远端 ${result.remote_total || 0} 条；匹配本地 ${result.matched || 0} 条${result.unmatched ? `，${result.unmatched} 条在本地未找到` : ""}${result.remote_missing ? `，${result.remote_missing} 条远端已不存在` : ""}${result.partial ? "；远端超过 500 条，本次仅同步最近 500 条" : ""}`;
+    const syncDate = String(result.scope_date || "今天");
+    const syncMessage = `已同步 ${syncDate} 的远端提交 ${result.remote_total || 0} 条；匹配本地 ${result.matched || 0} 条${result.unmatched ? `，${result.unmatched} 条在本地未找到` : ""}${result.partial ? "；当天数据超过 500 条，本次仅同步最近 500 条" : ""}`;
     await loadCompletedTurns({ autoRepair: false });
     const repair = autoRepair
       ? await autoRepairSyncedSoloQaReturns()

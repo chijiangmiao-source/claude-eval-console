@@ -34,11 +34,29 @@ const trace = new Blob(['{"type":"result","result":"done"}\n'], { type: "applica
 const traceBytes = Buffer.from(await trace.arrayBuffer());
 const traceDigest = createHash("sha256").update(traceBytes).digest("hex");
 const localStates = [];
+const localSyncs = [];
 const requests = [];
 const submissionBodies = [];
 const repairBodies = [];
 let createdCount = 0;
 let transientRemoteReadFailures = 0;
+
+function shanghaiDayKey(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${fields.year}-${fields.month}-${fields.day}`;
+}
+
+const todayKey = shanghaiDayKey();
+const yesterdayKey = shanghaiDayKey(
+  new Date(new Date(`${todayKey}T12:00:00+08:00`).getTime() - 24 * 60 * 60 * 1000),
+);
+const todayUtcTimestamp = new Date(`${todayKey}T00:30:00+08:00`).toISOString();
 
 const payloads = {
   "abc123abc123:1": { session: "session-one", turn: "turn-one-1", round: 1, prompt: "完成真实提交链路 one-1", taskType: "Bug修复" },
@@ -123,8 +141,54 @@ globalThis.fetch = async (url, options = {}) => {
     localStates.push(JSON.parse(options.body));
     return jsonResponse({ state: localStates.at(-1).state });
   }
+  if (href.endsWith("/api/solo-qa/sync")) {
+    localSyncs.push(JSON.parse(options.body));
+    return jsonResponse({ matched: localSyncs.at(-1).items.length, unmatched: 0 });
+  }
   if (href.includes("/api/v1/submissions?page=1&page_size=20&keyword=")) {
     return jsonResponse({ items: [], meta: { total: 0 } });
+  }
+  if (href.endsWith("/api/v1/submissions?page=1&page_size=20")) {
+    return jsonResponse({
+      items: [
+        { id: 901, created_at: todayUtcTimestamp },
+        ...Array.from({ length: 19 }, (_, index) => ({
+          id: 800 - index,
+          submitted_at: `${yesterdayKey}T23:59:00+08:00`,
+        })),
+      ],
+    });
+  }
+  if (href.endsWith("/api/v1/submissions?page=2&page_size=20")) {
+    return jsonResponse({
+      items: [
+        { id: 902, submitted_at: `${todayKey}T11:15:00` },
+        ...Array.from({ length: 19 }, (_, index) => ({
+          id: 780 - index,
+          submitted_at: `${yesterdayKey}T20:00:00+08:00`,
+        })),
+      ],
+    });
+  }
+  if (href.endsWith("/api/v1/submissions?page=3&page_size=20")) {
+    return jsonResponse({
+      items: Array.from({ length: 20 }, (_, index) => ({
+        id: 760 - index,
+        submitted_at: `${yesterdayKey}T18:00:00+08:00`,
+      })),
+    });
+  }
+  const historyMatch = href.match(/\/api\/v1\/submissions\/(901|902)$/);
+  if (historyMatch) {
+    const remoteId = Number(historyMatch[1]);
+    return jsonResponse({
+      id: remoteId,
+      status: "QC_PASSED",
+      submitted_at: remoteId === 901 ? todayUtcTimestamp : `${todayKey}T11:15:00`,
+      session_id: "session-history",
+      turn_id: `turn-history-${remoteId}`,
+      round_no: 2,
+    });
   }
   if (href.endsWith("/api/v1/submissions/form-schema")) {
     return jsonResponse({
@@ -188,6 +252,40 @@ globalThis.fetch = async (url, options = {}) => {
 
 await import("../chrome-solo-qa-helper/background.js");
 assert.equal(typeof listener, "function");
+
+const syncResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_SYNC", payload: {} },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(syncResponse.ok, true);
+assert.equal(syncResponse.data.matched, 2);
+assert.equal(syncResponse.data.remote_total, 2);
+assert.equal(syncResponse.data.account_total, null);
+assert.equal(syncResponse.data.scope_date, todayKey);
+assert.equal(syncResponse.data.partial, false);
+assert.equal(localSyncs.length, 1);
+assert.equal(localSyncs[0].complete, false);
+assert.equal(localSyncs[0].items.length, 2);
+assert.equal("remote_ids" in localSyncs[0], false);
+assert.equal(
+  requests.some((item) => item.href.endsWith("/api/v1/submissions/800")),
+  false,
+);
+assert.equal(
+  requests.some((item) => item.href.includes("/api/v1/submissions?page=2")),
+  true,
+);
+assert.equal(
+  requests.some((item) => item.href.includes("/api/v1/submissions?page=3")),
+  true,
+);
+assert.equal(
+  requests.some((item) => item.href.includes("/api/v1/submissions?page=4")),
+  false,
+);
 
 const response = await new Promise((resolve) => {
   const asynchronous = listener(

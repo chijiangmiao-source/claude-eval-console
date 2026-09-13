@@ -6130,12 +6130,15 @@ class ValidationTests(unittest.TestCase):
         for control in (
             'id="solo-qa-bridge-status"',
             'id="solo-qa-sync"',
+            'id="solo-qa-repair"',
             'id="solo-qa-submit"',
             'id="solo-qa-helper-path"',
         ):
             self.assertIn(control, html)
         self.assertIn("SOLO_QA_BRIDGE_READY", javascript)
         self.assertIn("submitSelectedToSoloQa", javascript)
+        self.assertIn("repairSelectedInSoloQa", javascript)
+        self.assertIn("SOLO_QA_REPAIR", javascript)
         self.assertEqual(manifest["manifest_version"], 3)
         self.assertEqual(
             manifest["host_permissions"],
@@ -7229,12 +7232,57 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("5分", rubric)
         self.assertIn("1分", rubric)
 
+    def test_public_evaluation_history_keeps_only_qc_passed_prose(self):
+        accepted = sample_evaluation()
+        accepted["delivery"]["description"] = "历史 `交付` 点评"
+        newer_accepted = sample_evaluation()
+        newer_accepted["delivery"]["description"] = "较新的交付点评"
+        rejected = sample_evaluation()
+        rejected["delivery"]["description"] = "不应进入提示的返修点评"
+        rows = [
+            {
+                "solo_qa_state": "qc_passed",
+                "solo_qa_remote_submission_id": "6532",
+                "turn_review_result": json.dumps(
+                    {"evaluation": accepted}, ensure_ascii=False
+                ),
+                "turn_manual_evaluation": "",
+            },
+            {
+                "solo_qa_state": "needs_fix",
+                "solo_qa_remote_submission_id": "6546",
+                "turn_review_result": json.dumps(
+                    {"evaluation": rejected}, ensure_ascii=False
+                ),
+                "turn_manual_evaluation": "",
+            },
+            {
+                "solo_qa_state": "qc_passed",
+                "solo_qa_remote_submission_id": "6539",
+                "turn_review_result": json.dumps(
+                    {"evaluation": newer_accepted}, ensure_ascii=False
+                ),
+                "turn_manual_evaluation": "",
+            },
+        ]
+
+        with mock.patch.object(app, "completed_turn_rows", return_value=rows):
+            history = app.recent_qc_passed_public_evaluation_history(limit=1)
+
+        self.assertEqual(history["delivery"], ["#6539 较新的交付点评"])
+        self.assertTrue(all(len(history[key]) == 1 for key in app.EVALUATION_DIMENSION_KEYS))
+        self.assertFalse(any("6546" in entry for values in history.values() for entry in values))
+
     def test_regrade_uses_rubric_without_requesting_code_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "repo"
             repo.mkdir()
             evaluation = with_score_stage(sample_evaluation("Feature 迭代"))
             metadata, dimensions = split_evaluation_parts(evaluation)
+            history = {
+                key: [f"#6500 历史-{key}-公开点评"]
+                for key in app.EVALUATION_DIMENSION_KEYS
+            }
 
             def structured_result(_prompt, _schema, _cwd, prefix, _timeout, **_kwargs):
                 if prefix == "turn-regrade-metadata":
@@ -7247,6 +7295,10 @@ class ReviewTests(unittest.TestCase):
                 app,
                 "normalize_evaluation_with_targeted_repairs",
                 return_value=evaluation,
+            ), mock.patch.object(
+                app,
+                "recent_qc_passed_public_evaluation_history",
+                return_value=history,
             ):
                 result = app.run_codex_regrade(
                     repo,
@@ -7267,9 +7319,15 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(len(dimension_calls), 5)
         for call in dimension_calls:
             prompt = call.args[0]
+            dimension_key = call.args[3].removeprefix("turn-regrade-")
             self.assertIn(app.EVALUATION_SCORE_GUIDANCE, prompt)
+            self.assertIn(app.EVALUATION_PUBLIC_SCORE_GUARDRAILS, prompt)
+            self.assertIn(app.EVALUATION_PUBLIC_HISTORY_GUIDANCE, prompt)
             self.assertIn("交付完整性 (Delivery)", prompt)
             self.assertIn("只独立评定第 1 轮", prompt)
+            self.assertIn(history[dimension_key][0], prompt)
+            self.assertIn("错误目录、失败命令或补跑后成功不能单独降低交付完整性", prompt)
+            self.assertIn("同一个客观事实的存在与否在五维中必须一致", prompt)
             self.assertIn("后端检查：最后记录 12 项通过、0 项失败", prompt)
             self.assertIn(app.EVALUATION_FACT_ATTRIBUTION_GUIDANCE, prompt)
             self.assertEqual(call.kwargs["sandbox"], "read-only")

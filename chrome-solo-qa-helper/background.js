@@ -238,9 +238,9 @@ async function remoteFile(path, blob, filename) {
   });
 }
 
-function jsonOptions(body) {
+function jsonOptions(body, method = "POST") {
   return {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
@@ -340,6 +340,7 @@ function compactRemote(item) {
     qc_summary: String(item.qc_summary || item.message || "").slice(0, 1000),
     submitted_at: String(item.submitted_at || "").slice(0, 128),
     updated_at: String(item.updated_at || item.qc_finished_at || "").slice(0, 128),
+    current_version: Number(item.current_version || item.version_no || 0),
   };
 }
 
@@ -586,6 +587,135 @@ async function submitBatch(payload) {
   return { results, stopped: false, remaining: 0 };
 }
 
+function assertRepairableBundle(bundle) {
+  const state = String(bundle.solo_qa?.state || "");
+  const remoteStatus = String(bundle.solo_qa?.remote_status || "");
+  const remoteId = String(bundle.solo_qa?.remote_id || "");
+  if (bundle.ready !== true) {
+    const detail = Array.isArray(bundle.issues) && bundle.issues.length
+      ? `：${bundle.issues.join("；")}`
+      : "";
+    throw new Error(`本地轮次尚未满足正式提交条件${detail}`);
+  }
+  if (!["needs_fix", "local_changed"].includes(state)) {
+    throw new Error("只有需要返修或本地数据已变化的轮次可以返修");
+  }
+  if (!remoteId) throw new Error("返修轮次缺少原 SOLO-QA 提交 ID");
+  if (remoteStatus !== "PENDING_FIX") {
+    throw new Error("本地记录的远端状态不是待返修，请先同步我的提交");
+  }
+  return remoteId;
+}
+
+function assertRemoteRepairIdentity(bundle, remote) {
+  const remoteId = String(bundle.solo_qa?.remote_id || "");
+  const sessionId = String(bundle.values?.SessionID || "");
+  const turnId = String(bundle.values?.["TurnID/PromptID"] || "");
+  const roundNo = Number(bundle.values?.["当前对话轮次排序"] || 0);
+  if (
+    String(remote.id || "") !== remoteId
+    || remote.session_id !== sessionId
+    || remote.turn_id !== turnId
+    || Number(remote.round_no) !== roundNo
+  ) {
+    throw new Error("远端提交与本地 SessionID、TurnID 或轮次不一致，已停止返修");
+  }
+  if (remote.status !== "PENDING_FIX") {
+    throw new Error("远端提交已不是待返修状态，请先同步我的提交");
+  }
+}
+
+async function recordRepairedBundle(bundle, remoteId, remote = null) {
+  const status = String(remote?.status || "SUBMITTED");
+  const state = REMOTE_STATUS_TO_LOCAL[status] || "qc_pending";
+  await recordLocal(bundle, {
+    state,
+    remote_id: remoteId,
+    remote_status: status,
+    qc_summary: remote?.qc_summary || (status === "SUBMITTED" ? "返修已提交，等待重新质检" : ""),
+    submitted_at: remote?.submitted_at || "",
+    remote_updated_at: remote?.updated_at || "",
+    error: "",
+  });
+  return state;
+}
+
+async function repairOne(bundle, loadFormSchema) {
+  const turnKey = bundle.key;
+  const remoteId = assertRepairableBundle(bundle);
+  const remotePath = `/submissions/${encodeURIComponent(remoteId)}`;
+  const before = compactRemote(await remoteJson(remotePath));
+  assertRemoteRepairIdentity(bundle, before);
+  const schema = await loadFormSchema();
+  buildRemoteData(schema, bundle, { name: "pending", path: "pending", size: 0 });
+  const uploaded = await uploadTrajectory(bundle, schema);
+  const data = buildRemoteData(schema, bundle, uploaded);
+  try {
+    await remoteJson(remotePath, jsonOptions({
+      data,
+      schema_fingerprint: schema.fingerprint || "",
+      comment: "",
+    }, "PUT"));
+  } catch (error) {
+    let after = null;
+    try { after = compactRemote(await remoteJson(remotePath)); } catch { after = null; }
+    const versionAdvanced = Boolean(
+      after
+      && before.current_version > 0
+      && after.current_version > before.current_version
+    );
+    if (after && (versionAdvanced || after.status !== "PENDING_FIX")) {
+      const state = await recordRepairedBundle(bundle, remoteId, after);
+      return {
+        turn_key: turnKey,
+        outcome: "recovered",
+        remote_id: remoteId,
+        status: after.status,
+        state,
+      };
+    }
+    throw error;
+  }
+  const state = await recordRepairedBundle(bundle, remoteId);
+  return {
+    turn_key: turnKey,
+    outcome: "repaired",
+    remote_id: remoteId,
+    status: "SUBMITTED",
+    state,
+  };
+}
+
+async function repairBatch(payload) {
+  const keys = Array.isArray(payload?.turn_keys) ? [...new Set(payload.turn_keys.map(String))] : [];
+  if (!keys.length) throw new Error("请至少选择一个待返修轮次");
+  if (keys.length > 100 || keys.some((key) => !TURN_KEY_RE.test(key))) {
+    throw new Error("返修轮次列表格式不正确");
+  }
+  const bundles = [];
+  for (const key of keys) bundles.push(await loadLocalBundle(key));
+  let schemaPromise = null;
+  const loadFormSchema = () => {
+    if (!schemaPromise) schemaPromise = remoteJson("/submissions/form-schema");
+    return schemaPromise;
+  };
+  const results = [];
+  for (let index = 0; index < bundles.length; index += 1) {
+    const bundle = bundles[index];
+    try {
+      results.push(await repairOne(bundle, loadFormSchema));
+    } catch (error) {
+      results.push({
+        turn_key: bundle.key,
+        outcome: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { results, stopped: true, remaining: bundles.length - index - 1 };
+    }
+  }
+  return { results, stopped: false, remaining: 0 };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   let senderOrigin = "";
   try { senderOrigin = new URL(sender.url || "").origin; } catch { senderOrigin = ""; }
@@ -597,7 +727,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     ? syncAllRemote
     : message?.type === "SOLO_QA_SUBMIT"
       ? () => submitBatch(message.payload || {})
-      : null;
+      : message?.type === "SOLO_QA_REPAIR"
+        ? () => repairBatch(message.payload || {})
+        : null;
   if (!action) {
     sendResponse({ ok: false, error: "未知的提交助手操作" });
     return false;

@@ -128,7 +128,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260913.33"
+APP_VERSION = "20260913.34"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -187,6 +187,7 @@ CONTROL_STAGE_RETRY_LIMIT = 2
 CONTROL_STAGE_RETRY_BASE_SECONDS = 15
 EVALUATION_SCORING_TRAJECTORY_MAX_CHARS = 60_000
 EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS = 24_000
+EVALUATION_PUBLIC_HISTORY_LIMIT = 20
 EVALUATION_REGRADE_RETRY_LIMIT = 2
 EVALUATION_REGRADE_RETRY_BASE_SECONDS = 15
 EVALUATION_SPLIT_MAX_CONCURRENCY = 5
@@ -934,6 +935,10 @@ EVALUATION_DESCRIPTION_GUIDANCE += """ 环境、网络、权限、系统解释�
 EVALUATION_RUBRIC_START = "第三步：打分并撰写反馈"
 EVALUATION_RUBRIC_END = "第四步：提交数据"
 EVALUATION_SCORE_GUIDANCE = """严格使用下方评分表的 1～5 分制，按交付完整性、指令遵循、任务规划、推理能力、执行能力的固定顺序独立定档，不得改用十分制、百分制或总档印象，不照抄旧评分、质检建议分或评分表。先核验本轮过程与产物事实，再逐维选择最匹配档位；不要求五维同分。真实出现的遗漏、错误修改、无效重试、未完成验收或需求偏差应落到所属维度，但不能为了制造分差编造不足。5 分必须有真实核对或验收依据；低于 5 分必须有本轮实际不足、具体证据和已经发生的影响。评分义务只来自实际发送的题面及有效上下文，后续 acceptance、检查计划或评分器新增要求不能反推为执行者漏做。环境、网关或复核工具自身故障不能作为能力扣分依据；未修改基线也能复现的问题不能归因给本轮。虚假成功必须找到面向使用人员的实际完成声明，并与工具输出或产物反证对照，内部分析、计划、没有新增专项测试或没有写“未运行”都不能单独定为虚假成功。禁止照抄评分表，必须写本轮可核验实证。"""
+EVALUATION_PUBLIC_SCORE_GUARDRAILS = """公开点评还必须遵守以下边界。5 分描述不得写入本轮实际发生过的错误、失败、破损、遗漏、错误命令、无效调用、返工、修正或因问题而进行的补跑复验；后续修好并通过不能抵消这类本维负面事实。本轮确有这类事实且属于当前维度时必须降到 4 分或以下，属于其他维度时不要把它写进当前维度。低于 5 分时不得只写“小幅不足”“明显偏长”“重复检查”“大量周边代码”“中途碰壁”等主观概括，必须直接写出可核验的具体文件名、函数名、完整命令、报错原文、接口路由或页面控件动作；声称重复或多次时还要写明可核对次数。
+
+严格按维度归因：交付完整性只评价产物是否覆盖需求、必要边界及完成声明是否真实，错误目录、失败命令或补跑后成功不能单独降低交付完整性；指令遵循只评价题面及有效上下文约束；任务规划只评价拆解、阶段安排、状态同步和必要澄清；推理能力只评价需求理解、因果判断和根因定位；执行能力只评价操作是否精准精简、是否存在无效重复以及能否按报错恢复。同一个客观事实的存在与否在五维中必须一致；已经保存的代码复核若没有确认某项产物缺陷，任何维度都不得自行断言该缺陷存在，更不能一维说材料不支持、另一维又说缺陷确实存在。"""
+EVALUATION_PUBLIC_HISTORY_GUIDANCE = """历史同维公开点评只用于检查措辞雷同，不能作为本轮事实或评分依据，也不得在本轮输出中引用历史编号或复述历史内容。返回前逐条比较，不得复用历史中的连续长片段、通用句干、固定开头或固定收尾，也不能只替换项目名和业务名词；应改用本轮独有的对象、操作、可见结果和证据组织自然表达。"""
 EVALUATION_FACT_ATTRIBUTION_GUIDANCE = """同时区分五类来源：原作业实际操作、面向使用人员的完成声明、源码事实、后续独立验收、环境或网关故障。后续同类检查决定当前产物的最终状态，但不会抹掉原作业已经发生的失败、漏验、锁文件不匹配或虚假完成声明；描述后续结果时必须明确写“后续独立验收”或同义来源。检查脚本自身故障不能自动成为推理、指令或产品缺陷，也不能统一压低五维上限。504 后自动继续属于同一业务轮次，要保留继续前后的完整操作和原始输出。历史点评只用于检查套话与雷同，不作为本轮事实来源。先核验事实，再定分，再写公开点评；润色只能调整表达，不能改变分数、需求、事实、缺陷或验证范围。"""
 EVALUATION_INTERNAL_EVIDENCE_GUIDANCE = """除兼容页面的五个命名维度外，输出 score_stage_version=2，并按同一固定顺序填写五项 scores、descriptions、when、behavior、impact、expected、evidenceRefs。scores/descriptions 必须与五个命名维度逐项一致；other 与 other_issues 表达同一内容。when 必须写明“第几轮、第几步”以及当时的具体工具调用、命令或操作，其中第几步必须使用轨迹给出的 STEP N 序号；behavior 必须写实际行为，并用真实文件名、函数名、命令、报错原文、接口路由、页面入口或控件动作之一准确定位，不能为了满足格式机械复用同一个文件名。impact 写已发生影响，expected 写正确做法。evidenceRefs 每项写 1～8 个真实存在且行号有效的“文件路径:行号”，多个引用用英文分号分隔。源码必须使用仓库相对路径，过程事实必须使用轨迹中 SOURCE 后的永久轨迹路径和原始行号；不能引用当前轮次 SOURCE 列表之外的旧轮次轨迹行。processFindings 必须以“评分版本 2；”开头，再以“维度名=N分；事实=具体依据；相邻M分差别=具体依据”的格式按五维顺序逐项填写；2～4 分同时写高低两个相邻档，1 分或 5 分只写实际存在的一侧，每个事实和差别都要带真实文件、函数、命令、报错、接口或页面操作，不能只写“已核对”。相邻档中的文件、函数、命令、报错或结果数字必须来自同维事实证据；“达到或未达到 M 分标准”属于评分判断，不要求这些评分表文字出现在源码。artifactFindings 必须原样包含“N 项通过、N 项失败、N 项跳过”的三个阿拉伯整数，并记录“当前产物为 commit <本轮40位SHA>”、实际运行条件和真实命令、检查覆盖的后端/前端/浏览器/一次性验收范围及未验证范围；同类检查采用最后结果，多个范围汇总时不能重复计算聚合验收。没有相应结果时写 0 并明确未运行，不能用“有、无、没有”代替数量。内部字段可以保留精确命令、数量和来源；缺少关键证据时不得补造引用或通过结论。"""
 TASK_DIFFICULTY_GUIDANCE = """task_difficulty 必须在检查真实代码、验收结果和本轮轨迹后独立判定，不采用题面、自报或历史记录中的难度标签。简单表示改动集中、路径直接且验证成本低；中等表示跨模块完成一条工程链路并处理常见失败路径；困难表示存在较多状态不变量、恢复逻辑或复杂跨层协作；地狱只用于产物确实同时包含多组深层机制且实现与验证负担显著的情况。"""
@@ -7800,6 +7805,46 @@ def public_turn_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
     evaluation = turn_evaluation(row)
     sanitize_public_evaluation_descriptions(evaluation)
     return evaluation
+
+
+def recent_qc_passed_public_evaluation_history(
+    limit: int = EVALUATION_PUBLIC_HISTORY_LIMIT,
+) -> Dict[str, List[str]]:
+    """Collect recent accepted prose by dimension for scorer wording checks."""
+    history = {key: [] for key in EVALUATION_DIMENSION_KEYS}
+    if limit <= 0:
+        return history
+    try:
+        rows = completed_turn_rows()
+    except (OSError, sqlite3.Error):
+        return history
+
+    def remote_order(row: Dict[str, Any]) -> Tuple[int, str]:
+        remote_id = str(row.get("solo_qa_remote_submission_id") or "").strip()
+        return (int(remote_id) if remote_id.isdigit() else -1, remote_id)
+
+    for row in sorted(rows, key=remote_order, reverse=True):
+        if str(row.get("solo_qa_state") or "") != "qc_passed":
+            continue
+        remote_id = str(row.get("solo_qa_remote_submission_id") or "").strip()
+        if not remote_id:
+            continue
+        evaluation = public_turn_evaluation(row)
+        for key in EVALUATION_DIMENSION_KEYS:
+            if len(history[key]) >= limit:
+                continue
+            item = evaluation.get(key)
+            if not isinstance(item, dict):
+                continue
+            description = re.sub(
+                r"\s+", " ", str(item.get("description") or "")
+            ).strip()
+            entry = f"#{remote_id} {description}" if description else ""
+            if entry and entry not in history[key]:
+                history[key].append(entry)
+        if all(len(history[key]) >= limit for key in EVALUATION_DIMENSION_KEYS):
+            break
+    return history
 
 
 def evaluation_confirmation_digest(row: Dict[str, Any]) -> str:
@@ -19821,6 +19866,7 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
 
 {material}"""
     rubric = evaluation_rubric_text()
+    public_description_history = recent_qc_passed_public_evaluation_history()
     parent_job_key = current_job_key()
     abort_calls = threading.Event()
     split_processes = LocalCodexProcessGroup()
@@ -19851,14 +19897,22 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
 
     def score_dimension(dimension_key: str) -> Dict[str, Any]:
         dimension_label = EVALUATION_DIMENSION_LABELS[dimension_key]
+        history_text = "\n".join(
+            public_description_history.get(dimension_key, [])
+        ) or "（暂无已通过质检的同维公开点评）"
         dimension_prompt = f"""只独立评定第 {turn_number} 轮的“{dimension_label}”一个维度，不输出其他维度或共用元数据。{direct_output}
 
 {EVALUATION_SCORE_GUIDANCE}
 {EVALUATION_DESCRIPTION_GUIDANCE}
+{EVALUATION_PUBLIC_SCORE_GUARDRAILS}
 {EVALUATION_FACT_ATTRIBUTION_GUIDANCE}
+{EVALUATION_PUBLIC_HISTORY_GUIDANCE}
 
 本轮评分表：
 {rubric}
+
+最近已通过质检的“{dimension_label}”公开点评：
+{history_text}
 
 公开 description 写一小段自然点评；低于 5 分必须明确第 {turn_number} 轮的具体不足、证据和已经发生的影响，5 分只能保留有核验依据的正向事实。when 必须从“第 {turn_number} 轮第 N 步执行”或“第 {turn_number} 轮第 N 步调用”开始，N 必须来自轨迹 STEP，并控制在 220 字以内。behavior、impact、expected 分别写实际行为、已发生后果和正确做法，各控制在 380 字以内。所有自然语言字段都必须在长度上限前结束完整句子，不能在连接词、命令、路径或半句话处收尾。evidenceRefs 写 1～8 个真实“文件路径:行号”，多个用英文分号分隔。processFinding 必须写成“{dimension_label}=N分；事实=具体依据；相邻M分差别=具体依据”；2～4 分写高低两个相邻档，1 分或 5 分只写存在的一侧，事实与相邻差别都必须带本维证据中的真实文件、函数、命令、报错、接口或页面操作。
 

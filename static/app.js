@@ -1,4 +1,4 @@
-const UI_VERSION = "20260913.33";
+const UI_VERSION = "20260913.34";
 const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 
@@ -1068,13 +1068,22 @@ function soloQaSubmittable(turn) {
   return Boolean(turn.solo_qa_ready) && ["not_submitted", "failed", "remote_missing"].includes(stateName);
 }
 
+function soloQaRepairable(turn) {
+  const soloQa = turn.solo_qa || {};
+  return Boolean(turn.solo_qa_ready)
+    && Boolean(soloQa.remote_id)
+    && soloQa.remote_status === "PENDING_FIX"
+    && ["needs_fix", "local_changed"].includes(soloQa.state);
+}
+
 function renderSoloQaControls() {
   const bridgeStatus = $("#solo-qa-bridge-status");
   const detail = $("#solo-qa-status-detail");
   const helperPath = $("#solo-qa-helper-path");
   const syncButton = $("#solo-qa-sync");
+  const repairButton = $("#solo-qa-repair");
   const submitButton = $("#solo-qa-submit");
-  if (!bridgeStatus || !detail || !syncButton || !submitButton) return;
+  if (!bridgeStatus || !detail || !syncButton || !repairButton || !submitButton) return;
   if (helperPath) {
     helperPath.textContent = state.health?.solo_qa?.helper_path || "尚未取得提交助手路径";
   }
@@ -1095,7 +1104,12 @@ function renderSoloQaControls() {
   const selected = state.completedTurns.filter((turn) =>
     state.selectedExportTurns.has(turn.key) && soloQaSubmittable(turn)
   ).length;
+  const selectedRepairs = state.completedTurns.filter((turn) =>
+    state.selectedExportTurns.has(turn.key) && soloQaRepairable(turn)
+  ).length;
   syncButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy;
+  repairButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy || state.exportPreflightBusy || selectedRepairs === 0;
+  repairButton.textContent = selectedRepairs > 0 ? `返修所选轮次（${selectedRepairs}）` : "返修所选轮次";
   submitButton.disabled = !state.soloQaBridgeReady || state.soloQaBusy || state.exportPreflightBusy || selected === 0;
   submitButton.textContent = selected > 0 ? `提交所选轮次（${selected}）` : "提交所选轮次";
 }
@@ -1172,6 +1186,47 @@ async function submitSelectedToSoloQa() {
     state.soloQaLastMessage = failed
       ? `已提交 ${submitted} 条、找回 ${recovered} 条；在 ${failed.turn_key} 停止：${failed.error}${result.remaining ? `，剩余 ${result.remaining} 条未处理` : ""}`
       : `提交完成：新增 ${submitted} 条${recovered ? `，找回已有 ${recovered} 条` : ""}${skipped ? `，跳过 ${skipped} 条` : ""}`;
+    await loadCompletedTurns();
+    showNotice(state.soloQaLastMessage);
+  } catch (error) {
+    state.soloQaLastMessage = error.message;
+    showNotice(error.message);
+    await loadCompletedTurns();
+  } finally {
+    state.soloQaBusy = false;
+    renderSoloQaControls();
+  }
+}
+
+async function repairSelectedInSoloQa() {
+  if (state.soloQaBusy) return;
+  const turns = state.completedTurns.filter((turn) =>
+    state.selectedExportTurns.has(turn.key) && soloQaRepairable(turn)
+  );
+  if (!turns.length) {
+    showNotice("所选轮次没有可返修记录；请先同步远端状态并保存本地修改");
+    return;
+  }
+  if (!await selectedTurnsPassPreflight(turns.map((turn) => turn.key))) return;
+  const preview = turns.slice(0, 6).map((turn) =>
+    `${turn.project_number || "—"} ${turn.repo_name} · 第 ${turn.turn_number} 轮 · #${turn.solo_qa.remote_id}`
+  ).join("\n");
+  const extra = turns.length > 6 ? `\n另有 ${turns.length - 6} 条` : "";
+  if (!window.confirm(`将使用本地已确认内容返修以下 ${turns.length} 个 SOLO-QA 原记录：\n\n${preview}${extra}\n\n助手会上传当前轨迹并更新原提交 ID，随后自动重新质检。确认继续吗？`)) return;
+  state.soloQaBusy = true;
+  state.soloQaLastMessage = `正在逐条返修 ${turns.length} 个轮次…`;
+  renderSoloQaControls();
+  try {
+    const result = await requestSoloQaBridge(
+      "SOLO_QA_REPAIR",
+      { turn_keys: turns.map((turn) => turn.key) },
+    );
+    const repaired = (result.results || []).filter((item) => item.outcome === "repaired").length;
+    const recovered = (result.results || []).filter((item) => item.outcome === "recovered").length;
+    const failed = (result.results || []).find((item) => item.outcome === "failed");
+    state.soloQaLastMessage = failed
+      ? `已返修 ${repaired} 条、找回已完成返修 ${recovered} 条；在 ${failed.turn_key} 停止：${failed.error}${result.remaining ? `，剩余 ${result.remaining} 条未处理` : ""}`
+      : `返修提交完成：更新原记录 ${repaired} 条${recovered ? `，找回已完成返修 ${recovered} 条` : ""}`;
     await loadCompletedTurns();
     showNotice(state.soloQaLastMessage);
   } catch (error) {
@@ -2375,6 +2430,7 @@ $("#delete-selected-export-turns").addEventListener("click", () => {
   deleteExportTurns([...state.selectedExportTurns]);
 });
 $("#solo-qa-sync").addEventListener("click", () => syncSoloQa());
+$("#solo-qa-repair").addEventListener("click", repairSelectedInSoloQa);
 $("#solo-qa-submit").addEventListener("click", submitSelectedToSoloQa);
 $("#copy-solo-qa-helper-path").addEventListener("click", copySoloQaHelperPath);
 $("#model-form").addEventListener("submit", submitModel);

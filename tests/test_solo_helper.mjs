@@ -36,6 +36,7 @@ const traceDigest = createHash("sha256").update(traceBytes).digest("hex");
 const localStates = [];
 const requests = [];
 const submissionBodies = [];
+const repairBodies = [];
 let createdCount = 0;
 
 const payloads = {
@@ -45,6 +46,30 @@ const payloads = {
   "cafebabecafe:2": { session: "session-missing", turn: "turn-missing-2", round: 2, prompt: "缺少前序轮次", taskType: "Bug修复" },
   "facefeedcafe:1": { session: "session-choice", turn: "turn-choice-1", round: 1, prompt: "触发枚举错误", taskType: "未知类型" },
   "feedfacecafe:1": { session: "session-validation", turn: "turn-validation-1", round: 1, prompt: "触发远端字段错误", taskType: "Bug修复" },
+  "deadbeefcafe:1": {
+    session: "session-repair",
+    turn: "turn-repair-1",
+    round: 1,
+    prompt: "使用本地确认内容返修",
+    taskType: "Bug修复",
+    soloQa: { state: "local_changed", remote_id: "7001", remote_status: "PENDING_FIX" },
+  },
+  "decafbadcafe:1": {
+    session: "session-remote-moved",
+    turn: "turn-remote-moved-1",
+    round: 1,
+    prompt: "远端状态已经变化",
+    taskType: "Bug修复",
+    soloQa: { state: "needs_fix", remote_id: "7002", remote_status: "PENDING_FIX" },
+  },
+  "badc0ffee000:1": {
+    session: "session-not-repairable",
+    turn: "turn-not-repairable-1",
+    round: 1,
+    prompt: "本地状态不允许返修",
+    taskType: "Bug修复",
+    soloQa: { state: "not_submitted", remote_id: "7003", remote_status: "PENDING_FIX" },
+  },
 };
 
 function jsonResponse(value, status = 200) {
@@ -70,6 +95,8 @@ globalThis.fetch = async (url, options = {}) => {
     if (!config) throw new Error(`unexpected local payload: ${runId}:${round}`);
     return jsonResponse({
       key: `${runId}:${round}`,
+      ready: config.ready ?? true,
+      issues: config.issues || [],
       values: {
         "任务类型": config.taskType,
         "User Prompt": config.prompt,
@@ -84,7 +111,7 @@ globalThis.fetch = async (url, options = {}) => {
         sha256: traceDigest,
         url: `http://127.0.0.1:8765/api/solo-qa/turns/${runId}/${round}/trajectory`,
       },
-      solo_qa: { state: "not_submitted", remote_id: "" },
+      solo_qa: config.soloQa || { state: "not_submitted", remote_id: "", remote_status: "" },
     });
   }
   if (/\/api\/solo-qa\/turns\/[a-f0-9]{12}\/[1-9]\d*\/trajectory$/.test(href)) {
@@ -115,6 +142,25 @@ globalThis.fetch = async (url, options = {}) => {
     assert.equal(options.method, "POST");
     assert.ok(options.body instanceof FormData);
     return jsonResponse({ name: "trace.jsonl", path: "uploads/trace.jsonl", size: trace.size });
+  }
+  const repairMatch = href.match(/\/api\/v1\/submissions\/(7001|7002)$/);
+  if (repairMatch && (options.method || "GET") === "GET") {
+    const remoteId = repairMatch[1];
+    const config = remoteId === "7001" ? payloads["deadbeefcafe:1"] : payloads["decafbadcafe:1"];
+    return jsonResponse({
+      id: Number(remoteId),
+      status: remoteId === "7001" ? "PENDING_FIX" : "QC_PASSED",
+      session_id: config.session,
+      turn_id: config.turn,
+      round_no: config.round,
+      current_version: 1,
+    });
+  }
+  if (repairMatch && options.method === "PUT") {
+    assert.equal(repairMatch[1], "7001");
+    const body = JSON.parse(options.body);
+    repairBodies.push(body);
+    return jsonResponse({ id: 7001, status: "SUBMITTED", current_version: 2 });
   }
   if (href.endsWith("/api/v1/submissions") && options.method === "POST") {
     const body = JSON.parse(options.body);
@@ -223,3 +269,78 @@ const validationError = validationResponse.data.results[0].error;
 assert.match(validationError, /^任务难度：当前轮次难度与会话不一致/);
 assert.match(validationError, /提交数据校验未通过$/);
 assert.equal(submissionBodies.at(-1).data.user_prompt, "触发远端字段错误");
+
+const uploadCountBeforeRepair = requests.filter((item) => item.href.endsWith("/submissions/upload")).length;
+const createCountBeforeRepair = requests.filter(
+  (item) => item.href.endsWith("/submissions") && item.method === "POST",
+).length;
+const repairResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_REPAIR", payload: { turn_keys: ["deadbeefcafe:1", "deadbeefcafe:1"] } },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(repairResponse.ok, true);
+assert.equal(repairResponse.data.stopped, false);
+assert.equal(repairResponse.data.results.length, 1);
+assert.equal(repairResponse.data.results[0].outcome, "repaired");
+assert.equal(repairResponse.data.results[0].remote_id, "7001");
+assert.equal(
+  requests.filter((item) => item.href.endsWith("/submissions/upload")).length,
+  uploadCountBeforeRepair + 1,
+);
+assert.equal(
+  requests.filter((item) => item.href.endsWith("/submissions") && item.method === "POST").length,
+  createCountBeforeRepair,
+);
+assert.equal(repairBodies.length, 1);
+assert.equal(repairBodies[0].schema_fingerprint, "schema-test");
+assert.equal(repairBodies[0].comment, "");
+assert.equal(repairBodies[0].data.user_prompt, "使用本地确认内容返修");
+assert.equal(repairBodies[0].data.trace_file[0].path, "uploads/trace.jsonl");
+assert.equal(localStates.at(-1).turn_key, "deadbeefcafe:1");
+assert.equal(localStates.at(-1).state, "qc_pending");
+assert.equal(localStates.at(-1).remote_id, "7001");
+assert.equal(localStates.at(-1).remote_status, "SUBMITTED");
+assert.equal(localStates.at(-1).payload_sha256, "a".repeat(64));
+const repairWrite = requests.find(
+  (item) => item.href.endsWith("/submissions/7001") && item.method === "PUT",
+);
+assert.ok(repairWrite);
+assert.equal(repairWrite.credentials, "include");
+assert.equal(repairWrite.headers["x-csrf-token"], "csrf-test");
+
+const uploadCountBeforeRemoteMoved = requests.filter((item) => item.href.endsWith("/submissions/upload")).length;
+const remoteMovedResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_REPAIR", payload: { turn_keys: ["decafbadcafe:1"] } },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(remoteMovedResponse.ok, true);
+assert.equal(remoteMovedResponse.data.stopped, true);
+assert.match(remoteMovedResponse.data.results[0].error, /远端提交已不是待返修状态/);
+assert.equal(
+  requests.filter((item) => item.href.endsWith("/submissions/upload")).length,
+  uploadCountBeforeRemoteMoved,
+);
+
+const remoteReadsBeforeInvalidState = requests.filter(
+  (item) => item.href.endsWith("/submissions/7003") && item.method === "GET",
+).length;
+const invalidRepairStateResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_REPAIR", payload: { turn_keys: ["badc0ffee000:1"] } },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(invalidRepairStateResponse.ok, true);
+assert.equal(invalidRepairStateResponse.data.stopped, true);
+assert.match(invalidRepairStateResponse.data.results[0].error, /只有需要返修或本地数据已变化/);
+assert.equal(
+  requests.filter((item) => item.href.endsWith("/submissions/7003") && item.method === "GET").length,
+  remoteReadsBeforeInvalidState,
+);

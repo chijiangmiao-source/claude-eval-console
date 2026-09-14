@@ -15386,6 +15386,35 @@ class IterationGenerationTests(unittest.TestCase):
                 candidate, iteration_history=[abandoned]
             )
 
+    def test_repository_history_blocks_cross_session_repeat(self):
+        candidate = self.candidate()
+        repository_history = [{
+            "reference": "SOLO-QA #8075",
+            "source": "solo_qa",
+            "prompt": candidate["prompt"],
+            "task_type": "Feature 迭代",
+            "dedup_required": True,
+        }]
+
+        with self.assertRaisesRegex(app.WorkflowError, "SOLO-QA #8075"):
+            app.validate_generated_iteration(
+                candidate,
+                iteration_history=[],
+                repository_history=repository_history,
+            )
+
+    def test_repository_key_matches_fallback_without_cross_owner_collision(self):
+        self.assertEqual(
+            app.canonical_repository_key(
+                "git@github.com:WanFeng/demo-repo.git", ""
+            ),
+            "wanfeng/demo-repo",
+        )
+        self.assertTrue(app.repository_keys_match("wanfeng/demo-repo", "demo-repo"))
+        self.assertFalse(
+            app.repository_keys_match("wanfeng/demo-repo", "someone/demo-repo")
+        )
+
     def test_iteration_generation_is_fixed_to_gpt_5_6_sol(self):
         context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
         with mock.patch.object(
@@ -15397,6 +15426,7 @@ class IterationGenerationTests(unittest.TestCase):
         self.assertEqual(codex.call_args.args[2], Path("/tmp/existing-project"))
         self.assertEqual(codex.call_args.kwargs["model"], "gpt-5.6-sol")
         self.assertIn(app.DEVELOPER_PROMPT_STYLE_GUIDANCE, codex.call_args.args[0])
+        self.assertIn("repository_prompt_history", codex.call_args.args[0])
 
     def test_new_module_generation_schema_has_scope_caps(self):
         context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
@@ -16412,12 +16442,13 @@ class ExportTests(unittest.TestCase):
             database.execute(
                 """INSERT INTO runs(
                      id, repo_name, model, task_type, task_difficulty,
-                     language_framework, repo_path, phase, session_id, snapshot_url,
+                     language_framework, repo_path, repo_url, phase, session_id, snapshot_url,
                      first_prompt, trajectory_path, verification_commands, harness_version,
                      container_cleaned,
                      created_at, updated_at
                    ) VALUES (?, 'export-demo', 'gpt-5.6-sol', '0-1 代码生成', '困难',
-                             'Python, FastAPI', ?, 'complete', 'session-export',
+                             'Python, FastAPI', ?, 'https://github.com/example/export-demo',
+                             'complete', 'session-export',
                              ?,
                              '原始题面', ?, '[]', '2.1.263', 1, ?, ?)""",
                 (
@@ -16564,6 +16595,45 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertIn("交付完整性", issues[0])
         self.assertIn("不是连贯中文叙述", issues[0])
+
+    def test_solo_qa_environment_attribution_return_targets_named_dimension(self):
+        row = {
+            "solo_qa_state": "needs_fix",
+            "solo_qa_remote_submission_id": "11975",
+            "solo_qa_remote_status": "PENDING_FIX",
+            "solo_qa_remote_updated_at": "2026-09-14T20:30:00",
+            "solo_qa_qc_summary": (
+                "任务规划：这段描述把扣分点归因为运行环境里没有 Docker，"
+                "属于环境限制，不能作为该维度的扣分理由。"
+            ),
+        }
+
+        issues = app.solo_qa_returned_evaluation_repair_issues(
+            row, with_score_stage(sample_evaluation())
+        )
+
+        self.assertEqual(len(issues), 1)
+        self.assertIn("任务规划", issues[0])
+        self.assertIn("环境条件", issues[0])
+
+    def test_solo_qa_conflicting_check_counts_rewrite_all_five(self):
+        row = {
+            "solo_qa_state": "needs_fix",
+            "solo_qa_remote_submission_id": "11974",
+            "solo_qa_remote_status": "PENDING_FIX",
+            "solo_qa_remote_updated_at": "2026-09-14T20:30:00",
+            "solo_qa_qc_summary": (
+                "交付完整性把环境限制作为扣分理由；整体：执行能力写 6 项通过，"
+                "其余四段写 35 项通过，同一份验收统计出现互斥的数字。"
+            ),
+        }
+
+        issues = app.solo_qa_returned_evaluation_repair_issues(
+            row, with_score_stage(sample_evaluation())
+        )
+
+        self.assertEqual(len(issues), 5)
+        self.assertTrue(all("统一验收统计" in issue for issue in issues))
 
     def test_english_dominant_public_description_is_targeted_for_repair(self):
         evaluation = with_score_stage(sample_evaluation())
@@ -18656,12 +18726,26 @@ class ExportTests(unittest.TestCase):
                         "session_id": "session-export",
                         "turn_id": "prompt-export",
                         "round_no": 1,
+                        "user_prompt": "完成陶坯称重核对并保留批次证据",
+                        "repo_url": "https://github.com/example/export-demo.git",
+                        "repo_name": "export-demo",
+                        "task_type": "0-1 代码生成",
                         "qc_summary": "质检通过",
                         "submitted_at": "2026-09-10 12:00:00 +0800",
                     }],
                     "complete": True,
+                    "history_bootstrap_complete": True,
                 })
                 synced = app.completed_turns()[0]["solo_qa"]
+                with app.db_connection() as database:
+                    prompt_history = dict(database.execute(
+                        "SELECT * FROM solo_qa_prompt_history "
+                        "WHERE remote_submission_id = '77'"
+                    ).fetchone())
+                prompt_status = app.solo_qa_prompt_history_status()
+                repo_history = app.repository_prompt_history(
+                    app.run_row("abc123abc123")
+                )
                 missing_result = app.sync_solo_qa_submissions({
                     "items": [], "complete": True
                 })
@@ -18670,6 +18754,10 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(result["matched"], 1)
         self.assertEqual(synced["state"], "qc_passed")
         self.assertEqual(synced["remote_id"], "77")
+        self.assertEqual(prompt_history["repo_key"], "example/export-demo")
+        self.assertIn("陶坯称重", prompt_history["prompt"])
+        self.assertTrue(prompt_status["bootstrapped"])
+        self.assertEqual(repo_history[0]["reference"], "SOLO-QA #77")
         self.assertEqual(missing_result["remote_missing"], 1)
         self.assertEqual(missing["state"], "remote_missing")
 

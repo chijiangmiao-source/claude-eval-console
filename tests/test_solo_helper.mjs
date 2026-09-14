@@ -40,6 +40,7 @@ const submissionBodies = [];
 const repairBodies = [];
 let createdCount = 0;
 let transientRemoteReadFailures = 0;
+let promptHistoryBootstrapRequired = false;
 
 function shanghaiDayKey(value = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -141,6 +142,13 @@ globalThis.fetch = async (url, options = {}) => {
     localStates.push(JSON.parse(options.body));
     return jsonResponse({ state: localStates.at(-1).state });
   }
+  if (href.endsWith("/api/solo-qa/prompt-history-status")) {
+    return jsonResponse({
+      bootstrap_required: promptHistoryBootstrapRequired,
+      bootstrapped: !promptHistoryBootstrapRequired,
+      indexed_prompts: 120,
+    });
+  }
   if (href.endsWith("/api/solo-qa/sync")) {
     localSyncs.push(JSON.parse(options.body));
     return jsonResponse({ matched: localSyncs.at(-1).items.length, unmatched: 0 });
@@ -149,6 +157,15 @@ globalThis.fetch = async (url, options = {}) => {
     return jsonResponse({ items: [], meta: { total: 0 } });
   }
   if (href.endsWith("/api/v1/submissions?page=1&page_size=20")) {
+    if (promptHistoryBootstrapRequired) {
+      return jsonResponse({
+        items: [
+          { id: 901, created_at: todayUtcTimestamp },
+          { id: 900, submitted_at: `${yesterdayKey}T23:59:00+08:00` },
+        ],
+        meta: { total: 2 },
+      });
+    }
     return jsonResponse({
       items: [
         { id: 901, created_at: todayUtcTimestamp },
@@ -178,9 +195,25 @@ globalThis.fetch = async (url, options = {}) => {
       })),
     });
   }
-  const historyMatch = href.match(/\/api\/v1\/submissions\/(901|902)$/);
+  const historyMatch = href.match(/\/api\/v1\/submissions\/(900|901|902)$/);
   if (historyMatch) {
     const remoteId = Number(historyMatch[1]);
+    if (remoteId === 900) {
+      return jsonResponse({
+        id: 900,
+        status: "DISCARDED",
+        submitted_at: `${yesterdayKey}T23:59:00+08:00`,
+        session_id: "session-old",
+        turn_id: "turn-old",
+        round_no: 1,
+        values: {
+          user_prompt: "旧的陶坯称重批次复核题面",
+          repo_url: "https://github.com/example/ceramic-review.git",
+          task_type: "Feature 迭代",
+        },
+        qc_summary: "与同仓库历史题面语义雷同",
+      });
+    }
     return jsonResponse({
       id: remoteId,
       status: "QC_PASSED",
@@ -286,6 +319,28 @@ assert.equal(
   requests.some((item) => item.href.includes("/api/v1/submissions?page=4")),
   false,
 );
+
+promptHistoryBootstrapRequired = true;
+const syncCountBeforeBootstrap = localSyncs.length;
+const bootstrapResponse = await new Promise((resolve) => {
+  listener(
+    { type: "SOLO_QA_SYNC", payload: {} },
+    { url: "http://127.0.0.1:8765/#exports" },
+    resolve,
+  );
+});
+assert.equal(bootstrapResponse.ok, true);
+assert.equal(bootstrapResponse.data.full_history, true);
+assert.equal(bootstrapResponse.data.scope_date, "全部历史");
+assert.equal(bootstrapResponse.data.remote_total, 2);
+assert.equal(localSyncs.length, syncCountBeforeBootstrap + 2);
+assert.equal(localSyncs.at(-2).items.length, 2);
+assert.equal(localSyncs.at(-1).history_bootstrap_complete, true);
+assert.equal(
+  localSyncs.at(-2).items.find((item) => item.id === 900).user_prompt,
+  "旧的陶坯称重批次复核题面",
+);
+promptHistoryBootstrapRequired = false;
 
 const response = await new Promise((resolve) => {
   const asynchronous = listener(

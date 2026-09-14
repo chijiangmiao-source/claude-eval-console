@@ -11,6 +11,13 @@ const REMOTE_STATUS_TO_LOCAL = {
   PENDING_FIX: "needs_fix",
   DISCARDED: "discarded",
 };
+const REMOTE_DETAIL_CONTAINERS = [
+  "data",
+  "values",
+  "form_data",
+  "submission_data",
+  "payload",
+];
 const TRANSIENT_REMOTE_STATUSES = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
 const REMOTE_RETRY_DELAYS_MS = [500, 1500, 3500];
 const SOLO_QA_SYNC_TIME_ZONE = "Asia/Shanghai";
@@ -374,6 +381,31 @@ async function recordLocal(bundle, values) {
   }));
 }
 
+function remoteDetailSources(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+  return [
+    item,
+    ...REMOTE_DETAIL_CONTAINERS
+      .map((key) => item[key])
+      .filter((value) => value && typeof value === "object" && !Array.isArray(value)),
+  ];
+}
+
+function compactRemoteText(item, keys, maxChars) {
+  for (const source of remoteDetailSources(item)) {
+    for (const key of keys) {
+      let value = source[key];
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        value = value.value ?? value.text ?? value.label;
+      }
+      if (typeof value !== "string" && typeof value !== "number") continue;
+      const text = String(value).replace(/\s+/g, " ").trim();
+      if (text) return text.slice(0, maxChars);
+    }
+  }
+  return "";
+}
+
 function compactRemote(item) {
   return {
     id: item.id,
@@ -385,6 +417,26 @@ function compactRemote(item) {
     submitted_at: String(item.submitted_at || item.created_at || "").slice(0, 128),
     updated_at: String(item.updated_at || item.qc_finished_at || "").slice(0, 128),
     current_version: Number(item.current_version || item.version_no || 0),
+    user_prompt: compactRemoteText(
+      item,
+      ["user_prompt", "prompt", "User Prompt", "题目"],
+      12000,
+    ),
+    repo_url: compactRemoteText(
+      item,
+      ["repo_url", "repository_url", "github_repo_url", "github_url", "GitHub 仓库"],
+      1000,
+    ),
+    repo_name: compactRemoteText(
+      item,
+      ["repo_name", "repository_name", "repository", "仓库"],
+      300,
+    ),
+    task_type: compactRemoteText(
+      item,
+      ["task_type", "question_type", "任务类型"],
+      80,
+    ),
   };
 }
 
@@ -475,18 +527,74 @@ async function listTodayRemote() {
   };
 }
 
+async function listAllRemote() {
+  const items = [];
+  const pageSize = 20;
+  let accountTotal = 0;
+  let inspected = 0;
+  for (let page = 1; page <= 25; page += 1) {
+    const response = await remoteJson(`/submissions?page=${page}&page_size=${pageSize}`);
+    const pageItems = Array.isArray(response.items) ? response.items : [];
+    accountTotal = Number(response.meta?.total ?? inspected + pageItems.length);
+    inspected += pageItems.length;
+    items.push(...await remoteDetails(pageItems));
+    if (!pageItems.length || inspected >= accountTotal || inspected >= 500) break;
+  }
+  return {
+    items: items.slice(0, 500),
+    total: Math.min(items.length, 500),
+    account_total: accountTotal,
+    scope_date: "全部历史",
+    complete: inspected >= accountTotal && accountTotal <= 500,
+    full_history: true,
+  };
+}
+
 async function syncAllRemote() {
-  const remote = await listTodayRemote();
-  const local = await localJson("/sync", jsonOptions({
-    items: remote.items,
-    complete: false,
-  }));
+  const historyStatus = await localJson("/prompt-history-status");
+  const bootstrap = historyStatus.bootstrap_required === true;
+  const remote = bootstrap ? await listAllRemote() : await listTodayRemote();
+  const local = {
+    matched: 0,
+    unmatched: 0,
+    ambiguous: 0,
+    remote_missing: 0,
+    prompt_history_indexed: Number(historyStatus.indexed_prompts || 0),
+    synced_at: "",
+  };
+  const batchSize = 40;
+  for (let offset = 0; offset < remote.items.length; offset += batchSize) {
+    const result = await localJson("/sync", jsonOptions({
+      items: remote.items.slice(offset, offset + batchSize),
+      complete: false,
+    }));
+    for (const field of ["matched", "unmatched", "ambiguous"]) {
+      local[field] += Number(result[field] || 0);
+    }
+    local.prompt_history_indexed = Number(
+      result.prompt_history_indexed ?? local.prompt_history_indexed,
+    );
+    local.synced_at = result.synced_at || local.synced_at;
+  }
+  if (!remote.items.length || (bootstrap && remote.complete)) {
+    const empty = await localJson("/sync", jsonOptions({
+      items: [],
+      complete: false,
+      history_bootstrap_complete: bootstrap && remote.complete,
+    }));
+    local.prompt_history_indexed = Number(
+      empty.prompt_history_indexed ?? local.prompt_history_indexed,
+    );
+    local.synced_at = empty.synced_at || local.synced_at;
+  }
   return {
     ...local,
     remote_total: remote.total,
     account_total: remote.account_total,
     scope_date: remote.scope_date,
     partial: !remote.complete,
+    full_history: remote.full_history === true,
+    prompt_history_indexed: local.prompt_history_indexed,
   };
 }
 

@@ -132,7 +132,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.41"
+APP_VERSION = "20260914.42"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -11468,7 +11468,20 @@ def launch_docker_terminal(row: sqlite3.Row) -> str:
     )
     try:
         open_terminal_screen(str(row["id"]), screen_name)
-    except Exception:
+    except Exception as exc:
+        # Terminal.app is only a viewer for the durable screen session. A
+        # transient AppleScript timeout must not tear down a healthy runtime
+        # before the first prompt can be sent through screen.
+        if screen_session_running(screen_name):
+            add_event(
+                str(row["id"]),
+                (
+                    "Terminal 窗口打开或登记失败，已保留后台容器会话并继续运行："
+                    f"{exc}"
+                ),
+                "warning",
+            )
+            return screen_name
         run_command(
             ["screen", "-S", screen_name, "-X", "quit"],
             timeout=20,

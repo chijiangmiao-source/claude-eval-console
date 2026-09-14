@@ -12637,6 +12637,82 @@ class RepositoryTests(unittest.TestCase):
             self.assertNotIn("-DmS", screen_call.args[0])
             self.assertIs(screen_call.kwargs["capture_output"], False)
 
+    def test_terminal_window_timeout_keeps_healthy_screen_session_running(self):
+        row = {
+            "id": "headless-start",
+            "container_name": "claude-eval-headless-start",
+            "screen_name": "claude-eval-headless-start",
+        }
+        paths = {
+            "screenrc": Path("/tmp/headless-screenrc"),
+            "launcher": Path("/tmp/headless-launcher"),
+        }
+        completed = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch.object(
+            app, "docker_container_running", return_value=False
+        ), mock.patch.object(
+            app, "screen_session_running", side_effect=[False, True]
+        ), mock.patch.object(
+            app, "write_terminal_launcher", return_value=paths
+        ), mock.patch.object(
+            app, "run_command", return_value=completed
+        ) as command, mock.patch.object(
+            app,
+            "open_terminal_screen",
+            side_effect=app.WorkflowError("命令执行超时：osascript"),
+        ), mock.patch.object(
+            app, "remove_docker_container"
+        ) as remove_container, mock.patch.object(
+            app, "add_event"
+        ) as event:
+            screen_name = app.launch_docker_terminal(row)
+
+        self.assertEqual(screen_name, "claude-eval-headless-start")
+        self.assertFalse(
+            any("-X" in call.args[0] for call in command.call_args_list)
+        )
+        remove_container.assert_not_called()
+        self.assertIn("已保留后台容器会话并继续运行", event.call_args.args[1])
+
+    def test_terminal_window_failure_cleans_up_when_screen_also_stopped(self):
+        row = {
+            "id": "stopped-start",
+            "container_name": "claude-eval-stopped-start",
+            "screen_name": "claude-eval-stopped-start",
+        }
+        paths = {
+            "screenrc": Path("/tmp/stopped-screenrc"),
+            "launcher": Path("/tmp/stopped-launcher"),
+        }
+        completed = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch.object(
+            app, "docker_container_running", return_value=False
+        ), mock.patch.object(
+            app, "screen_session_running", side_effect=[False, False]
+        ), mock.patch.object(
+            app, "write_terminal_launcher", return_value=paths
+        ), mock.patch.object(
+            app, "run_command", return_value=completed
+        ) as command, mock.patch.object(
+            app,
+            "open_terminal_screen",
+            side_effect=app.WorkflowError("Terminal 无响应"),
+        ), mock.patch.object(
+            app, "remove_docker_container"
+        ) as remove_container, mock.patch.object(
+            app, "add_event"
+        ) as event:
+            with self.assertRaisesRegex(app.WorkflowError, "Terminal 无响应"):
+                app.launch_docker_terminal(row)
+
+        self.assertTrue(
+            any("-X" in call.args[0] for call in command.call_args_list)
+        )
+        remove_container.assert_called_once_with(
+            "claude-eval-stopped-start", force=True
+        )
+        event.assert_not_called()
+
     def test_terminal_attention_detection_only_reads_visible_prompt(self):
         self.assertEqual(
             app.terminal_attention_reason_from_text(

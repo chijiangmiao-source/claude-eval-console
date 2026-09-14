@@ -14223,6 +14223,68 @@ class DraftTests(unittest.TestCase):
         rewrite.assert_not_called()
         self.assertIn("当前候选与历史题面实质重复，改用下一候选", progress)
 
+    def test_new_task_semantic_dedup_tries_the_second_candidate(self):
+        preferred = self.candidate()
+        alternate = self.candidate()
+        alternate.update({
+            "title": "Cold Chain Boundary Viewer",
+            "repo_slug": "cold-chain-boundary-viewer",
+            "business_domain": "冷链边界复核",
+            "engineering_core": "温区区间归并",
+            "input_form": "记录仪导出的 CSV",
+            "primary_user": "冷链质量员",
+            "failure_boundary": "跨日时间回拨",
+        })
+        duplicate = {
+            "duplicate": True,
+            "confidence": "high",
+            "match_scope": "cross_repository",
+            "reference": "SOLO-QA #12592",
+            "overlap_kind": "same_feature",
+            "reason": "核心计算、页面操作和验收结果相同",
+        }
+        distinct = {
+            "duplicate": False,
+            "confidence": "low",
+            "match_scope": "none",
+            "reference": "",
+            "overlap_kind": "none",
+            "reason": "没有高置信度重复",
+        }
+        history = [{
+            "reference": "SOLO-QA #12592",
+            "task_type": "0-1代码生成",
+            "remote_status": "DISCARDED",
+            "prompt": "历史质检已废弃题面",
+            "dedup_required": True,
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "unique_repo_name", side_effect=lambda name: name), mock.patch.object(
+                app, "run_codex_task_generation",
+                return_value={"candidates": [preferred, alternate]},
+            ), mock.patch.object(
+                app, "generated_task_quality_key",
+                side_effect=lambda candidate, _history: (
+                    0 if candidate["repo_name"] == preferred["repo_slug"] else 1,
+                ),
+            ), mock.patch.object(
+                app, "run_codex_task_validation", return_value=self.scope_review()
+            ), mock.patch.object(
+                app, "global_prompt_dedup_history", return_value=history
+            ), mock.patch.object(
+                app, "run_codex_prompt_dedup_validation",
+                side_effect=[duplicate, distinct],
+            ) as dedup:
+                app.initialize_database()
+                draft = app.generate_task_draft(1)
+
+        self.assertEqual(draft["repo_name"], alternate["repo_slug"])
+        self.assertEqual(dedup.call_count, 2)
+        self.assertEqual(draft["prompt_dedup_history_count"], 1)
+
     def test_task_generation_has_a_ten_minute_overall_deadline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -15772,6 +15834,170 @@ class IterationGenerationTests(unittest.TestCase):
                 "ai_style_issues": [],
             },
         }
+
+    def test_global_history_keeps_discarded_qc_prompt_for_dedup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO solo_qa_prompt_history(
+                               remote_submission_id, repo_key, repo_name, repo_url,
+                               prompt, task_type, remote_status, qc_summary,
+                               submitted_at, last_synced_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            "12596",
+                            "chijiangmiao-source/runway-flash-code-decoder",
+                            "runway-flash-code-decoder",
+                            "",
+                            "统计本进程解码结果并通过接口查看成功和失败计数。",
+                            "Feature迭代",
+                            "DISCARDED",
+                            "命中查重规则 C：与同仓库历史需求雷同，该条数据作废。",
+                            "2026-09-15",
+                            "2026-09-15",
+                        ),
+                    )
+                result = app.global_prompt_dedup_history(
+                    "chijiangmiao-source/another-decoder",
+                    self.candidate(),
+                    "Feature 迭代重跑",
+                )
+
+        self.assertEqual(result[0]["reference"], "SOLO-QA #12596")
+        self.assertEqual(result[0]["remote_status"], "DISCARDED")
+        self.assertTrue(result[0]["qc_duplicate"])
+        self.assertTrue(result[0]["dedup_required"])
+
+    def test_semantic_dedup_uses_discarded_qc_reason(self):
+        review = {
+            "duplicate": False,
+            "confidence": "low",
+            "match_scope": "none",
+            "reference": "",
+            "overlap_kind": "none",
+            "reason": "没有高置信度重复",
+        }
+        discarded = [{
+            "reference": "SOLO-QA #12596",
+            "task_type": "Feature迭代",
+            "remote_status": "DISCARDED",
+            "prompt": "新增解码统计入口。",
+            "qc_summary": "同仓库需求雷同，该条数据作废。",
+            "dedup_required": True,
+        }]
+        with mock.patch.object(
+            app, "run_codex_generation_structured", return_value=review
+        ) as structured:
+            result = app.run_codex_prompt_dedup_validation(
+                self.candidate(), "Feature 迭代", discarded, []
+            )
+
+        self.assertEqual(result, review)
+        prompt = structured.call_args.args[0]
+        self.assertIn("remote_status=DISCARDED", prompt)
+        self.assertIn("SOLO-QA #12596", prompt)
+        self.assertIn("同仓库需求雷同，该条数据作废", prompt)
+
+    def test_semantic_dedup_retries_a_discarded_same_repo_match(self):
+        candidate = self.candidate()
+        context = {
+            "repo_path": "/tmp/existing-project",
+            "repo_name": "demo",
+            "repo_key": "example/demo",
+            "repository_prompt_history": [{
+                "reference": "SOLO-QA #11969",
+                "task_type": "Feature迭代",
+                "remote_status": "DISCARDED",
+                "prompt": "在答卡页面加入不改变答案的辅助标记。",
+                "qc_summary": "同仓库题目语义雷同，该条数据作废。",
+                "dedup_required": True,
+            }],
+        }
+        source = {
+            "phase": "complete",
+            "container_cleaned": 1,
+            "repo_url": "https://example.invalid/demo",
+            "first_prompt_id": "prompt-1",
+            "imported_baseline": 0,
+        }
+        duplicate = {
+            "duplicate": True,
+            "confidence": "medium",
+            "match_scope": "same_repository",
+            "reference": "SOLO-QA #11969",
+            "overlap_kind": "same_user_flow",
+            "reason": "都在同一录入页面增加不改变答案的辅助操作",
+        }
+        distinct = {
+            "duplicate": False,
+            "confidence": "low",
+            "match_scope": "none",
+            "reference": "",
+            "overlap_kind": "none",
+            "reason": "功能入口和结果不同",
+        }
+        with mock.patch.object(app, "run_row", return_value=source), mock.patch.object(
+            app, "iteration_project_context", return_value=context
+        ), mock.patch.object(
+            app, "run_codex_iteration_generation", return_value=candidate
+        ) as generate, mock.patch.object(
+            app, "global_prompt_dedup_history", return_value=[]
+        ), mock.patch.object(
+            app, "run_codex_iteration_validation", return_value=self.review_result()
+        ), mock.patch.object(
+            app, "run_codex_prompt_dedup_validation",
+            side_effect=[duplicate, distinct],
+        ) as dedup:
+            result = app.generate_iteration_candidate("source111111")
+
+        self.assertEqual(result["prompt"], candidate["prompt"])
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(dedup.call_count, 2)
+        self.assertIn("SOLO-QA #11969", generate.call_args_list[1].args[1])
+
+    def test_semantic_dedup_failure_does_not_start_an_unchecked_iteration(self):
+        candidate = self.candidate()
+        context = {
+            "repo_path": "/tmp/existing-project",
+            "repo_name": "demo",
+            "repo_key": "example/demo",
+            "repository_prompt_history": [{
+                "reference": "SOLO-QA #11969",
+                "task_type": "Feature迭代",
+                "remote_status": "DISCARDED",
+                "prompt": "历史废弃题面",
+                "dedup_required": True,
+            }],
+        }
+        source = {
+            "phase": "complete",
+            "container_cleaned": 1,
+            "repo_url": "https://example.invalid/demo",
+            "first_prompt_id": "prompt-1",
+            "imported_baseline": 0,
+        }
+        with mock.patch.object(app, "run_row", return_value=source), mock.patch.object(
+            app, "iteration_project_context", return_value=context
+        ), mock.patch.object(
+            app, "run_codex_iteration_generation", return_value=candidate
+        ), mock.patch.object(
+            app, "global_prompt_dedup_history", return_value=[]
+        ), mock.patch.object(
+            app, "run_codex_iteration_validation", return_value=self.review_result()
+        ), mock.patch.object(
+            app, "run_codex_prompt_dedup_validation",
+            side_effect=app.WorkflowError("prompt-dedup-validation 504"),
+        ) as dedup, self.assertRaisesRegex(
+            app.WorkflowError, "prompt-dedup-validation 504"
+        ):
+            app.generate_iteration_candidate("source111111")
+
+        dedup.assert_called_once()
 
     def test_iteration_prompt_is_normalized_and_requires_cross_module_scope(self):
         candidate = self.candidate()

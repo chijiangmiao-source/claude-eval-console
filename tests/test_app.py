@@ -20403,8 +20403,8 @@ class ResilienceTests(unittest.TestCase):
 
 
 class ConcurrencyTests(unittest.TestCase):
-    def test_default_parallel_limit_is_four(self):
-        self.assertEqual(app.MAX_PARALLEL_RUNS, 4)
+    def test_default_parallel_limit_is_six(self):
+        self.assertEqual(app.MAX_PARALLEL_RUNS, 6)
 
     def test_ensure_job_active_rejects_service_shutdown(self):
         shutdown = threading.Event()

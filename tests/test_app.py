@@ -15150,6 +15150,82 @@ class AutoRefillTests(unittest.TestCase):
                         "rejected2222", "Feature 迭代"
                     )
 
+    def test_candidate_skips_bugfix_blocked_for_the_current_sequence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root):
+                app.initialize_database()
+                with app.db_connection() as database:
+                    self.insert_run(database, "root11111111", "blocked-root")
+                    self.insert_run(
+                        database,
+                        "child1111111",
+                        "blocked-child",
+                        source_run_id="root11111111",
+                    )
+                    self.insert_run(database, "root22222222", "eligible-root")
+                    self.insert_run(
+                        database,
+                        "child2222222",
+                        "eligible-child",
+                        source_run_id="root22222222",
+                    )
+                app.put_iteration_job(
+                    {
+                        "source_run_id": "root11111111",
+                        "lineage_origin_run_id": "root11111111",
+                        "baseline_run_id": "child1111111",
+                        "task_type": "Bug 修复",
+                        "target_sequence": 2,
+                        "status": "blocked",
+                        "stage": "当前代码基线无合规 Bug，已禁止自动重试",
+                    }
+                )
+                try:
+                    candidate = app.auto_refill_iteration_candidate()
+                finally:
+                    with app.ITERATION_JOB_LOCK:
+                        app.ITERATION_JOBS.pop("root11111111", None)
+
+        self.assertEqual(candidate["id"], "root22222222")
+        self.assertEqual(candidate["next_iteration_task_type"], "Bug 修复")
+
+    def test_failed_bugfix_generation_can_be_persistently_blocked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "cancel_background_job"
+            ) as cancel:
+                app.initialize_database()
+                with app.db_connection() as database:
+                    self.insert_run(database, "root11111111", "blocked-root")
+                app.put_iteration_job(
+                    {
+                        "source_run_id": "root11111111",
+                        "lineage_origin_run_id": "root11111111",
+                        "task_type": "Bug 修复",
+                        "target_sequence": 1,
+                        "status": "failed",
+                        "stage": "生成失败",
+                    }
+                )
+                try:
+                    blocked = app.cancel_automatic_iteration(
+                        "root11111111",
+                        block_current_baseline=True,
+                    )
+                finally:
+                    with app.ITERATION_JOB_LOCK:
+                        app.ITERATION_JOBS.pop("root11111111", None)
+
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertIsNone(blocked["cooldown_until_epoch"])
+        cancel.assert_not_called()
+
     def test_terminal_iteration_without_product_does_not_block_refill_lineage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -16704,6 +16780,49 @@ class IterationGenerationTests(unittest.TestCase):
 
             record_skip.assert_not_called()
             record_failure.assert_called_once()
+        finally:
+            with app.ITERATION_JOB_LOCK:
+                app.ITERATION_JOBS.pop("source111111", None)
+
+    def test_auto_refill_blocks_bugfix_after_candidate_quality_is_exhausted(self):
+        detail = (
+            f"连续 {app.ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求："
+            "独立复核未确认任何真实 Bug，候选与已完成问题重复"
+        )
+        with app.ITERATION_JOB_LOCK:
+            app.ITERATION_JOBS["source111111"] = {
+                "status": "generating",
+                "baseline_run_id": "baseline1111",
+                "lineage_origin_run_id": "source111111",
+                "task_type": "Bug 修复",
+                "target_sequence": 5,
+            }
+        try:
+            with mock.patch.object(
+                app,
+                "generate_and_start_iteration",
+                side_effect=app.WorkflowError(detail),
+            ), mock.patch.object(app, "add_event"), mock.patch.object(
+                app, "record_auto_refill_candidate_skip"
+            ) as record_skip, mock.patch.object(
+                app, "record_auto_refill_failure"
+            ) as record_failure:
+                app.automatic_iteration_worker(
+                    "source111111",
+                    "Bug 修复",
+                    False,
+                    True,
+                )
+
+            with app.ITERATION_JOB_LOCK:
+                job = dict(app.ITERATION_JOBS["source111111"])
+            self.assertEqual(job["status"], "blocked")
+            self.assertEqual(job["baseline_run_id"], "baseline1111")
+            self.assertEqual(job["target_sequence"], 5)
+            self.assertIsNone(job["cooldown_until_epoch"])
+            self.assertIn("禁止自动重试", job["stage"])
+            record_skip.assert_called_once()
+            record_failure.assert_not_called()
         finally:
             with app.ITERATION_JOB_LOCK:
                 app.ITERATION_JOBS.pop("source111111", None)

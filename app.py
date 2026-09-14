@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.59"
+APP_VERSION = "20260915.60"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -1778,6 +1778,7 @@ def initialize_database() -> None:
               last_error TEXT,
               created_run_id TEXT,
               cooldown_until_epoch INTEGER,
+              target_sequence INTEGER,
               started_at TEXT,
               updated_at TEXT NOT NULL
             );
@@ -1959,6 +1960,10 @@ def initialize_database() -> None:
         }
         if "stage" not in iteration_job_columns:
             database.execute("ALTER TABLE iteration_jobs ADD COLUMN stage TEXT")
+        if "target_sequence" not in iteration_job_columns:
+            database.execute(
+                "ALTER TABLE iteration_jobs ADD COLUMN target_sequence INTEGER"
+            )
         turn_columns = {
             row["name"] for row in database.execute("PRAGMA table_info(run_turns)")
         }
@@ -2125,8 +2130,8 @@ def put_iteration_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 """INSERT INTO iteration_jobs(
                  source_run_id, baseline_run_id, lineage_origin_run_id, task_type,
                  auto_refill, status, stage, recovery_count, last_error, created_run_id,
-                 cooldown_until_epoch, started_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cooldown_until_epoch, target_sequence, started_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(source_run_id) DO UPDATE SET
                  baseline_run_id = excluded.baseline_run_id,
                  lineage_origin_run_id = excluded.lineage_origin_run_id,
@@ -2138,6 +2143,7 @@ def put_iteration_job(job: Dict[str, Any]) -> Dict[str, Any]:
                  last_error = excluded.last_error,
                  created_run_id = excluded.created_run_id,
                  cooldown_until_epoch = excluded.cooldown_until_epoch,
+                 target_sequence = excluded.target_sequence,
                  started_at = excluded.started_at,
                  updated_at = excluded.updated_at""",
                 (
@@ -2152,6 +2158,7 @@ def put_iteration_job(job: Dict[str, Any]) -> Dict[str, Any]:
                     str(normalized.get("error") or normalized.get("last_error") or "") or None,
                     normalized.get("created_run_id"),
                     normalized.get("cooldown_until_epoch"),
+                    normalized.get("target_sequence"),
                     normalized.get("started_at"),
                     normalized["updated_at"],
                 ),
@@ -6372,6 +6379,8 @@ def automatic_iteration_worker(
             "updated_at": now_text(),
         }
     except JobCancelled:
+        if str(get_iteration_job(source_run_id).get("status") or "") == "blocked":
+            return
         restarting = SERVICE_SHUTTING_DOWN.is_set()
         if restarting:
             result = dict(get_iteration_job(source_run_id))
@@ -6410,6 +6419,9 @@ def automatic_iteration_worker(
                 pass
     except Exception as exc:  # background boundary
         detail = str(exc).strip() or "自动生成迭代需求失败"
+        current_job = get_iteration_job(source_run_id)
+        baseline_run_id = str(current_job.get("baseline_run_id") or "") or None
+        target_sequence = current_job.get("target_sequence")
         generation_exhausted = (
             isinstance(exc, WorkflowError)
             and detail.startswith(
@@ -6420,10 +6432,12 @@ def automatic_iteration_worker(
             fallback_job = {
                 "status": "generating",
                 "source_run_id": source_run_id,
+                "baseline_run_id": baseline_run_id,
                 "lineage_origin_run_id": source_run_id,
                 "task_type": "Feature 迭代",
                 "auto_refill": True,
                 "recovery_count": 0,
+                "target_sequence": target_sequence,
                 "last_error": detail,
                 "stage": "完整模块未通过，改写为 Feature",
                 "updated_at": now_text(),
@@ -6456,10 +6470,12 @@ def automatic_iteration_worker(
             retry_job = {
                 "status": "generating",
                 "source_run_id": source_run_id,
+                "baseline_run_id": baseline_run_id,
                 "lineage_origin_run_id": source_run_id,
                 "task_type": target_task_type,
                 "auto_refill": True,
                 "recovery_count": next_recovery,
+                "target_sequence": target_sequence,
                 "last_error": detail,
                 "stage": "定向修订中",
                 "updated_at": now_text(),
@@ -6492,17 +6508,35 @@ def automatic_iteration_worker(
                 daemon=True,
             ).start()
             return
+        infrastructure_markers = (
+            "超时", "api error", "认证", "鉴权", "连接失败", "请求失败",
+            "模型调用失败", "无响应", "限流",
+        )
+        candidate_quality_failure = generation_exhausted and not any(
+            marker in detail.casefold() for marker in infrastructure_markers
+        )
+        block_bugfix_retry = bool(
+            auto_refill
+            and target_task_type == "Bug 修复"
+            and candidate_quality_failure
+        )
         result = {
-            "status": "failed",
+            "status": "blocked" if block_bugfix_retry else "failed",
             "source_run_id": source_run_id,
             "error": detail,
             "task_type": target_task_type,
-            "stage": "生成失败",
+            "stage": (
+                "当前代码基线无合规 Bug，已禁止自动重试"
+                if block_bugfix_retry
+                else "生成失败"
+            ),
             "auto_refill": auto_refill,
             "lineage_origin_run_id": source_run_id,
+            "baseline_run_id": baseline_run_id,
+            "target_sequence": target_sequence,
             "cooldown_until_epoch": (
                 int(time.time()) + AUTO_REFILL_SOURCE_COOLDOWN_SECONDS
-                if auto_refill else None
+                if auto_refill and not block_bugfix_retry else None
             ),
             "updated_at": now_text(),
         }
@@ -6511,14 +6545,8 @@ def automatic_iteration_worker(
         except Exception as event_exc:
             log_workflow_exception(source_run_id, "iteration-failed-event", event_exc)
         if auto_refill:
-            failure_detail = f"{source_run_id} 的{target_task_type}暂时跳过：{detail}"
-            infrastructure_markers = (
-                "超时", "api error", "认证", "鉴权", "连接失败", "请求失败",
-                "模型调用失败", "无响应", "限流",
-            )
-            candidate_quality_failure = generation_exhausted and not any(
-                marker in detail.casefold() for marker in infrastructure_markers
-            )
+            skip_wording = "当前代码基线已禁止重试" if block_bugfix_retry else "暂时跳过"
+            failure_detail = f"{source_run_id} 的{target_task_type}{skip_wording}：{detail}"
             if candidate_quality_failure:
                 record_auto_refill_candidate_skip(failure_detail)
             else:
@@ -6547,7 +6575,7 @@ def queue_automatic_iteration(
         }
     if automatic_refill_occupancy() >= MAX_PARALLEL_RUNS:
         raise WorkflowError(f"当前并行任务已达到 {MAX_PARALLEL_RUNS} 个，请等待空闲槽")
-    validate_iteration_lineage_type(source_run_id, target_task_type)
+    lineage_state = validate_iteration_lineage_type(source_run_id, target_task_type)
     row = run_row(source_run_id)
     # Resolve the lineage below before accepting the workspace; stopped runs
     # are valid inputs only when the resolver can prove a completed, clean
@@ -6579,6 +6607,7 @@ def queue_automatic_iteration(
         "baseline_run_id": baseline_run_id,
         "lineage_origin_run_id": lineage_origin_run_id,
         "task_type": target_task_type,
+        "target_sequence": int(lineage_state.get("iteration_count") or 0) + 1,
         "stage": "生成候选 1/2",
         "started_at": now_text(),
     }
@@ -6596,23 +6625,51 @@ def queue_automatic_iteration(
     return dict(job)
 
 
-def cancel_automatic_iteration(source_run_id: str) -> Dict[str, Any]:
+def cancel_automatic_iteration(
+    source_run_id: str,
+    block_current_baseline: bool = False,
+) -> Dict[str, Any]:
     run_row(source_run_id)
     job = get_iteration_job(source_run_id)
-    if not job or job.get("status") != "generating":
+    if not job:
+        raise WorkflowError("当前没有可处理的迭代需求")
+    was_generating = job.get("status") == "generating"
+    if not was_generating and not block_current_baseline:
         raise WorkflowError("当前没有正在生成的迭代需求")
-    cancel_background_job(f"iteration:{source_run_id}")
+    if block_current_baseline and str(job.get("task_type") or "") != "Bug 修复":
+        raise WorkflowError("只有 Bug 修复题生成可以禁止当前代码基线重试")
+    if block_current_baseline and not job.get("target_sequence"):
+        state = iteration_lineage_state(source_run_id)
+        job["target_sequence"] = int(state["iteration_count"]) + 1
     job.update(
         {
-            "status": "stopped",
-            "stage": "已取消",
-            "error": "迭代题面生成已由用户取消",
+            "status": "blocked" if block_current_baseline else "stopped",
+            "stage": (
+                "当前代码基线已禁止 Bug 修复重试"
+                if block_current_baseline
+                else "已取消"
+            ),
+            "error": (
+                "当前代码基线已由用户禁止再次生成 Bug 修复题"
+                if block_current_baseline
+                else "迭代题面生成已由用户取消"
+            ),
             "cooldown_until_epoch": None,
             "updated_at": now_text(),
         }
     )
     put_iteration_job(job)
-    add_event(source_run_id, "用户取消了迭代题面生成", "warning")
+    if was_generating:
+        cancel_background_job(f"iteration:{source_run_id}")
+    add_event(
+        source_run_id,
+        (
+            "当前代码基线已禁止再次自动生成 Bug 修复题"
+            if block_current_baseline
+            else "用户取消了迭代题面生成"
+        ),
+        "warning",
+    )
     AUTO_REFILL_WAKE.set()
     return job
 
@@ -6711,11 +6768,29 @@ def auto_refill_iteration_candidate() -> Optional[Dict[str, Any]]:
         if job.get("status") == "failed"
         and int(job.get("cooldown_until_epoch") or 0) > now_epoch
     }
+    blocked_jobs = {
+        str(job.get("lineage_origin_run_id") or job.get("source_run_id") or ""): job
+        for job in jobs
+        if job.get("status") == "blocked"
+    }
+
+    def blocked_for_current_target(candidate: Dict[str, Any]) -> bool:
+        job = blocked_jobs.get(str(candidate["id"]))
+        if not job:
+            return False
+        return bool(
+            str(job.get("task_type") or "")
+            == str(candidate.get("next_iteration_task_type") or "")
+            and int(job.get("target_sequence") or 0)
+            == int(candidate.get("iteration_count") or 0) + 1
+        )
+
     candidates = [
         candidate
         for candidate in candidates
         if str(candidate["id"]) not in generating_origins
         and str(candidate["id"]) not in cooling_origins
+        and not blocked_for_current_target(candidate)
     ]
     candidates.sort(
         key=lambda candidate: (
@@ -6745,6 +6820,7 @@ def queue_refill_iteration(source_run_id: str) -> Dict[str, Any]:
         "lineage_origin_run_id": source_run_id,
         "task_type": target_task_type,
         "auto_refill": True,
+        "target_sequence": int(candidate["iteration_count"]) + 1,
         "stage": "生成候选 1/2",
         "started_at": now_text(),
     }
@@ -26528,7 +26604,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 r"/api/runs/([a-f0-9]{12})/auto-iteration-cancel", path
             )
             if cancel_iteration:
-                self.send_json(cancel_automatic_iteration(cancel_iteration.group(1)))
+                self.send_json(
+                    cancel_automatic_iteration(
+                        cancel_iteration.group(1),
+                        bool(payload.get("block_current_baseline")),
+                    )
+                )
                 return
             second = re.fullmatch(r"/api/runs/([a-f0-9]{12})/second-turn", path)
             if second:

@@ -8469,7 +8469,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(result["next_action"], "complete")
         self.assertEqual(result["evaluation"]["delivery"]["score"], 5)
 
-    def test_review_keeps_full_findings_trace_and_compacts_only_scoring_trace(self):
+    def test_review_compacts_findings_trace_but_scores_from_full_trace(self):
         findings = {
             "summary": "未发现确定问题",
             "next_action": "complete",
@@ -8532,13 +8532,9 @@ class ReviewTests(unittest.TestCase):
                 return_value=findings,
             ) as runner, mock.patch.object(
                 app,
-                "run_codex_split_regrade",
+                "run_codex_regrade",
                 return_value=evaluation,
-            ) as split, mock.patch.object(
-                app,
-                "normalize_evaluation_with_targeted_repairs",
-                return_value=evaluation,
-            ):
+            ) as scorer:
                 app.run_codex_review(
                     repo,
                     "原始题面",
@@ -8548,15 +8544,18 @@ class ReviewTests(unittest.TestCase):
                 )
 
         findings_prompt = runner.call_args.args[0]
-        scoring_trajectory = split.call_args.args[3]
-        self.assertIn(full_trajectory, findings_prompt)
-        self.assertNotEqual(full_trajectory, scoring_trajectory)
+        findings_trajectory = findings_prompt.split(
+            "第一轮操作轨迹：\n", 1
+        )[1].rstrip()
+        self.assertNotIn(full_trajectory, findings_prompt)
+        self.assertNotEqual(full_trajectory, findings_trajectory)
         self.assertLessEqual(
-            len(scoring_trajectory),
-            app.EVALUATION_SCORING_TRAJECTORY_MAX_CHARS,
+            len(findings_trajectory),
+            app.REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS,
         )
-        self.assertIn("TRACE_SOURCE ", scoring_trajectory)
-        self.assertIn("STEP_INDEX 1 ", scoring_trajectory)
+        self.assertIn("TRACE_SOURCE ", findings_trajectory)
+        self.assertIn("STEP_INDEX 1 ", findings_trajectory)
+        self.assertEqual(scorer.call_args.args[3], full_trajectory)
 
     def test_review_output_limit_immediately_retries_findings_with_compact_trace(self):
         findings = {
@@ -8575,28 +8574,25 @@ class ReviewTests(unittest.TestCase):
                 "Incomplete response returned, reason: max_output_tokens"
             )
             evaluation = with_score_stage(sample_evaluation())
+            full_trajectory = "完整长轨迹" * 15_000
             with mock.patch.object(
                 app,
                 "scoring_trajectory_excerpt",
-                return_value="可信紧凑轨迹",
+                side_effect=["首次紧凑轨迹", "重试紧凑轨迹"],
             ) as compact, mock.patch.object(
                 app,
                 "run_codex_structured",
                 side_effect=[output_limit, findings],
             ) as runner, mock.patch.object(
                 app,
-                "run_codex_split_regrade",
+                "run_codex_regrade",
                 return_value=evaluation,
-            ) as split, mock.patch.object(
-                app,
-                "normalize_evaluation_with_targeted_repairs",
-                return_value=evaluation,
-            ):
+            ) as scorer:
                 result = app.run_codex_review(
                     repo,
                     "原始题面",
                     [],
-                    "完整长轨迹",
+                    full_trajectory,
                     trajectory_source_path=trace,
                 )
 
@@ -8607,11 +8603,28 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(
             runner.call_args_list[1].kwargs["reasoning_effort"], "low"
         )
-        self.assertIn("完整长轨迹", runner.call_args_list[0].args[0])
-        self.assertIn("可信紧凑轨迹", runner.call_args_list[1].args[0])
-        self.assertEqual(split.call_args.args[3], "可信紧凑轨迹")
+        self.assertIn("首次紧凑轨迹", runner.call_args_list[0].args[0])
+        self.assertIn("重试紧凑轨迹", runner.call_args_list[1].args[0])
+        self.assertEqual(scorer.call_args.args[3], full_trajectory)
         self.assertEqual(compact.call_count, 2)
-        compact.assert_any_call("完整长轨迹", trace, "原始题面")
+        self.assertEqual(
+            compact.call_args_list[0].args,
+            (
+                full_trajectory,
+                trace,
+                "原始题面",
+                app.REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS,
+            ),
+        )
+        self.assertEqual(
+            compact.call_args_list[1].args,
+            (
+                full_trajectory,
+                trace,
+                "原始题面",
+                app.EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS,
+            ),
+        )
 
     def test_final_review_also_splits_findings_from_evaluation_output(self):
         findings = {
@@ -10708,7 +10721,7 @@ class ReviewTests(unittest.TestCase):
         self.assertIsNone(stored_turn["review_result"])
         schedule_retry.assert_called_once()
 
-    def test_review_worker_retry_compacts_findings_trace_and_uses_low_reasoning(self):
+    def test_review_worker_retry_preserves_full_trace_and_uses_low_reasoning(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo = root / "repo"
@@ -10744,9 +10757,6 @@ class ReviewTests(unittest.TestCase):
                         ("compact11111", str(trace), timestamp, timestamp),
                     )
                 full_trajectory = "FULL-" + "x" * 80_000
-                compact_trajectory = "COMPACT-" + "y" * (
-                    app.EVALUATION_SCORING_TRAJECTORY_MAX_CHARS - 8
-                )
                 review_result = {
                     "summary": "检查完成",
                     "next_action": "complete",
@@ -10760,22 +10770,13 @@ class ReviewTests(unittest.TestCase):
                     "transcript_excerpt_from_path",
                     return_value=full_trajectory,
                 ), mock.patch.object(
-                    app,
-                    "scoring_trajectory_excerpt",
-                    return_value=compact_trajectory,
-                ) as compact, mock.patch.object(
                     app, "run_codex_review", return_value=review_result
                 ) as review, mock.patch.object(
                     app, "migrate_completed_legacy_iteration_directory"
                 ):
                     app.review_worker("compact11111")
 
-        compact.assert_called_once_with(full_trajectory, trace, "原始需求")
-        self.assertEqual(review.call_args.args[3], compact_trajectory)
-        self.assertLessEqual(
-            len(review.call_args.args[3]),
-            app.EVALUATION_SCORING_TRAJECTORY_MAX_CHARS,
-        )
+        self.assertEqual(review.call_args.args[3], full_trajectory)
         self.assertEqual(review.call_args.kwargs["findings_reasoning_effort"], "low")
 
     def test_review_worker_preserves_evidence_draft_and_stops_automatic_retry(self):

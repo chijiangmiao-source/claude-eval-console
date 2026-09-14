@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.58"
+APP_VERSION = "20260914.59"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -203,6 +203,7 @@ AUTO_REFILL_SOURCE_COOLDOWN_SECONDS = 30 * 60
 AUTO_REFILL_FAILURE_LIMIT = 3
 CONTROL_STAGE_RETRY_LIMIT = 2
 CONTROL_STAGE_RETRY_BASE_SECONDS = 15
+REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS = 60_000
 EVALUATION_SCORING_TRAJECTORY_MAX_CHARS = 60_000
 EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS = 24_000
 EVALUATION_PUBLIC_HISTORY_LIMIT = 20
@@ -7511,11 +7512,11 @@ def scoring_trajectory_excerpt(
     current_prompt: str,
     max_chars: int = EVALUATION_SCORING_TRAJECTORY_MAX_CHARS,
 ) -> str:
-    """Compact only the score-stage copy while retaining a trusted STEP map.
+    """Build a bounded evidence copy while retaining a trusted STEP map.
 
-    The product findings pass still receives the fuller excerpt.  Score-stage
-    validators can reconstruct omitted evidence from the permanent JSONL via
-    the compact manifest, so prompt compaction does not relax grounding.
+    The permanent JSONL remains the source of truth for later scoring,
+    exporting, and upload. Callers can independently derive bounded copies
+    for each model stage without replacing that permanent evidence.
     """
     source = str(trajectory or "")
     if len(source) <= max_chars:
@@ -23667,12 +23668,35 @@ def run_codex_review(
     existing_findings: Optional[Dict[str, Any]] = None,
     findings_notifier: Optional[Callable[[Dict[str, Any]], None]] = None,
     findings_reasoning_effort: str = "",
+    evaluation_trajectory: Optional[str] = None,
 ) -> Dict[str, Any]:
     schema = review_findings_schema("bugs")
+    full_evaluation_trajectory = (
+        trajectory if evaluation_trajectory is None else evaluation_trajectory
+    )
+    findings_trajectory = trajectory
+    findings_trajectory_limit = (
+        EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS
+        if findings_reasoning_effort == "low"
+        else REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS
+    )
+    if (
+        len(findings_trajectory) > findings_trajectory_limit
+        and trajectory_source_path is not None
+        and trajectory_source_path.is_file()
+    ):
+        findings_trajectory = scoring_trajectory_excerpt(
+            findings_trajectory,
+            trajectory_source_path,
+            original_prompt,
+            findings_trajectory_limit,
+        )
     verification_text = json.dumps(verification, ensure_ascii=False)
     if len(verification_text) > 24000:
         verification_text = verification_text[-24000:]
-    final_verification_summary = trajectory_final_verification_summary(trajectory)
+    final_verification_summary = trajectory_final_verification_summary(
+        full_evaluation_trajectory
+    )
     prompt = f"""只读检查这个项目的第一轮交付，不得修改文件。完整对照原始需求、仓库实现、Docker 验收结果和 Claude Code 本轮轨迹，检查功能正确性、遗漏、异常路径、持久化、并发、界面交互和 Docker 配置。可在隔离环境中执行必要的复现命令。本次只返回代码复核结论、Bug 和质量缺口，五维评分由后续独立调用完成，不能在本次输出 evaluation。验收项中的 failure_kind=environment 表示端口占用、Docker 守护进程或临时网络等环境失败，不能当成产品 Bug；应从仓库和可重复命令继续判断。bugs 只允许记录已经稳定复现且与本轮 User Prompt 验收范围直接相关的业务错误，包括本轮功能自身错误和本轮改动造成的相关回归；仓库中与本轮范围无关的历史问题只能写入 quality_gaps，也不得要求修改相应代码。每条 Bug 都必须分别填写 reproduction、actual、expected、evidence、fix 和 customer_summary，evidence 要包含实际命令、响应、日志或数据库状态。未实际复现的风险、缺少测试、覆盖不足、文档不足和代码结构问题只能写入 quality_gaps，不能进入 bugs，也不能触发修复轮。只有 bugs 非空时 next_action 才能是 bugfix。{BUG_REPAIR_PROMPT_STYLE_GUIDANCE}没有已复现 Bug 时 next_action 必须是 complete 且 bugs 为空；quality_gaps 可以非空，但不得为了增加轮次虚构 Bug。
 
 	本轮当前产物 commit：{commit_sha}
@@ -23688,7 +23712,7 @@ def run_codex_review(
 后续同类检查决定当前产物状态；原作业中已经发生的失败、漏验或虚假完成声明仍是过程事实，引用后续结果时必须明确标注为后续独立验收。
 
 第一轮操作轨迹：
-{trajectory or '未取得轨迹内容'}
+{findings_trajectory or '未取得轨迹内容'}
 """
     raw_result = existing_findings
     if raw_result is None:
@@ -23712,6 +23736,7 @@ def run_codex_review(
                 trajectory,
                 trajectory_source_path,
                 original_prompt,
+                EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS,
             )
             return run_codex_review(
                 repo_path,
@@ -23725,6 +23750,7 @@ def run_codex_review(
                 existing_findings=None,
                 findings_notifier=findings_notifier,
                 findings_reasoning_effort="low",
+                evaluation_trajectory=full_evaluation_trajectory,
             )
     findings, legacy_evaluation = normalize_review_findings(
         raw_result,
@@ -23742,7 +23768,7 @@ def run_codex_review(
         repo_path,
         original_prompt,
         verification,
-        trajectory,
+        full_evaluation_trajectory,
         1,
         trajectory_source_path,
         commit_sha,
@@ -23766,12 +23792,35 @@ def run_codex_final_review(
     existing_findings: Optional[Dict[str, Any]] = None,
     findings_notifier: Optional[Callable[[Dict[str, Any]], None]] = None,
     findings_reasoning_effort: str = "",
+    evaluation_trajectory: Optional[str] = None,
 ) -> Dict[str, Any]:
     schema = review_findings_schema("remaining_bugs")
+    full_evaluation_trajectory = (
+        trajectory if evaluation_trajectory is None else evaluation_trajectory
+    )
+    findings_trajectory = trajectory
+    findings_trajectory_limit = (
+        EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS
+        if findings_reasoning_effort == "low"
+        else REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS
+    )
+    if (
+        len(findings_trajectory) > findings_trajectory_limit
+        and trajectory_source_path is not None
+        and trajectory_source_path.is_file()
+    ):
+        findings_trajectory = scoring_trajectory_excerpt(
+            findings_trajectory,
+            trajectory_source_path,
+            second_prompt,
+            findings_trajectory_limit,
+        )
     verification_text = json.dumps(verification, ensure_ascii=False)
     if len(verification_text) > 24000:
         verification_text = verification_text[-24000:]
-    final_verification_summary = trajectory_final_verification_summary(trajectory)
+    final_verification_summary = trajectory_final_verification_summary(
+        full_evaluation_trajectory
+    )
     prompt = f"""只读验收这个项目当前轮次的交付，不得修改文件。当前轮次是一条独立数据，请以本轮 User Prompt 为主要目标，同时结合第一轮原始需求判断回归。可在隔离环境中执行必要的复现命令。本次只返回代码复核结论、remaining_bugs 和质量缺口，五维评分由后续独立调用完成，不能在本次输出 evaluation。验收项中的 failure_kind=environment 表示环境故障，不能当成产品 Bug。remaining_bugs 只允许记录已经稳定复现且与当前迭代或修复范围直接相关的业务错误；仓库中与本次范围无关的历史问题只能写入 quality_gaps，也不得要求修改相应代码。每条 Bug 必须分别填写 reproduction、actual、expected、evidence、fix 和 customer_summary，证据包含实际命令、响应、日志或数据库状态。未复现风险、缺少测试、覆盖不足、文档不足和代码结构问题只能写入 quality_gaps，不能触发下一轮。只有 remaining_bugs 非空时 next_action 才能为 bugfix。{BUG_REPAIR_PROMPT_STYLE_GUIDANCE}没有已复现 Bug 时 next_action 必须为 complete 且 remaining_bugs 为空，quality_gaps 可以非空。不得为了延长轮次虚构问题。
 
 	本轮当前产物 commit：{commit_sha}
@@ -23790,7 +23839,7 @@ def run_codex_final_review(
 后续同类检查决定当前产物状态；原作业中已经发生的失败、漏验或虚假完成声明仍是过程事实，引用后续结果时必须明确标注为后续独立验收。
 
 当前轮次操作轨迹：
-{trajectory or '未取得轨迹内容'}
+{findings_trajectory or '未取得轨迹内容'}
 """
     raw_result = existing_findings
     if raw_result is None:
@@ -23814,6 +23863,7 @@ def run_codex_final_review(
                 trajectory,
                 trajectory_source_path,
                 second_prompt,
+                EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS,
             )
             return run_codex_final_review(
                 repo_path,
@@ -23829,6 +23879,7 @@ def run_codex_final_review(
                 existing_findings=None,
                 findings_notifier=findings_notifier,
                 findings_reasoning_effort="low",
+                evaluation_trajectory=full_evaluation_trajectory,
             )
     findings, legacy_evaluation = normalize_review_findings(
         raw_result,
@@ -23847,7 +23898,7 @@ def run_codex_final_review(
         repo_path,
         second_prompt,
         verification,
-        trajectory,
+        full_evaluation_trajectory,
         turn_number,
         trajectory_source_path,
         commit_sha,
@@ -24588,18 +24639,17 @@ def review_worker(run_id: str) -> None:
             if trajectory_path.is_file()
             else transcript_excerpt(str(row["session_id"] or ""), prompt_id or None)
         )
+        if len(trajectory) > REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS:
+            add_event(
+                run_id,
+                "找 Bug 使用紧凑证据副本；五维评分、归档和上传继续读取永久完整轨迹",
+            )
         findings_reasoning_effort = ""
         if int(row["stage_retry_count"] or 0) > 0:
-            if trajectory_path.is_file():
-                trajectory = scoring_trajectory_excerpt(
-                    trajectory,
-                    trajectory_path,
-                    str(row["first_prompt"] or ""),
-                )
             findings_reasoning_effort = "low"
             add_event(
                 run_id,
-                "首轮复核重试改用紧凑永久轨迹和低推理强度",
+                "首轮复核重试改用更短的紧凑证据副本和低推理强度",
                 "warning",
             )
         def note_evaluation_repair(label: str, detail: str) -> None:
@@ -24915,18 +24965,17 @@ def final_review_worker(run_id: str) -> None:
                 str(turn["prompt_id"] or "") or None,
             )
         )
+        if len(trajectory) > REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS:
+            add_event(
+                run_id,
+                f"第 {turn_number} 轮找 Bug 使用紧凑证据副本；五维评分、归档和上传继续读取永久完整轨迹",
+            )
         findings_reasoning_effort = ""
         if int(row["stage_retry_count"] or 0) > 0:
-            if trajectory_path.is_file():
-                trajectory = scoring_trajectory_excerpt(
-                    trajectory,
-                    trajectory_path,
-                    str(turn["prompt"] or ""),
-                )
             findings_reasoning_effort = "low"
             add_event(
                 run_id,
-                f"第 {turn_number} 轮复核重试改用紧凑永久轨迹和低推理强度",
+                f"第 {turn_number} 轮复核重试改用更短的紧凑证据副本和低推理强度",
                 "warning",
             )
         def note_evaluation_repair(label: str, detail: str) -> None:

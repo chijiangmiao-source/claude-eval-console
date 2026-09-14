@@ -30,7 +30,7 @@ import uuid
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
@@ -132,7 +132,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.46"
+APP_VERSION = "20260914.47"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -166,9 +166,9 @@ BUILTIN_MODEL_OPTIONS = [
     ("haiku", "Haiku"),
 ]
 try:
-    MAX_PARALLEL_RUNS = max(1, min(6, int(os.environ.get("CLAUDE_EVAL_MAX_PARALLEL", "6"))))
+    MAX_PARALLEL_RUNS = max(1, min(4, int(os.environ.get("CLAUDE_EVAL_MAX_PARALLEL", "4"))))
 except ValueError:
-    MAX_PARALLEL_RUNS = 6
+    MAX_PARALLEL_RUNS = 4
 REVIEW_MODEL = "gpt-5.6-sol"
 TASK_GENERATION_MODEL = REVIEW_MODEL
 TASK_GENERATION_BATCH_SIZE = 2
@@ -12064,6 +12064,7 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
         final_index: Optional[int] = None
         api_error = ""
         api_error_index: Optional[int] = None
+        api_error_count = 0
         for index in range(start_index + 1, next_prompt_index):
             event = events[index]
             message = event.get("message") if isinstance(event.get("message"), dict) else {}
@@ -12080,6 +12081,7 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
                 status = str(event.get("apiErrorStatus") or "").strip()
                 api_error = assistant_text or f"API Error: {status or 'unknown'}"
                 api_error_index = index
+                api_error_count += 1
                 continue
             if text_blocks and message.get("stop_reason") in {"end_turn", "stop_sequence"}:
                 final_text = assistant_text
@@ -12115,6 +12117,7 @@ def trace_turn_state(trace_root: Path, prompt: str) -> Optional[Dict[str, Any]]:
             "result": final_text,
             "complete": complete,
             "api_error": api_error if unresolved_api_error else "",
+            "api_error_count": api_error_count,
             "interrupted": bool(not complete and interruption_reason),
             "interruption_reason": interruption_reason if not complete else "",
             "path": path,
@@ -12192,17 +12195,53 @@ def preserve_interrupted_docker_turn(run_id: str, turn_number: int, reason: str)
     add_event(run_id, reason, "warning")
 
 
+def api_error_status(detail: str) -> Optional[int]:
+    """Extract a known HTTP status from the different Claude API error formats."""
+    text = str(detail or "")
+    if "api error" not in text.casefold():
+        return None
+    for status in RETRYABLE_API_STATUS_CODES | {401, 403, 404}:
+        if re.search(rf"(?:\({status}\)|\b{status}\b)", text):
+            return status
+    return None
+
+
 def retryable_api_error(detail: str) -> bool:
-    match = re.search(r"API Error:\s*(\d{3})", str(detail or ""), re.I)
-    return bool(match and int(match.group(1)) in RETRYABLE_API_STATUS_CODES)
+    return api_error_status(detail) in RETRYABLE_API_STATUS_CODES
 
 
-def api_resume_event_message(turn_number: int) -> str:
-    return f"第 {turn_number} 轮 API 临时中断，已在原会话自动发送一次“继续”"
+def rate_limited_api_error(detail: str) -> bool:
+    return api_error_status(detail) == 429
 
 
-def api_resume_already_attempted(run_id: str, turn_number: int) -> bool:
-    marker = api_resume_event_message(turn_number)
+def api_rate_limit_reset_epoch(detail: str) -> Optional[int]:
+    """Return the advertised UTC reset time with a small safety margin."""
+    match = re.search(
+        r"Limit resets at:\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*UTC",
+        str(detail or ""),
+        re.I,
+    )
+    if not match:
+        return None
+    try:
+        reset_at = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return int(reset_at.replace(tzinfo=timezone.utc).timestamp()) + 2
+
+
+def api_resume_event_message(turn_number: int, attempt: int = 1) -> str:
+    if attempt <= 1:
+        return f"第 {turn_number} 轮 API 临时中断，已在原会话自动发送一次“继续”"
+    return f"第 {turn_number} 轮 API 再次限流，已在原会话第 {attempt} 次发送“继续”"
+
+
+def api_resume_already_attempted(
+    run_id: str,
+    turn_number: int,
+    attempt: int = 1,
+) -> bool:
+    marker = api_resume_event_message(turn_number, attempt)
     with db_connection() as database:
         found = database.execute(
             "SELECT 1 FROM events WHERE run_id = ? AND message = ? LIMIT 1",
@@ -12231,12 +12270,13 @@ def resume_after_api_error(
     run_id: str,
     turn_number: int,
     screen_name: str,
+    attempt: int = 1,
 ) -> bool:
-    """Resume the same Claude session once before creating a fresh retry run."""
-    if api_resume_already_attempted(run_id, turn_number):
+    """Resume the same Claude session once for each observed API interruption."""
+    if api_resume_already_attempted(run_id, turn_number, attempt):
         return False
     send_api_resume_to_screen(run_id, screen_name)
-    marker = api_resume_event_message(turn_number)
+    marker = api_resume_event_message(turn_number, attempt)
     add_event(run_id, marker, "warning")
     update_run(
         run_id,
@@ -12459,18 +12499,47 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
                     update_run(run_id, second_prompt_id=prompt_id)
             if trace_state.get("api_error"):
                 api_error = str(trace_state["api_error"])
+                rate_limited = rate_limited_api_error(api_error)
+                resume_send_failed = False
                 if retryable_api_error(api_error):
+                    if rate_limited:
+                        reset_epoch = api_rate_limit_reset_epoch(api_error)
+                        if reset_epoch and reset_epoch > int(time.time()):
+                            reset_text = datetime.fromtimestamp(
+                                reset_epoch
+                            ).astimezone().strftime("%H:%M:%S")
+                            update_run(
+                                run_id,
+                                status_detail=(
+                                    f"第 {turn_number} 轮遇到 429 并发限流，"
+                                    f"保留原终端，等待 {reset_text} 后发送“继续”"
+                                ),
+                                error=None,
+                                retry_not_before_epoch=reset_epoch,
+                            )
+                            time.sleep(POLL_SECONDS)
+                            continue
                     try:
-                        if resume_after_api_error(
-                            run_id,
-                            turn_number,
-                            str(row["screen_name"] or ""),
-                        ):
+                        if rate_limited:
+                            resumed = resume_after_api_error(
+                                run_id,
+                                turn_number,
+                                str(row["screen_name"] or ""),
+                                max(1, int(trace_state.get("api_error_count") or 1)),
+                            )
+                        else:
+                            resumed = resume_after_api_error(
+                                run_id,
+                                turn_number,
+                                str(row["screen_name"] or ""),
+                            )
+                        if resumed:
                             last_activity_at = time.monotonic()
                             inactivity_reported = False
                             time.sleep(POLL_SECONDS)
                             continue
                     except WorkflowError as exc:
+                        resume_send_failed = True
                         add_event(
                             run_id,
                             f"原会话自动继续失败，将改用新会话重跑：{exc}",
@@ -12485,6 +12554,20 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
                             status_detail=(
                                 f"第 {turn_number} 轮已发送“继续”，"
                                 "正在等待原会话恢复"
+                            ),
+                        )
+                        time.sleep(POLL_SECONDS)
+                        continue
+                    if rate_limited and not resume_send_failed:
+                        update_run(
+                            run_id,
+                            status_detail=(
+                                f"第 {turn_number} 轮 429 限流仍在恢复中，"
+                                "原终端保持运行并等待“继续”生效"
+                            ),
+                            error=None,
+                            retry_not_before_epoch=(
+                                int(time.time()) + API_RESUME_GRACE_SECONDS
                             ),
                         )
                         time.sleep(POLL_SECONDS)

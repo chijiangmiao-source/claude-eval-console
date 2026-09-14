@@ -6993,6 +6993,7 @@ class ParsingTests(unittest.TestCase):
             state = app.trace_turn_state(trace_root, "完成这个项目")
 
         self.assertEqual(state["api_error"], "API Error: 504 second")
+        self.assertEqual(state["api_error_count"], 2)
 
     def test_container_trace_detects_unresolved_user_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -7245,6 +7246,73 @@ class ParsingTests(unittest.TestCase):
         self.assertFalse(app.retryable_api_error("API Error: 403 model unavailable"))
         self.assertTrue(app.retryable_api_error("API Error: 504 Gateway Time-out"))
         self.assertTrue(app.retryable_api_error("API Error: 429 rate limited"))
+        parallel_limit = (
+            "API Error: Request rejected (429) · litellm.RateLimitError: "
+            "Limit type: max_parallel_requests. Current limit: 4, Remaining: 0. "
+            "Limit resets at: 2026-09-14 05:24:57 UTC"
+        )
+        self.assertTrue(app.retryable_api_error(parallel_limit))
+        self.assertTrue(app.rate_limited_api_error(parallel_limit))
+        expected_reset = int(
+            app.datetime.strptime(
+                "2026-09-14 05:24:57", "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=app.timezone.utc).timestamp()
+        ) + 2
+        self.assertEqual(app.api_rate_limit_reset_epoch(parallel_limit), expected_reset)
+
+    def test_repeated_429_keeps_original_terminal_instead_of_exporting_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "parallel-limit-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成这个项目",
+                    "_defer_start": True,
+                })
+                app.update_run(
+                    created["id"],
+                    phase="first_running",
+                    retry_not_before_epoch=int(time.time()) - 1,
+                )
+                app.update_turn(created["id"], 1, status="running")
+                app.add_event(
+                    created["id"], app.api_resume_event_message(1), "warning"
+                )
+                trace_state = {
+                    "session_id": "session-limit",
+                    "prompt_id": "prompt-limit",
+                    "result": "",
+                    "complete": False,
+                    "api_error": (
+                        "API Error: Request rejected (429) · "
+                        "Limit type: max_parallel_requests. Current limit: 4"
+                    ),
+                    "api_error_count": 1,
+                    "path": root / "session-limit.jsonl",
+                }
+
+                def stop_after_wait(_seconds):
+                    app.update_run(created["id"], phase="stopped")
+
+                with mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, trace_state)
+                ), mock.patch.object(
+                    app, "preserve_interrupted_docker_turn"
+                ) as preserve, mock.patch.object(
+                    app, "schedule_automatic_api_retry"
+                ) as auto_retry, mock.patch.object(
+                    app.time, "sleep", side_effect=stop_after_wait
+                ):
+                    app.monitor_docker_turn(created["id"], 1)
+
+        preserve.assert_not_called()
+        auto_retry.assert_not_called()
 
     def test_stopped_container_is_preserved_as_interrupted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -20335,8 +20403,8 @@ class ResilienceTests(unittest.TestCase):
 
 
 class ConcurrencyTests(unittest.TestCase):
-    def test_default_parallel_limit_is_six(self):
-        self.assertEqual(app.MAX_PARALLEL_RUNS, 6)
+    def test_default_parallel_limit_is_four(self):
+        self.assertEqual(app.MAX_PARALLEL_RUNS, 4)
 
     def test_ensure_job_active_rejects_service_shutdown(self):
         shutdown = threading.Event()

@@ -14626,7 +14626,7 @@ class DraftTests(unittest.TestCase):
             generate.assert_called_once_with(1, progress=mock.ANY)
             scheduler.assert_called_once_with(created["id"], "queued", app.first_turn_worker)
 
-    def test_repeated_automatic_create_returns_the_same_generating_run(self):
+    def test_automatic_create_allows_three_generating_runs_then_reuses_one(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
@@ -14637,10 +14637,16 @@ class DraftTests(unittest.TestCase):
                 app.initialize_database()
                 first = app.create_automatic_run({"project_directory": "team-a"})
                 second = app.create_automatic_run({"project_directory": "team-a"})
+                third = app.create_automatic_run({"project_directory": "team-a"})
+                capped = app.create_automatic_run({"project_directory": "team-a"})
 
-            self.assertEqual(first["id"], second["id"])
-            self.assertEqual(second["project_number"], "0001")
-            scheduler.assert_called_once()
+            self.assertNotEqual(first["id"], second["id"])
+            self.assertNotEqual(second["id"], third["id"])
+            self.assertIn(capped["id"], {first["id"], second["id"], third["id"]})
+            self.assertEqual(first["project_number"], "0001")
+            self.assertEqual(second["project_number"], "0002")
+            self.assertEqual(third["project_number"], "0003")
+            self.assertEqual(scheduler.call_count, 3)
 
     def test_failed_generation_retries_same_number_before_next_create_advances(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -14656,7 +14662,6 @@ class DraftTests(unittest.TestCase):
                 first = app.create_automatic_run({"project_directory": "team-a"})
                 app.automatic_generation_worker(first["id"])
                 retrying = app.serialize_run(app.run_row(first["id"]))
-                same = app.create_automatic_run({"project_directory": "team-a"})
                 app.automatic_generation_worker(first["id"])
                 failed = app.serialize_run(app.run_row(first["id"]))
                 second = app.create_automatic_run({"project_directory": "team-a"})
@@ -14664,7 +14669,6 @@ class DraftTests(unittest.TestCase):
             self.assertEqual(retrying["phase"], "generation_queued")
             self.assertEqual(retrying["generation_retry_count"], 1)
             self.assertEqual(retrying["generation_feedback"], "生成失败")
-            self.assertEqual(same["id"], first["id"])
             self.assertEqual(failed["phase"], "failed")
             self.assertEqual(failed["project_number"], "0001")
             self.assertEqual(failed["status_detail"], "题目生成失败")
@@ -15544,6 +15548,30 @@ class AutoRefillTests(unittest.TestCase):
                 create.assert_called_once_with(
                     {"project_directory": "team-a", "_auto_refill": True}
                 )
+
+    def test_refill_allows_three_parallel_new_0_1_generations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker") as scheduler:
+                app.initialize_database()
+                app.set_auto_refill({"enabled": True, "project_directory": "team-a"})
+
+                results = [app.automatic_refill_once() for _ in range(4)]
+
+            self.assertEqual(
+                [result["action"] for result in results],
+                ["0-1", "0-1", "0-1", "waiting_for_0_1_generation"],
+            )
+            self.assertEqual(
+                [results[index]["run"]["project_number"] for index in range(3)],
+                ["0001", "0002", "0003"],
+            )
+            self.assertEqual(results[3]["count"], app.TASK_GENERATION_MAX_PARALLEL)
+            self.assertEqual(scheduler.call_count, app.TASK_GENERATION_MAX_PARALLEL)
 
     def test_due_refill_schedule_enables_and_starts_a_new_project(self):
         with tempfile.TemporaryDirectory() as directory:

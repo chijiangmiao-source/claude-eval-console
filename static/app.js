@@ -1,4 +1,4 @@
-const UI_VERSION = "20260915.61";
+const UI_VERSION = "20260915.62";
 const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 const SOLO_QA_AUTO_REPAIR_POLL_MS = 3000;
@@ -245,10 +245,13 @@ function isRunning(phase) {
 }
 
 function renderNewRunButtonState() {
-  const generating = state.runs.find((run) => ["generation_queued", "generation_running"].includes(run.phase));
-  newRunButton.disabled = Boolean(generating);
-  newRunButton.innerHTML = generating
-    ? `${escapeHtml(generating.project_number || "新任务")} · 题目生成中…`
+  const generating = state.runs.filter((run) => ["generation_queued", "generation_running"].includes(run.phase));
+  const limit = Number(state.health.task_generation_max_parallel || 3);
+  newRunButton.disabled = generating.length >= limit;
+  newRunButton.innerHTML = generating.length
+    ? (newRunButton.disabled
+      ? `${generating.length}/${limit} · 题目生成中…`
+      : `<span>＋</span> 新建任务 · ${generating.length}/${limit} 生成中`)
     : '<span>＋</span> 新建任务';
 }
 

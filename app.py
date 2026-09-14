@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260915.61"
+APP_VERSION = "20260915.62"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -183,6 +183,7 @@ TASK_GENERATION_HISTORY_LIMIT = 15
 TASK_GENERATION_REVIEW_HISTORY_LIMIT = 10
 TASK_GENERATION_TIMEOUT_SECONDS = 10 * 60
 TASK_GENERATION_RETRY_LIMIT = 1
+TASK_GENERATION_MAX_PARALLEL = 3
 ITERATION_GENERATION_MODEL = REVIEW_MODEL
 ITERATION_GENERATION_ATTEMPTS = 2
 REPOSITORY_PROMPT_HISTORY_LIMIT = 40
@@ -7308,12 +7309,13 @@ def automatic_refill_once() -> Dict[str, Any]:
             generating = database.execute(
                 """SELECT id FROM runs
                    WHERE deleted_at IS NULL AND phase IN ('generation_queued', 'generation_running')
-                   ORDER BY created_at LIMIT 1"""
-            ).fetchone()
-        if generating:
+                   ORDER BY created_at, id"""
+            ).fetchall()
+        if len(generating) >= TASK_GENERATION_MAX_PARALLEL:
             return {
                 "action": "waiting_for_0_1_generation",
-                "run_id": str(generating["id"]),
+                "run_id": str(generating[0]["id"]),
+                "count": len(generating),
             }
         created = create_automatic_run(
             {
@@ -26207,11 +26209,13 @@ def retry_automatic_generation(run_id: str) -> Dict[str, Any]:
             active = database.execute(
                 """SELECT id FROM runs
                    WHERE deleted_at IS NULL AND id != ? AND phase IN ('generation_queued', 'generation_running')
-                   ORDER BY created_at LIMIT 1""",
+                   ORDER BY created_at, id""",
                 (run_id,),
-            ).fetchone()
-        if active:
-            raise WorkflowError(f"已有题目正在生成：{active['id']}，请等待完成后再重试")
+            ).fetchall()
+        if len(active) >= TASK_GENERATION_MAX_PARALLEL:
+            raise WorkflowError(
+                f"已有 {len(active)} 个题目正在生成，请等待空出生成槽位后再重试"
+            )
         update_turn(run_id, 1, status="queued")
         previous_feedback = str(row["error"] or row["generation_feedback"] or "").strip()
         update_run(
@@ -26236,10 +26240,10 @@ def create_automatic_run(payload: Dict[str, Any]) -> Dict[str, Any]:
             existing = database.execute(
                 """SELECT * FROM runs
                    WHERE deleted_at IS NULL AND phase IN ('generation_queued', 'generation_running')
-                   ORDER BY created_at LIMIT 1"""
-            ).fetchone()
-        if existing:
-            return serialize_run(existing)
+                   ORDER BY created_at, id"""
+            ).fetchall()
+        if len(existing) >= TASK_GENERATION_MAX_PARALLEL:
+            return serialize_run(existing[0])
 
         project_directory, target_directory = resolve_project_directory(
             requested_directory
@@ -26710,6 +26714,7 @@ def dependency_status() -> Dict[str, Any]:
                 "api_key_source": docker_api_key_source(),
                 "review_model": REVIEW_MODEL,
                 "task_generation_model": TASK_GENERATION_MODEL,
+                "task_generation_max_parallel": TASK_GENERATION_MAX_PARALLEL,
                 "iteration_generation_model": ITERATION_GENERATION_MODEL,
                 "task_difficulty_policy": "由每轮轨迹和产物评定",
                 "imported_baseline_supported": True,

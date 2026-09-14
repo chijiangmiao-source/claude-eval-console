@@ -132,7 +132,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.45"
+APP_VERSION = "20260914.46"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -166,9 +166,9 @@ BUILTIN_MODEL_OPTIONS = [
     ("haiku", "Haiku"),
 ]
 try:
-    MAX_PARALLEL_RUNS = max(1, min(7, int(os.environ.get("CLAUDE_EVAL_MAX_PARALLEL", "7"))))
+    MAX_PARALLEL_RUNS = max(1, min(6, int(os.environ.get("CLAUDE_EVAL_MAX_PARALLEL", "6"))))
 except ValueError:
-    MAX_PARALLEL_RUNS = 7
+    MAX_PARALLEL_RUNS = 6
 REVIEW_MODEL = "gpt-5.6-sol"
 TASK_GENERATION_MODEL = REVIEW_MODEL
 TASK_GENERATION_BATCH_SIZE = 2

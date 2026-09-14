@@ -132,7 +132,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.42"
+APP_VERSION = "20260914.43"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -24862,6 +24862,19 @@ def _retry_control_stage_locked(run_id: str) -> Dict[str, Any]:
         raise WorkflowError("当前任务没有可重试的控制阶段")
     stage = str(row["stage_retry_name"] or "")
     repo_path = Path(str(row["repo_path"] or ""))
+    if (
+        not stage
+        and not str(row["first_prompt_id"] or "").strip()
+        and int(row["container_cleaned"] or 0)
+        and row["container_name"]
+        and row["screen_name"]
+        and repo_path.is_dir()
+    ):
+        # Older startup failures could lose their retry-stage marker after a
+        # Terminal.app timeout even though the prompt was never sent and the
+        # runtime was fully cleaned. Re-entering repository preparation is
+        # safe and preserves the original prompt and baseline.
+        stage = "初始仓库准备"
     if (
         not stage
         and not row["repo_url"]

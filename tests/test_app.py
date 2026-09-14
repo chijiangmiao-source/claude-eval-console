@@ -19887,6 +19887,44 @@ class ResilienceTests(unittest.TestCase):
             mock.ANY,
         )
 
+    def test_cleaned_pre_prompt_failure_can_retry_original_startup_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            run_id = "prepromp1111"
+            with mock.patch.object(
+                app, "DB_PATH", root / "test.db"
+            ), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(
+                app, "schedule_worker"
+            ) as schedule:
+                app.initialize_database()
+                timestamp = app.now_text()
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO runs(
+                             id, repo_name, repo_path, repo_url, base_sha,
+                             phase, first_prompt, verification_commands,
+                             container_name, screen_name, container_cleaned,
+                             created_at, updated_at
+                           ) VALUES (?, 'preprompt-demo', ?,
+                                     'https://github.com/example/demo', ?,
+                                     'failed', '需求', '[]',
+                                     'container-preprompt', 'screen-preprompt', 1,
+                                     ?, ?)""",
+                        (run_id, str(workspace), "a" * 40, timestamp, timestamp),
+                    )
+
+                retried = app.retry_control_stage(run_id)
+
+        self.assertEqual(retried["phase"], "creating_repo")
+        self.assertEqual(retried["stage_retry_name"], "初始仓库准备")
+        schedule.assert_called_once_with(
+            run_id, "creating_repo", app.initial_repository_retry_worker
+        )
+
     def test_initial_repository_retry_never_requeues_after_prompt_started(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

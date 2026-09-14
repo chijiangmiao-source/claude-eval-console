@@ -16477,6 +16477,45 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(len(issues), len(app.EVALUATION_DIMENSION_KEYS))
         self.assertTrue(all("公开描述含有错别字" in issue for issue in issues))
 
+    def test_solo_qa_telegraphic_return_rewrites_named_dimension(self):
+        row = {
+            "solo_qa_state": "needs_fix",
+            "solo_qa_remote_submission_id": "9004",
+            "solo_qa_remote_status": "PENDING_FIX",
+            "solo_qa_remote_updated_at": "2026-09-14T11:32:50",
+            "solo_qa_qc_summary": (
+                "交付完整性：7 个分句中 7 个是残缺的电报式短语，整段不成叙述"
+            ),
+        }
+
+        issues = app.solo_qa_returned_evaluation_repair_issues(
+            row,
+            with_score_stage(sample_evaluation()),
+        )
+
+        self.assertEqual(len(issues), 1)
+        self.assertIn("交付完整性", issues[0])
+        self.assertIn("不是连贯中文叙述", issues[0])
+
+    def test_english_dominant_public_description_is_targeted_for_repair(self):
+        evaluation = with_score_stage(sample_evaluation())
+        evaluation["delivery"]["description"] = (
+            "Round one delivered canvas entry; strict validation; overlap "
+            "classification; visual states; JSON export; Web deployment; and verification."
+        )
+
+        issues = app.automatic_evaluation_description_repair_issues(evaluation)
+
+        self.assertTrue(
+            any("交付完整性描述主要为英文" in issue for issue in issues)
+        )
+        self.assertFalse(
+            app.evaluation_description_is_english_dominant(
+                "第 1 轮在 TypeScript、React 和 Docker Compose 中完成主要流程，"
+                "并通过 Vitest 与 Playwright 检查实际结果。"
+            )
+        )
+
     def test_completed_description_repair_queue_is_idempotent_per_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -16799,6 +16838,38 @@ class ExportTests(unittest.TestCase):
                 "推理能力" in issue
                 for issue in completed["evaluation_repair"]["repairable_issues"]
             )
+        )
+
+    def test_english_public_description_waits_for_auto_repair_before_solo_qa(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                evaluation = app.automatic_turn_evaluation(
+                    app.completed_turn_rows()[0]
+                )
+                evaluation["score_validation_mode"] = "quality_platform_review"
+                evaluation["delivery"]["description"] = (
+                    "Round one delivered the requested browser workflow with strict "
+                    "validation, visible results, downloadable output, and verification."
+                )
+                evaluation["descriptions"][0] = evaluation["delivery"]["description"]
+                app.update_turn(
+                    "abc123abc123",
+                    1,
+                    review_result=json.dumps({"evaluation": evaluation}, ensure_ascii=False),
+                )
+
+                completed = app.completed_turns()[0]
+
+        self.assertTrue(completed["export_ready"])
+        self.assertFalse(completed["solo_qa_ready"])
+        self.assertEqual(completed["evaluation_repair"]["status"], "needed")
+        self.assertTrue(
+            any("交付完整性描述主要为英文" in issue for issue in completed["solo_qa_issues"])
         )
 
     def test_evaluation_repair_recovery_resumes_active_jobs_only(self):

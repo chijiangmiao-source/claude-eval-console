@@ -132,7 +132,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.44"
+APP_VERSION = "20260914.45"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -8352,6 +8352,12 @@ def solo_qa_returned_evaluation_fingerprint(row: Dict[str, Any]) -> str:
         "反引号",
         "满分描述",
         "错别字",
+        "纯英文",
+        "全英文",
+        "英文描述",
+        "电报式",
+        "残缺句",
+        "不成叙述",
         "B-5",
         "B5",
     )
@@ -8391,7 +8397,11 @@ def solo_qa_returned_evaluation_repair_issues(
         or re.search(r"(?:全部|所有|五)\s*个?维度|五维", summary)
     ):
         selected = list(EVALUATION_DIMENSION_KEYS)
-    if not selected and ("五段描述" in summary or "错别字" in summary):
+    if not selected and (
+        "五段描述" in summary
+        or "错别字" in summary
+        or any(marker in summary for marker in ("纯英文", "全英文", "英文描述"))
+    ):
         # The platform's spelling check can report one aggregate result without
         # naming the affected dimension, so rewrite the five public descriptions.
         selected = list(EVALUATION_DIMENSION_KEYS)
@@ -8407,12 +8417,30 @@ def solo_qa_returned_evaluation_repair_issues(
         reason = "公开描述含有反引号"
     elif "错别字" in summary:
         reason = "公开描述含有错别字"
+    elif any(
+        marker in summary
+        for marker in ("纯英文", "全英文", "英文描述", "电报式", "残缺句", "不成叙述")
+    ):
+        reason = "公开描述不是连贯中文叙述"
     else:
         reason = "描述中的具体依据未通过质检平台核对"
     return [
         f"自动检查的{EVALUATION_DIMENSION_LABELS[key]}{reason}；质检反馈：{summary}"
         for key in selected
     ]
+
+
+def evaluation_description_is_english_dominant(value: Any) -> bool:
+    """Detect a prose paragraph that drifted almost entirely into English."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    latin_letters = len(re.findall(r"[A-Za-z]", text))
+    latin_words = len(re.findall(r"\b[A-Za-z][A-Za-z'-]*\b", text))
+    han_characters = len(re.findall(r"[\u3400-\u9fff]", text))
+    return bool(
+        latin_letters >= 40
+        and latin_words >= 8
+        and latin_letters > max(1, han_characters) * 8
+    )
 
 
 def automatic_evaluation_description_repair_issues(
@@ -8435,6 +8463,10 @@ def automatic_evaluation_description_repair_issues(
         if not description:
             issues.append(f"自动检查的{label}描述为空")
             continue
+        if evaluation_description_is_english_dominant(description):
+            issues.append(
+                f"自动检查的{label}描述主要为英文，需要改为连贯中文叙述"
+            )
         if "`" in description:
             issues.append(f"自动检查的{label}描述含有反引号")
         identity = evaluation_identity_reference(description)
@@ -9585,6 +9617,14 @@ def solo_qa_readiness(
         export_ready, export_issues = export_readiness(row)
     issues = list(export_issues)
     evaluation = turn_evaluation(row)
+    for key in EVALUATION_DIMENSION_KEYS:
+        item = evaluation.get(key)
+        if isinstance(item, dict) and evaluation_description_is_english_dominant(
+            item.get("description")
+        ):
+            issues.append(
+                f"{EVALUATION_DIMENSION_LABELS[key]}描述主要为英文，自动改写成中文后可提交"
+            )
     confirmation = evaluation_confirmation_metadata(row)
     if confirmation["status"] == "pending":
         issues.append("评分尚未完成人工二次确认")

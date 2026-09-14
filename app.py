@@ -88,10 +88,15 @@ MAX_BODY_BYTES = 1_000_000
 POLL_SECONDS = 3
 RUN_TIMEOUT_SECONDS = 6 * 60 * 60
 INACTIVITY_WARNING_SECONDS = 30 * 60
+NO_CODE_OUTPUT_GRACE_SECONDS = 30 * 60
+NO_CODE_OUTPUT_INACTIVITY_SECONDS = 15 * 60
+NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS = 2 * 60 * 60
+NO_CODE_OUTPUT_PROBE_INTERVAL_SECONDS = 5 * 60
 TERMINAL_ATTENTION_ALERT_INTERVAL_SECONDS = 60
 TERMINAL_IDLE_STABLE_SECONDS = 5 * 60
 TERMINAL_RECOVERY_IDLE_STABLE_SECONDS = 15
-TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS = 120
+TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS = 10 * 60
+TERMINAL_FINAL_SUMMARY_RECOVERY_GRACE_SECONDS = 2 * 60
 COMPLETION_RECOVERY_PROMPT_PREFIX = "[CLAUDE-EVAL-COMPLETE-TURN]"
 TERMINAL_ATTENTION_SOUND_PATH = Path(
     os.environ.get(
@@ -133,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260914.55"
+APP_VERSION = "20260914.58"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -6366,18 +6371,42 @@ def automatic_iteration_worker(
             "updated_at": now_text(),
         }
     except JobCancelled:
-        result = {
-            "status": "stopped",
-            "source_run_id": source_run_id,
-            "error": "迭代题面生成已取消",
-            "task_type": target_task_type,
-            "stage": "已取消",
-            "updated_at": now_text(),
-        }
-        try:
-            add_event(source_run_id, "迭代题面生成已由用户取消", "warning")
-        except Exception:
-            pass
+        restarting = SERVICE_SHUTTING_DOWN.is_set()
+        if restarting:
+            result = dict(get_iteration_job(source_run_id))
+            result.update(
+                status="generating",
+                source_run_id=source_run_id,
+                task_type=target_task_type,
+                auto_refill=auto_refill,
+                recovery_count=recovery_count,
+                stage="服务重启，等待恢复题面生成",
+                error="",
+                last_error=generation_feedback,
+                cooldown_until_epoch=None,
+                updated_at=now_text(),
+            )
+            try:
+                add_event(
+                    source_run_id,
+                    "服务重启中断了迭代题面生成，任务已保留并将在启动后自动恢复",
+                    "warning",
+                )
+            except Exception:
+                pass
+        else:
+            result = {
+                "status": "stopped",
+                "source_run_id": source_run_id,
+                "error": "迭代题面生成已取消",
+                "task_type": target_task_type,
+                "stage": "已取消",
+                "updated_at": now_text(),
+            }
+            try:
+                add_event(source_run_id, "迭代题面生成已由用户取消", "warning")
+            except Exception:
+                pass
     except Exception as exc:  # background boundary
         detail = str(exc).strip() or "自动生成迭代需求失败"
         generation_exhausted = (
@@ -11880,13 +11909,21 @@ def terminal_attention_reason_from_text(value: Any) -> str:
 def terminal_idle_prompt_visible(value: Any) -> bool:
     """Recognize a settled Claude prompt without mistaking active work for idle."""
     visible = TERMINAL_ANSI_ESCAPE_RE.sub("", str(value or "")).replace("\x00", " ")
-    tail = "\n".join(visible.splitlines()[-10:]).casefold()
+    # Terminal.app scrolling can append several rendering-control lines after
+    # the settled prompt. Keep enough recent output to retain the last real
+    # state transition, then resolve active/idle markers by their order.
+    tail = "\n".join(visible.splitlines()[-80:]).casefold()
     compact_tail = re.sub(r"\s+", "", tail)
+    idle_markers = [tail.rfind("new task?")]
+    idle_markers.extend(match.start() for match in re.finditer(r"\bdone\b", tail))
+    latest_idle_marker = max(idle_markers, default=-1)
+    latest_active_marker = tail.rfind("esc to interrupt")
+    current_state_tail = tail[latest_idle_marker:] if latest_idle_marker >= 0 else tail
     return bool(
         "bypasspermissionson" in compact_tail
-        and ("new task?" in tail or re.search(r"\bdone\b", tail))
-        and "esc to interrupt" not in tail
-        and not terminal_attention_reason_from_text(tail)
+        and latest_idle_marker >= 0
+        and latest_active_marker < latest_idle_marker
+        and not terminal_attention_reason_from_text(current_state_tail)
     )
 
 
@@ -11908,9 +11945,20 @@ def terminal_screen_text(run_id: str, screen_name: str) -> str:
             timeout=10,
             check=False,
         )
-        if result.returncode != 0 or not snapshot.is_file():
+        if result.returncode == 0 and snapshot.is_file():
+            captured = snapshot.read_text(encoding="utf-8", errors="ignore")[-12000:]
+            if captured.strip("\x00\r\n \t"):
+                return captured
+        # GNU screen can return success with a zero-byte hardcopy while the
+        # attached Claude TUI is in its alternate buffer. The logfile still
+        # contains the latest rendered prompt, so use its tail read-only.
+        try:
+            with paths["screen_log"].open("rb") as source:
+                source.seek(0, os.SEEK_END)
+                source.seek(max(0, source.tell() - 64 * 1024), os.SEEK_SET)
+                return source.read().decode("utf-8", errors="ignore")[-12000:]
+        except OSError:
             return ""
-        return snapshot.read_text(encoding="utf-8", errors="ignore")[-12000:]
     except OSError:
         return ""
     finally:
@@ -12585,6 +12633,26 @@ def send_completion_recovery_to_screen(run_id: str, screen_name: str) -> None:
     run_command(["screen", "-S", screen_name, "-p", "0", "-X", "stuff", "\r"])
 
 
+def send_final_summary_recovery_to_screen(run_id: str, screen_name: str) -> None:
+    """Ask a recovered idle session to stop editing and emit only its final reply."""
+    if not screen_session_running(screen_name):
+        raise WorkflowError("对话终端已关闭，无法自动催收交付摘要")
+    paths = terminal_asset_paths(run_id)
+    paths["root"].mkdir(parents=True, exist_ok=True)
+    recovery_prompt = paths["root"] / "final-summary-recovery-prompt.txt"
+    recovery_prompt.write_text(
+        f"{COMPLETION_RECOVERY_PROMPT_PREFIX} "
+        "现有实现与测试已经完成。请不要再修改代码，立即输出一段简洁、非空的最终交付摘要并结束回复。",
+        encoding="utf-8",
+    )
+    run_command(
+        ["screen", "-S", screen_name, "-p", "0", "-X", "readbuf", str(recovery_prompt)]
+    )
+    run_command(["screen", "-S", screen_name, "-p", "0", "-X", "paste", "."])
+    time.sleep(0.5)
+    run_command(["screen", "-S", screen_name, "-p", "0", "-X", "stuff", "\r"])
+
+
 def copy_container_traces(row: sqlite3.Row, destination: Path) -> Path:
     container_name = str(row["container_name"] or "")
     if not container_name:
@@ -12777,6 +12845,177 @@ def trace_activity_signature(trace_root: Path) -> Optional[Tuple[int, int, int]]
     return (count, total_size, latest_mtime) if count else None
 
 
+BUSINESS_CODE_SUFFIXES = {
+    ".astro",
+    ".c",
+    ".cc",
+    ".cjs",
+    ".clj",
+    ".cljs",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".cts",
+    ".dart",
+    ".elm",
+    ".erl",
+    ".ex",
+    ".exs",
+    ".fs",
+    ".fsx",
+    ".go",
+    ".gql",
+    ".graphql",
+    ".h",
+    ".hpp",
+    ".hrl",
+    ".html",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".lua",
+    ".mjs",
+    ".move",
+    ".mts",
+    ".php",
+    ".pl",
+    ".proto",
+    ".py",
+    ".r",
+    ".rb",
+    ".rs",
+    ".sass",
+    ".scala",
+    ".scss",
+    ".sh",
+    ".sol",
+    ".sql",
+    ".svelte",
+    ".swift",
+    ".tf",
+    ".tsx",
+    ".ts",
+    ".vb",
+    ".vue",
+}
+DEPENDENCY_LOCK_FILENAMES = {
+    "bun.lock",
+    "bun.lockb",
+    "cargo.lock",
+    "composer.lock",
+    "gemfile.lock",
+    "go.sum",
+    "package-lock.json",
+    "pipfile.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "uv.lock",
+    "yarn.lock",
+}
+GENERATED_CODE_DIRECTORIES = {
+    ".git",
+    ".next",
+    ".venv",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "vendor",
+}
+
+
+def is_business_code_path(value: str) -> bool:
+    """Exclude docs, lockfiles, and generated trees from the progress signal."""
+    normalized = str(value or "").strip().replace("\\", "/").strip("/")
+    if not normalized:
+        return False
+    parts = tuple(part.casefold() for part in normalized.split("/") if part)
+    if not parts or any(part in GENERATED_CODE_DIRECTORIES for part in parts[:-1]):
+        return False
+    name = parts[-1]
+    if name in DEPENDENCY_LOCK_FILENAMES:
+        return False
+    return Path(name).suffix.casefold() in BUSINESS_CODE_SUFFIXES
+
+
+def workspace_business_code_output_paths(row: sqlite3.Row) -> Optional[List[str]]:
+    """Return code paths changed from this run's baseline, or None if unknown."""
+    data = dict(row)
+    workspace = Path(str(data.get("repo_path") or "")).expanduser()
+    base_sha = str(data.get("base_sha") or "").strip()
+    if not workspace.is_dir() or not (workspace / ".git").is_dir() or not base_sha:
+        return None
+    try:
+        tracked = run_command(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "-z",
+                "--diff-filter=ACDMRTUXB",
+                base_sha,
+                "--",
+            ],
+            cwd=workspace,
+            timeout=30,
+        ).stdout
+        untracked = run_command(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=workspace,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError, WorkflowError):
+        return None
+    changed = {
+        path
+        for path in (*tracked.split("\0"), *untracked.split("\0"))
+        if is_business_code_path(path)
+    }
+    return sorted(changed)
+
+
+def running_stage_elapsed_seconds(run_id: str, stage: str) -> float:
+    """Read the durable stage clock so a service restart cannot reset a watchdog."""
+    try:
+        with db_connection() as database:
+            timing = database.execute(
+                "SELECT elapsed_seconds, started_at FROM run_stage_timings "
+                "WHERE run_id = ? AND stage = ?",
+                (run_id, stage),
+            ).fetchone()
+    except sqlite3.Error:
+        return 0.0
+    if not timing:
+        return 0.0
+    elapsed = max(0.0, float(timing["elapsed_seconds"] or 0))
+    if timing["started_at"]:
+        elapsed += seconds_between(str(timing["started_at"]), now_text())
+    return elapsed
+
+
+def stop_run_for_no_code_output(run_id: str, reason: str) -> Dict[str, Any]:
+    """Stop and clean one stalled run, then immediately expose its scheduler slot."""
+    stop_run(run_id)
+    with run_lifecycle_lock(run_id):
+        current = run_row(run_id)
+        cleaned = bool(int(current["container_cleaned"] or 0))
+        update_run(
+            run_id,
+            status_detail=(
+                "长时间没有源码产出，已自动终止并删除容器"
+                if cleaned
+                else "长时间没有源码产出，已自动终止；容器清理失败"
+            ),
+            error=(reason if cleaned else f"{reason}；{current['error'] or '容器清理失败'}"),
+        )
+    add_event(run_id, f"{reason}；已自动释放并行槽并触发补题", "warning")
+    AUTO_REFILL_WAKE.set()
+    return serialize_run(run_row(run_id))
+
+
 def preserve_interrupted_docker_turn(run_id: str, turn_number: int, reason: str) -> None:
     with run_lifecycle_lock(run_id):
         row = run_row(run_id)
@@ -12880,6 +13119,22 @@ def completion_recovery_event_message(turn_number: int) -> str:
 
 def completion_recovery_sent_epoch(run_id: str, turn_number: int) -> Optional[float]:
     marker = completion_recovery_event_message(turn_number)
+    with db_connection() as database:
+        row = database.execute(
+            "SELECT created_at FROM events WHERE run_id = ? AND message = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (run_id, marker),
+        ).fetchone()
+    sent_at = parse_time(str(row["created_at"] or "")) if row else None
+    return sent_at.timestamp() if sent_at else None
+
+
+def final_summary_recovery_event_message(turn_number: int) -> str:
+    return f"第 {turn_number} 轮完成催收后仍缺少合格最终回复，已再次催收交付摘要"
+
+
+def final_summary_recovery_sent_epoch(run_id: str, turn_number: int) -> Optional[float]:
+    marker = final_summary_recovery_event_message(turn_number)
     with db_connection() as database:
         row = database.execute(
             "SELECT created_at FROM events WHERE run_id = ? AND message = ? "
@@ -13076,8 +13331,11 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
     last_activity_signature: Optional[Tuple[int, int, int]] = None
     inactivity_reported = False
     long_running_reported = False
+    business_code_seen = False
+    last_no_code_probe_at = 0.0
     idle_visible_since: Optional[float] = None
     completion_recovery_epoch = completion_recovery_sent_epoch(run_id, turn_number)
+    final_summary_recovery_epoch = final_summary_recovery_sent_epoch(run_id, turn_number)
     last_prompt_id = ""
     attention_reason = ""
     last_attention_alert_at = 0.0
@@ -13447,13 +13705,45 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
                     time.sleep(POLL_SECONDS)
                     continue
                 elif (
-                    time.time() - completion_recovery_epoch
+                    final_summary_recovery_epoch is None
+                    and time.time() - completion_recovery_epoch
                     >= TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS
+                ):
+                    try:
+                        send_final_summary_recovery_to_screen(
+                            run_id,
+                            str(row["screen_name"] or ""),
+                        )
+                    except WorkflowError as exc:
+                        preserve_interrupted_docker_turn(
+                            run_id,
+                            turn_number,
+                            f"终端已空闲但自动催收交付摘要失败：{exc}",
+                        )
+                        return
+                    add_event(
+                        run_id,
+                        final_summary_recovery_event_message(turn_number),
+                        "warning",
+                    )
+                    final_summary_recovery_epoch = time.time()
+                    idle_visible_since = None
+                    update_run_if_phase(
+                        run_id,
+                        observed_phase,
+                        status_detail=f"第 {turn_number} 轮正在自动催收交付摘要",
+                    )
+                    time.sleep(POLL_SECONDS)
+                    continue
+                elif (
+                    final_summary_recovery_epoch is not None
+                    and time.time() - final_summary_recovery_epoch
+                    >= TERMINAL_FINAL_SUMMARY_RECOVERY_GRACE_SECONDS
                 ):
                     preserve_interrupted_docker_turn(
                         run_id,
                         turn_number,
-                        "终端在自动催收后仍回到空闲界面，轨迹没有合格最终回复",
+                        "终端在两次自动催收后仍回到空闲界面，轨迹没有合格最终回复",
                     )
                     return
         else:
@@ -13479,6 +13769,45 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
             detail = f"第 {turn_number} 轮仍在运行，暂未检测到新的轨迹活动"
         else:
             detail = f"第 {turn_number} 轮正在容器终端中运行"
+
+        runtime_seconds = max(
+            max(0.0, now - started),
+            running_stage_elapsed_seconds(
+                run_id,
+                "first" if turn_number == 1 else "second",
+            ),
+        )
+        no_code_deadline_reached = (
+            runtime_seconds >= NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS
+            or (
+                runtime_seconds >= NO_CODE_OUTPUT_GRACE_SECONDS
+                and inactive_seconds >= NO_CODE_OUTPUT_INACTIVITY_SECONDS
+            )
+        )
+        retry_waiting = int(row["retry_not_before_epoch"] or 0) > int(time.time())
+        if (
+            turn_number == 1
+            and not business_code_seen
+            and not retry_waiting
+            and no_code_deadline_reached
+            and now - last_no_code_probe_at >= NO_CODE_OUTPUT_PROBE_INTERVAL_SECONDS
+        ):
+            last_no_code_probe_at = now
+            code_paths = workspace_business_code_output_paths(row)
+            if code_paths:
+                business_code_seen = True
+            elif code_paths == []:
+                if runtime_seconds >= NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS:
+                    reason = (
+                        "首轮已运行至少 2 小时，工作区相对基线仍没有源码文件变化"
+                    )
+                else:
+                    reason = (
+                        "首轮已运行至少 30 分钟且连续 15 分钟没有轨迹活动，"
+                        "工作区相对基线仍没有源码文件变化"
+                    )
+                stop_run_for_no_code_output(run_id, reason)
+                return
 
         if not long_running_reported and now - started >= RUN_TIMEOUT_SECONDS:
             add_event(
@@ -25245,15 +25574,29 @@ def automatic_generation_worker(run_id: str) -> None:
         try:
             current = run_row(run_id)
             if str(current["phase"] or "") == "generation_running":
-                update_turn(run_id, 1, status="stopped")
-                update_run(
-                    run_id,
-                    phase="stopped",
-                    status_detail="题面生成已由用户取消；未创建容器",
-                    container_cleaned=1,
-                    error=None,
-                )
-                add_event(run_id, "用户取消了题面生成任务", "warning")
+                if SERVICE_SHUTTING_DOWN.is_set():
+                    update_turn(run_id, 1, status="queued")
+                    update_run(
+                        run_id,
+                        phase="generation_queued",
+                        status_detail="服务重启，题面生成已保留并等待自动恢复",
+                        error=None,
+                    )
+                    add_event(
+                        run_id,
+                        "服务重启中断了题面生成，已保留原编号并等待自动恢复",
+                        "warning",
+                    )
+                else:
+                    update_turn(run_id, 1, status="stopped")
+                    update_run(
+                        run_id,
+                        phase="stopped",
+                        status_detail="题面生成已由用户取消；未创建容器",
+                        container_cleaned=1,
+                        error=None,
+                    )
+                    add_event(run_id, "用户取消了题面生成任务", "warning")
         except Exception:
             pass
         return

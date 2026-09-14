@@ -7443,7 +7443,7 @@ class ParsingTests(unittest.TestCase):
         preserve.assert_not_called()
         self.assertEqual(recovery_events, 1)
 
-    def test_docker_monitor_preserves_turn_when_recovery_returns_to_idle(self):
+    def test_docker_monitor_requests_final_summary_when_recovery_returns_to_idle(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
@@ -7465,6 +7465,8 @@ class ParsingTests(unittest.TestCase):
                 )
                 with mock.patch.object(
                     app, "completion_recovery_sent_epoch", return_value=100.0
+                ), mock.patch.object(
+                    app, "final_summary_recovery_sent_epoch", return_value=None
                 ), mock.patch.object(
                     app, "refresh_trace_snapshot", return_value=(root, None)
                 ), mock.patch.object(
@@ -7488,15 +7490,86 @@ class ParsingTests(unittest.TestCase):
                 ), mock.patch.object(
                     app, "send_completion_recovery_to_screen"
                 ) as recover, mock.patch.object(
+                    app,
+                    "send_final_summary_recovery_to_screen",
+                    side_effect=lambda run_id, _screen_name: app.update_run(
+                        run_id, phase="stopped"
+                    ),
+                ) as summarize, mock.patch.object(
                     app, "preserve_interrupted_docker_turn"
                 ) as preserve:
                     app.monitor_docker_turn(created["id"], 1)
 
         recover.assert_not_called()
+        summarize.assert_called_once_with(created["id"], created["screen_name"])
+        preserve.assert_not_called()
+
+    def test_docker_monitor_preserves_turn_only_after_final_summary_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "idle-final-timeout-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+                idle_screen = (
+                    "bypass permissions on (shift+tab to cycle)  "
+                    "new task? /clear to save tokens"
+                )
+                final_summary_epoch = 1000.0
+                with mock.patch.object(
+                    app, "completion_recovery_sent_epoch", return_value=100.0
+                ), mock.patch.object(
+                    app,
+                    "final_summary_recovery_sent_epoch",
+                    return_value=final_summary_epoch,
+                ), mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, None)
+                ), mock.patch.object(
+                    app, "docker_container_running", return_value=True
+                ), mock.patch.object(
+                    app, "terminal_screen_text", return_value=idle_screen
+                ), mock.patch.object(
+                    app.time,
+                    "monotonic",
+                    side_effect=[
+                        0,
+                        0,
+                        app.TERMINAL_RECOVERY_IDLE_STABLE_SECONDS + 1,
+                    ],
+                ), mock.patch.object(
+                    app.time,
+                    "time",
+                    return_value=(
+                        final_summary_epoch
+                        + app.TERMINAL_FINAL_SUMMARY_RECOVERY_GRACE_SECONDS
+                        + 1
+                    ),
+                ), mock.patch.object(
+                    app.time, "sleep"
+                ), mock.patch.object(
+                    app, "send_completion_recovery_to_screen"
+                ) as recover, mock.patch.object(
+                    app, "send_final_summary_recovery_to_screen"
+                ) as summarize, mock.patch.object(
+                    app, "preserve_interrupted_docker_turn"
+                ) as preserve:
+                    app.monitor_docker_turn(created["id"], 1)
+
+        recover.assert_not_called()
+        summarize.assert_not_called()
         preserve.assert_called_once_with(
             created["id"],
             1,
-            "终端在自动催收后仍回到空闲界面，轨迹没有合格最终回复",
+            "终端在两次自动催收后仍回到空闲界面，轨迹没有合格最终回复",
         )
 
     def test_docker_monitor_does_not_recover_while_terminal_is_active(self):
@@ -7543,6 +7616,132 @@ class ParsingTests(unittest.TestCase):
 
         recover.assert_not_called()
         preserve.assert_not_called()
+
+    def test_business_code_probe_ignores_lockfile_only_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            app.run_command(
+                ["git", "init", "--initial-branch=main", str(workspace)]
+            )
+            app.run_command(
+                ["git", "config", "user.name", "Test User"], cwd=workspace
+            )
+            app.run_command(
+                ["git", "config", "user.email", "test@example.com"], cwd=workspace
+            )
+            (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+            app.run_command(["git", "add", "README.md"], cwd=workspace)
+            app.run_command(["git", "commit", "-m", "baseline"], cwd=workspace)
+            base_sha = app.run_command(
+                ["git", "rev-parse", "HEAD"], cwd=workspace
+            ).stdout.strip()
+            row = {"repo_path": str(workspace), "base_sha": base_sha}
+
+            (workspace / "go.sum").write_text("module checksum\n", encoding="utf-8")
+            self.assertEqual(app.workspace_business_code_output_paths(row), [])
+
+            source = workspace / "api" / "handler.go"
+            source.parent.mkdir()
+            source.write_text("package api\n", encoding="utf-8")
+            self.assertEqual(
+                app.workspace_business_code_output_paths(row),
+                ["api/handler.go"],
+            )
+
+    def test_inactive_first_turn_without_code_is_automatically_stopped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "no-code-watchdog-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+
+                def stop_no_code(run_id, _reason):
+                    app.update_run(run_id, phase="stopped")
+
+                with mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, None)
+                ), mock.patch.object(
+                    app, "docker_container_running", return_value=True
+                ), mock.patch.object(
+                    app, "terminal_screen_text", return_value="Stewing (45m)"
+                ), mock.patch.object(
+                    app, "trace_activity_signature", return_value=None
+                ), mock.patch.object(
+                    app,
+                    "workspace_business_code_output_paths",
+                    return_value=[],
+                ) as code_probe, mock.patch.object(
+                    app,
+                    "running_stage_elapsed_seconds",
+                    return_value=app.NO_CODE_OUTPUT_GRACE_SECONDS + 1,
+                ), mock.patch.object(
+                    app.time,
+                    "monotonic",
+                    side_effect=[0, app.NO_CODE_OUTPUT_GRACE_SECONDS + 1],
+                ), mock.patch.object(
+                    app, "stop_run_for_no_code_output", side_effect=stop_no_code
+                ) as stop:
+                    app.monitor_docker_turn(created["id"], 1)
+
+        code_probe.assert_called_once()
+        stop.assert_called_once()
+        self.assertIn("连续 15 分钟没有轨迹活动", stop.call_args.args[1])
+
+    def test_active_first_turn_without_code_stops_at_hard_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "active-no-code-watchdog-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.update_run(created["id"], phase="first_running")
+
+                def stop_no_code(run_id, _reason):
+                    app.update_run(run_id, phase="stopped")
+
+                with mock.patch.object(
+                    app, "refresh_trace_snapshot", return_value=(root, None)
+                ), mock.patch.object(
+                    app, "docker_container_running", return_value=True
+                ), mock.patch.object(
+                    app, "terminal_screen_text", return_value="Stewing (2h)"
+                ), mock.patch.object(
+                    app, "trace_activity_signature", return_value=(1, 10, 20)
+                ), mock.patch.object(
+                    app, "workspace_business_code_output_paths", return_value=[]
+                ), mock.patch.object(
+                    app,
+                    "running_stage_elapsed_seconds",
+                    return_value=app.NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS + 1,
+                ), mock.patch.object(
+                    app.time,
+                    "monotonic",
+                    side_effect=[0, app.NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS + 1],
+                ), mock.patch.object(
+                    app, "stop_run_for_no_code_output", side_effect=stop_no_code
+                ) as stop:
+                    app.monitor_docker_turn(created["id"], 1)
+
+        stop.assert_called_once()
+        self.assertIn("至少 2 小时", stop.call_args.args[1])
 
     def test_six_hour_notice_keeps_read_only_monitor_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -12884,11 +13083,24 @@ class RepositoryTests(unittest.TestCase):
         active = idle + "  esc to interrupt for agents"
         attention = idle + "  Do you want to proceed?"
         compact_idle = "Sauted for 8m 34s  done\nbypass permissions on  for agents"
+        recovered_idle = (
+            "Waiting for API response · esc to interrupt\n"
+            "Baked for 4m 2s · done\n"
+            "bypass permissions on · for agents"
+        )
+        scrolled_idle = (
+            "Brewed for 42m 19s · done\n"
+            "bypass permissions on · for agents\n"
+            + "\n".join(f"scroll rendering line {index}" for index in range(20))
+        )
 
         self.assertTrue(app.terminal_idle_prompt_visible(idle))
         self.assertTrue(app.terminal_idle_prompt_visible(compact_idle))
+        self.assertTrue(app.terminal_idle_prompt_visible(recovered_idle))
+        self.assertTrue(app.terminal_idle_prompt_visible(scrolled_idle))
         self.assertEqual(app.TERMINAL_IDLE_STABLE_SECONDS, 5 * 60)
-        self.assertEqual(app.TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS, 120)
+        self.assertEqual(app.TERMINAL_COMPLETION_RECOVERY_GRACE_SECONDS, 10 * 60)
+        self.assertEqual(app.TERMINAL_FINAL_SUMMARY_RECOVERY_GRACE_SECONDS, 2 * 60)
         self.assertFalse(app.terminal_idle_prompt_visible(active))
         self.assertFalse(app.terminal_idle_prompt_visible(attention))
         self.assertFalse(
@@ -12917,6 +13129,29 @@ class RepositoryTests(unittest.TestCase):
             ["screen", "-S", "screen-demo", "-p", "0", "-X", "hardcopy"],
         )
         self.assertNotIn("stuff", command.call_args.args[0])
+
+    def test_terminal_screen_capture_falls_back_to_log_when_hardcopy_is_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths = root / "idle-demo"
+            paths.mkdir()
+            (paths / "terminal.log").write_text(
+                "Crunched for 54m · done\n"
+                "bypass permissions on (shift+tab to cycle) · for agents\n",
+                encoding="utf-8",
+            )
+
+            def empty_hardcopy(args, **_kwargs):
+                Path(args[-1]).write_bytes(b"")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with mock.patch.object(app, "TERMINAL_ASSETS_DIR", root), mock.patch.object(
+                app, "screen_session_running", return_value=True
+            ), mock.patch.object(app, "run_command", side_effect=empty_hardcopy):
+                output = app.terminal_screen_text("idle-demo", "screen-demo")
+
+        self.assertIn("done", output)
+        self.assertTrue(app.terminal_idle_prompt_visible(output))
 
     def test_open_terminal_screen_records_window_and_tty_from_osascript(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -14531,6 +14766,85 @@ class DraftTests(unittest.TestCase):
             self.assertEqual(stopped["phase"], "stopped")
             self.assertIn("用户取消", stopped["status_detail"])
             record_failure.assert_not_called()
+
+    def test_shutdown_generation_is_requeued_instead_of_marked_user_cancelled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            shutdown = threading.Event()
+
+            def interrupt_generation(*_args, **_kwargs):
+                shutdown.set()
+                raise app.JobCancelled("服务正在重启")
+
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"), mock.patch.object(
+                app, "SERVICE_SHUTTING_DOWN", shutdown
+            ), mock.patch.object(
+                app, "generate_task_draft", side_effect=interrupt_generation
+            ):
+                app.initialize_database()
+                created = app.create_automatic_run({"project_directory": "team-a"})
+                app.automatic_generation_worker(created["id"])
+                recovered = app.serialize_run(app.run_row(created["id"]))
+
+            self.assertEqual(recovered["phase"], "generation_queued")
+            self.assertEqual(recovered["turns"][0]["status"], "queued")
+            self.assertIn("服务重启", recovered["status_detail"])
+
+    def test_shutdown_iteration_generation_remains_available_for_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            shutdown = threading.Event()
+
+            def interrupt_iteration(*_args, **_kwargs):
+                shutdown.set()
+                raise app.JobCancelled("服务正在重启")
+
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ), mock.patch.object(app, "schedule_worker"), mock.patch.object(
+                app, "SERVICE_SHUTTING_DOWN", shutdown
+            ), mock.patch.object(
+                app,
+                "generate_and_start_iteration",
+                side_effect=interrupt_iteration,
+            ):
+                app.initialize_database()
+                created = app.create_run({
+                    "repo_name": "restart-iteration-demo",
+                    "project_directory": ".",
+                    "first_prompt": "完成容器化项目",
+                    "_defer_start": True,
+                })
+                app.put_iteration_job({
+                    "status": "generating",
+                    "source_run_id": created["id"],
+                    "lineage_origin_run_id": created["id"],
+                    "task_type": "Feature 迭代",
+                    "auto_refill": True,
+                    "stage": "生成候选 1/2",
+                    "started_at": app.now_text(),
+                })
+                app.automatic_iteration_worker(
+                    created["id"], "Feature 迭代", False, True
+                )
+                recovered = app.get_iteration_job(created["id"])
+                with app.db_connection() as database:
+                    false_cancel_events = database.execute(
+                        "SELECT COUNT(*) FROM events WHERE run_id = ? "
+                        "AND message LIKE '%用户取消%'",
+                        (created["id"],),
+                    ).fetchone()[0]
+                app.ITERATION_JOBS.pop(created["id"], None)
+
+            self.assertEqual(recovered["status"], "generating")
+            self.assertIn("服务重启", recovered["stage"])
+            self.assertEqual(false_cancel_events, 0)
 
     def test_retry_generation_button_is_only_for_failed_placeholders(self):
         javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")

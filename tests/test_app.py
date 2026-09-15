@@ -124,6 +124,7 @@ def split_evaluation_parts(evaluation):
         dimensions[key] = {
             "score": evaluation[key]["score"],
             "description": evaluation[key]["description"],
+            "descriptionUsesIndependentReview": False,
             "when": evaluation["when"][index],
             "behavior": evaluation["behavior"][index],
             "impact": evaluation["impact"][index],
@@ -354,7 +355,50 @@ class ValidationTests(unittest.TestCase):
             schema["properties"]["when"]["pattern"],
             app.EVALUATION_INTERNAL_WHEN_SCHEMA_PATTERN,
         )
+        self.assertEqual(
+            schema["properties"]["descriptionUsesIndependentReview"]["type"],
+            "boolean",
+        )
+        self.assertIn("descriptionUsesIndependentReview", schema["required"])
         json.dumps(schema)
+
+    def test_later_visual_verify_and_compose_facts_require_a_source_label(self):
+        descriptions = (
+            "第 1 轮交付页面，但聚焦视图存在额外视觉空行。",
+            "第 1 轮实现主要功能，但一次性 verify 入口未能运行。",
+            "第 1 轮完成实现，Compose 验收为 26 项通过、2 项失败。",
+        )
+
+        for description in descriptions:
+            with self.subTest(description=description):
+                self.assertTrue(
+                    app.evaluation_public_description_needs_source_repair(
+                        {
+                            "description": description,
+                            "descriptionUsesIndependentReview": True,
+                        }
+                    )
+                )
+                self.assertFalse(
+                    app.evaluation_public_description_needs_source_repair(
+                        {
+                            "description": f"后续独立复核发现：{description}",
+                            "descriptionUsesIndependentReview": True,
+                        }
+                    )
+                )
+
+    def test_attributed_independent_fact_is_not_an_automatic_prose_issue(self):
+        evaluation = with_score_stage(sample_evaluation())
+        evaluation["delivery"]["score"] = 4
+        evaluation["delivery"]["description"] = (
+            "第 1 轮完成了导出入口。后续独立复核发现点击导出后没有生成文件，"
+            "使用人员无法取得结果。"
+        )
+
+        issues = app.automatic_evaluation_description_repair_issues(evaluation)
+
+        self.assertFalse(any("后续独立" in issue for issue in issues), issues)
 
     def test_dimension_repair_schema_blocks_noncanonical_when_before_validation(self):
         repaired = {"when": "第 1 轮第 3 步执行 pytest"}
@@ -501,8 +545,9 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(
             set(schema["properties"]),
             {
-                "score", "description", "when", "behavior", "impact",
-                "expected", "evidenceRefs", "processFinding",
+                "score", "description", "descriptionUsesIndependentReview",
+                "when", "behavior", "impact", "expected", "evidenceRefs",
+                "processFinding",
             },
         )
         self.assertIn("必须改评 5 分", prompt)
@@ -617,8 +662,9 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(
             set(schema["properties"]),
             {
-                "score", "description", "when", "behavior", "impact",
-                "expected", "evidenceRefs", "processFinding",
+                "score", "description", "descriptionUsesIndependentReview",
+                "when", "behavior", "impact", "expected", "evidenceRefs",
+                "processFinding",
             },
         )
         for field in (
@@ -687,6 +733,7 @@ class ValidationTests(unittest.TestCase):
                 return {
                     "score": 4,
                     "description": "第 1 轮第 3 步执行 pytest 时返回 Exit code 1，测试未通过。",
+                    "descriptionUsesIndependentReview": False,
                 }
             if prefix.endswith("-details"):
                 return details
@@ -719,7 +766,8 @@ class ValidationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            set(calls[1][1]["properties"]), {"score", "description"}
+            set(calls[1][1]["properties"]),
+            {"score", "description", "descriptionUsesIndependentReview"},
         )
         self.assertEqual(
             set(calls[2][1]["properties"]),
@@ -728,7 +776,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(set(calls[3][1]["properties"]), {"processFinding"})
         for _prefix, schema in calls[1:]:
             for field, field_schema in schema["properties"].items():
-                if field != "score":
+                if field not in {"score", "descriptionUsesIndependentReview"}:
                     with self.subTest(prefix=_prefix, field=field):
                         self.assertEqual(field_schema["minLength"], 1)
         self.assertEqual(result["score"], 4)
@@ -8045,19 +8093,20 @@ class ReviewTests(unittest.TestCase):
             )
         self.assertEqual(result["task_type"], "Feature 迭代")
 
-    def test_regrade_rewrites_only_description_with_independent_validation(self):
+    def test_regrade_adds_source_to_unattributed_independent_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "repo"
             repo.mkdir()
             evaluation = with_score_stage(sample_evaluation("Bug 修复"))
-            original_description = (
-                "第 1 轮实现 save_order；后续独立验收执行 docker compose build。"
-            )
+            original_description = "第 1 轮实现 save_order，Docker 构建后来失败。"
             evaluation["delivery"]["description"] = original_description
             evaluation["descriptions"][0] = original_description
             evaluation["artifactFindings"] += " 后续独立验收执行 docker compose build。"
             metadata, dimensions = split_evaluation_parts(evaluation)
-            replacement = "第 1 轮第 3 步执行 pytest，save_order 的验收结果通过。"
+            dimensions["delivery"]["descriptionUsesIndependentReview"] = True
+            replacement = (
+                "第 1 轮实现 save_order；后续独立验收显示 Docker 构建失败。"
+            )
 
             def structured_result(_prompt, schema, _cwd, prefix, _timeout, **_kwargs):
                 if prefix == "turn-regrade-metadata":
@@ -8093,6 +8142,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(len(runner.call_args_list), 7)
         self.assertEqual(result["delivery"]["score"], 5)
         self.assertEqual(result["delivery"]["description"], replacement)
+        self.assertNotIn("descriptionUsesIndependentReview", result["delivery"])
         self.assertEqual(result["descriptions"][0], replacement)
         self.assertEqual(result["when"][0], evaluation["when"][0])
         self.assertIn("后续独立验收", result["artifactFindings"])
@@ -8102,6 +8152,7 @@ class ReviewTests(unittest.TestCase):
             if call.args[3] == "turn-regrade-delivery-public-source-repair"
         )
         self.assertNotIn('"command": "docker compose build"', repair_call.args[0])
+        self.assertIn("使用了后续独立复核事实却没有注明来源", repair_call.args[0])
 
     def test_review_persists_versioned_score_stage_with_legacy_projection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -9079,6 +9130,7 @@ class ReviewTests(unittest.TestCase):
                     return {
                         "score": item["score"],
                         "description": item["description"],
+                        "descriptionUsesIndependentReview": False,
                     }
                 if prefix == "fallback-reasoning-details":
                     item = dimensions["reasoning"]
@@ -9118,7 +9170,7 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(prefixes.count(f"fallback-reasoning-{suffix}"), 1)
         self.assertEqual(
             set(call_map["fallback-reasoning-score-description"][1]["properties"]),
-            {"score", "description"},
+            {"score", "description", "descriptionUsesIndependentReview"},
         )
         self.assertEqual(
             set(call_map["fallback-reasoning-details"][1]["properties"]),

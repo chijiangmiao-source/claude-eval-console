@@ -136,6 +136,65 @@ def split_evaluation_parts(evaluation):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_score_cap_balances_all_full_scores_and_keeps_strongest_dimension(self):
+        self.assertEqual(
+            app.cap_score_vector(
+                [5, 5, 5, 5, 5],
+                [
+                    "delivery",
+                    "execution",
+                    "instruction_following",
+                    "reasoning",
+                    "planning",
+                ],
+            ),
+            [5, 4, 4, 4, 4],
+        )
+        self.assertEqual(
+            app.cap_score_vector([5, 4, 4, 4, 4]),
+            [5, 4, 4, 4, 4],
+        )
+
+    def test_total_score_cap_only_applies_to_new_policy_evaluations(self):
+        historical = sample_evaluation()
+        self.assertEqual(
+            sum(item["score"] for key, item in historical.items() if key in app.EVALUATION_DIMENSION_KEYS),
+            25,
+        )
+        app.normalize_evaluation(historical, 1)
+
+        current = sample_evaluation()
+        current["_score_policy_version"] = app.EVALUATION_SCORE_POLICY_MAX_TOTAL_21
+        current["_score_cap_adjusted_dimensions"] = []
+        with self.assertRaisesRegex(app.WorkflowError, "总分不能超过 21"):
+            app.normalize_evaluation(current, 1)
+
+        capped = sample_evaluation()
+        capped["_score_policy_version"] = app.EVALUATION_SCORE_POLICY_MAX_TOTAL_21
+        capped["_score_cap_adjusted_dimensions"] = list(
+            app.EVALUATION_DIMENSION_KEYS[1:]
+        )
+        for key in app.EVALUATION_DIMENSION_KEYS[1:]:
+            capped[key]["score"] = 4
+        normalized = app.normalize_evaluation(capped, 1)
+        self.assertEqual(
+            sum(normalized[key]["score"] for key in app.EVALUATION_DIMENSION_KEYS),
+            21,
+        )
+
+    def test_score_plan_metadata_schema_requires_five_scores_and_strength_order(self):
+        schema = app.evaluation_score_plan_metadata_schema()
+        plan = schema["properties"]["score_plan"]
+
+        self.assertIn("score_plan", schema["required"])
+        self.assertEqual(plan["properties"]["independent_scores"]["minItems"], 5)
+        self.assertEqual(plan["properties"]["independent_scores"]["maxItems"], 5)
+        self.assertTrue(plan["properties"]["strength_order"]["uniqueItems"])
+        self.assertEqual(
+            set(plan["properties"]["strength_order"]["items"]["enum"]),
+            set(app.EVALUATION_DIMENSION_KEYS),
+        )
+
     def test_evaluation_descriptions_reject_template_phrases(self):
         evaluation = sample_evaluation()
         evaluation["planning"]["description"] = "阶段顺序清楚，最终产物可用。"
@@ -7833,6 +7892,66 @@ class ParsingTests(unittest.TestCase):
 
 
 class ReviewTests(unittest.TestCase):
+    def test_split_regrade_locks_new_scores_to_the_21_point_plan(self):
+        evaluation = with_score_stage(sample_evaluation("Feature 迭代"))
+        metadata, dimensions = split_evaluation_parts(evaluation)
+        metadata["score_plan"] = {
+            "independent_scores": [5, 5, 5, 5, 5],
+            "strength_order": list(app.EVALUATION_DIMENSION_KEYS),
+            "rationales": [
+                f"app.py 的实现支持{label}评分"
+                for label in app.EVALUATION_DIMENSION_LABELS.values()
+            ],
+        }
+        returned_scores = {}
+
+        def structured_result(prompt, schema, _cwd, prefix, _timeout, **_kwargs):
+            if prefix == "turn-regrade-metadata":
+                self.assertIn("总分上限", prompt)
+                return metadata
+            key = prefix.removeprefix("turn-regrade-")
+            score = schema["properties"]["score"]["enum"][0]
+            returned_scores[key] = score
+            item = dict(dimensions[key])
+            item["score"] = score
+            label = app.EVALUATION_DIMENSION_LABELS[key]
+            fact = f"app.py 的实现支持{label}评分"
+            adjacent = "；".join(
+                f"相邻{value}分差别={fact}"
+                for value in (score - 1, score + 1)
+                if 1 <= value <= 5
+            )
+            item["processFinding"] = (
+                f"{label}={score}分；事实={fact}；{adjacent}"
+            )
+            return item
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            app, "run_codex_structured", side_effect=structured_result
+        ):
+            result = app.run_codex_split_regrade(
+                Path(directory),
+                "原始题面",
+                [],
+                "轨迹",
+                1,
+                None,
+                "a" * 40,
+            )
+
+        self.assertEqual(result["scores"], [5, 4, 4, 4, 4])
+        self.assertEqual(sum(result["scores"]), 21)
+        self.assertEqual(
+            returned_scores,
+            dict(zip(app.EVALUATION_DIMENSION_KEYS, [5, 4, 4, 4, 4])),
+        )
+        self.assertEqual(
+            result["_score_cap_adjusted_dimensions"],
+            list(app.EVALUATION_DIMENSION_KEYS[1:]),
+        )
+        normalized = app.normalize_evaluation(result, 1)
+        self.assertEqual(sum(normalized["scores"]), 21)
+
     def test_evaluation_rubric_is_loaded_from_doc(self):
         rubric = app.evaluation_rubric_text()
         self.assertIn("交付完整性 (Delivery)", rubric)
@@ -9245,6 +9364,8 @@ class ReviewTests(unittest.TestCase):
         def structured_result(_prompt, _schema, _cwd, prefix, _timeout, **_kwargs):
             with calls_lock:
                 calls_inside_slot.append((prefix, gate.held_by_current_thread()))
+            if prefix.endswith("-metadata"):
+                return metadata
             self.assertTrue(gate.capacity_reached.wait(2))
             time.sleep(0.01)
             if prefix == "delivery-description-repair":
@@ -9258,8 +9379,6 @@ class ReviewTests(unittest.TestCase):
                     "evidenceRefs": "app.py:1",
                     "processFinding": "交付完整性=5分",
                 }
-            if prefix.endswith("-metadata"):
-                return metadata
             key = next(
                 key
                 for key in app.EVALUATION_DIMENSION_KEYS
@@ -9419,6 +9538,14 @@ class ReviewTests(unittest.TestCase):
         other_group = app.LocalCodexProcessGroup()
         other_process = ControlledProcess("other-job")
         other_group.register(other_process)
+        metadata = {
+            "task_type": "Feature 迭代",
+            "task_difficulty": "困难",
+            "language_framework": "Python",
+            "environment_reproducibility": "本地可运行",
+            "other_issues": "无",
+            "artifactFindings": "0 项通过、0 项失败、0 项跳过",
+        }
 
         def structured_result(
             _prompt, _schema, _cwd, prefix, _timeout, **kwargs
@@ -9426,6 +9553,8 @@ class ReviewTests(unittest.TestCase):
             process_group = kwargs["process_group"]
             with state_lock:
                 captured_groups.append(process_group)
+            if prefix == "isolated-stop-metadata":
+                return metadata
             if prefix == "isolated-stop-delivery":
                 self.assertTrue(four_siblings_started.wait(2))
                 raise original

@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260915.64"
+APP_VERSION = "20260915.65"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -10720,7 +10720,11 @@ def solo_qa_readiness(
         or (row.get("run_task_difficulty") if int(row.get("turn_count") or 0) == 1 else "")
         or ""
     ).strip()
-    if difficulty not in REQUIRED_TASK_DIFFICULTIES:
+    existing_remote_repair = bool(
+        str(row.get("solo_qa_remote_submission_id") or "").strip()
+        and str(row.get("solo_qa_remote_status") or "").strip() == "PENDING_FIX"
+    )
+    if difficulty not in REQUIRED_TASK_DIFFICULTIES and not existing_remote_repair:
         issues.append(
             "SOLO-QA 只允许提交困难及以上难度，当前为"
             f"{difficulty or '未评定'}"

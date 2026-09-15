@@ -19760,6 +19760,41 @@ class ExportTests(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIn("SOLO-QA 只允许提交困难及以上难度，当前为中等", issues)
 
+    def test_solo_qa_readiness_allows_existing_return_below_difficult(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                evaluation = sample_evaluation()
+                evaluation["task_difficulty"] = "中等"
+                app.update_turn(
+                    "abc123abc123",
+                    1,
+                    review_result=json.dumps({"evaluation": evaluation}, ensure_ascii=False),
+                )
+                self.confirm_turn()
+                timestamp = app.now_text()
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO solo_qa_submissions(
+                             run_id, turn_number, remote_submission_id, remote_status,
+                             state, qc_summary, created_at, updated_at
+                           ) VALUES ('abc123abc123', 1, '42', 'PENDING_FIX',
+                                     'needs_fix', '评分描述需要调整', ?, ?)""",
+                        (timestamp, timestamp),
+                    )
+                row = app.completed_turn_row("abc123abc123:1")
+                ready, issues = app.solo_qa_readiness(row)
+                payload = app.solo_qa_turn_payload("abc123abc123:1")
+
+        self.assertTrue(ready, issues)
+        self.assertNotIn("SOLO-QA 只允许提交困难及以上难度，当前为中等", issues)
+        self.assertTrue(payload["ready"])
+        self.assertEqual(payload["solo_qa"]["remote_status"], "PENDING_FIX")
+
     def test_delete_run_is_recoverable_and_preserves_project_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

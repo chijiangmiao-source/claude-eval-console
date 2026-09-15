@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260915.70"
+APP_VERSION = "20260915.71"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -181,7 +181,9 @@ TASK_GENERATION_REASONING_EFFORT = "medium"
 EVALUATION_REASONING_EFFORT = "medium"
 FIRST_REVIEW_REASONING_EFFORT = "high"
 FIRST_REVIEW_RETRY_REASONING_EFFORT = "medium"
-TASK_GENERATION_BATCH_SIZE = 2
+# Generate one complete candidate first. Ask for the fallback candidate only
+# after the first candidate and its one targeted rewrite are exhausted.
+TASK_GENERATION_BATCH_SIZE = 1
 TASK_GENERATION_BATCH_ATTEMPTS = 2
 TASK_GENERATION_HISTORY_LIMIT = 15
 TASK_GENERATION_REVIEW_HISTORY_LIMIT = 10
@@ -193,12 +195,18 @@ ITERATION_GENERATION_ATTEMPTS = 2
 REPOSITORY_PROMPT_HISTORY_LIMIT = 40
 GLOBAL_PROMPT_DEDUP_SCAN_LIMIT = 2000
 GLOBAL_PROMPT_DEDUP_SHORTLIST_LIMIT = 24
+ITERATION_GENERATION_HISTORY_LIMIT = 12
+ITERATION_REVIEW_HISTORY_LIMIT = 8
+DEDUP_MODEL_HISTORY_LIMIT = 8
+SEMANTIC_DEDUP_SEQUENCE_RISK = 0.34
+SEMANTIC_DEDUP_BIGRAM_RISK = 0.28
 GLOBAL_BUG_PROMPT_SEQUENCE_LIMIT = 0.62
 GLOBAL_BUG_PROMPT_BIGRAM_LIMIT = 0.48
 PROMPT_DEDUP_VALIDATION_TIMEOUT_SECONDS = 3 * 60
 ITERATION_GENERATION_ATTEMPT_TIMEOUT_SECONDS = 12 * 60
 ITERATION_VALIDATION_TIMEOUT_SECONDS = 10 * 60
 ITERATION_FORMAT_REPAIR_TIMEOUT_SECONDS = 3 * 60
+ITERATION_TARGETED_REPAIR_TIMEOUT_SECONDS = 5 * 60
 BUGFIX_GENERATION_ATTEMPT_TIMEOUT_SECONDS = 12 * 60
 GENERATION_MODEL_MAX_PARALLEL = 6
 GENERATION_TRANSIENT_RETRY_DELAYS = (15, 45, 90)
@@ -996,6 +1004,7 @@ TASK_DIFFICULTY_OPTIONS = ("简单", "中等", "困难", "地狱")
 REQUIRED_TASK_DIFFICULTIES = frozenset(("困难", "地狱"))
 TASK_DIFFICULTY_MARGIN_OPTIONS = ("低于困难", "困难边缘", "明确困难", "地狱")
 REQUIRED_TASK_DIFFICULTY_MARGINS = frozenset(("明确困难", "地狱"))
+DIFFICULTY_CONTRACT_AXES = ("状态不变量", "自定义算法", "跨模块契约")
 TASK_DIFFICULTY_GUIDANCE = """task_difficulty 必须在检查真实代码、验收结果和本轮轨迹后独立判定，不采用题面、自报或历史记录中的难度标签。简单表示改动集中、路径直接且验证成本低；中等表示跨模块完成一条工程链路并处理常见失败路径；困难表示存在较多状态不变量、恢复逻辑或复杂跨层协作；地狱只用于产物确实同时包含多组深层机制且实现与验证负担显著的情况。"""
 DEVELOPER_PROMPT_STYLE_GUIDANCE = """题面使用自然、简洁的开发交接口吻，像项目负责人结合当前场景向开发者说明下一步工作。按业务因果和操作流程组织内容，不把数据库、接口、页面、异常、测试等字段机械地逐项拼接，不连续堆叠“必须”“不得”“须”“需要”等命令句，不使用“新增某模块，使用户能够”“提供某接口并覆盖”等模板反复起句，也不在结尾集中罗列通用工程或测试清单。技术约束、失败现象、兼容边界和验收证据仍要具体，但应放在它们对应的业务行为附近。"""
 BUG_REPAIR_PROMPT_STYLE_GUIDANCE = """先根据本轮需求检查功能是否真的实现，再记录已经稳定复现的 Bug。每个 Bug 另写一条 customer_summary，系统只按原顺序用中文分号把摘要拼成一整行，不添加通用开场、序号、命令或验收尾巴。每条摘要用客户能看懂的口语写清项目专属业务对象、触发条件、当前可观察结果和正确状态；不要写标题、项目符号、引号、Markdown、文件名、函数名、命令、测试框架、推测的根因、解决方法或通用测试要求。每条摘要控制在 12～90 个字符并尽量用一句话说清楚；编号、引号、连续标点和多余句末符号会在发送前由本地程序整理，不作为候选失败原因。若上一轮修复后同一问题仍存在，摘要必须依据新的复现证据描述修复后的残留状态，不能重发或同义改写当前题面；完全没有新的可观察差异时应停止自动续轮并交由人工确认。内部的 reproduction、actual、expected 和 evidence 仍须完整填写，不能为了凑修复轮把风险或测试缺口写成 Bug。"""
@@ -1742,6 +1751,7 @@ def initialize_database() -> None:
               iteration_main_user_flow TEXT,
               iteration_api_or_actions TEXT NOT NULL DEFAULT '[]',
               iteration_new_state_sets TEXT NOT NULL DEFAULT '[]',
+              difficulty_contract TEXT NOT NULL DEFAULT '{}',
               bug_generation_evidence TEXT NOT NULL DEFAULT '{}',
               verification_commands TEXT NOT NULL DEFAULT '[]',
               first_verification TEXT NOT NULL DEFAULT '[]',
@@ -1980,6 +1990,11 @@ def initialize_database() -> None:
         for column, definition in iteration_metadata_columns.items():
             if column not in columns:
                 database.execute(f"ALTER TABLE runs ADD COLUMN {column} {definition}")
+        if "difficulty_contract" not in columns:
+            database.execute(
+                "ALTER TABLE runs ADD COLUMN difficulty_contract "
+                "TEXT NOT NULL DEFAULT '{}'"
+            )
         if "bug_generation_evidence" not in columns:
             database.execute(
                 "ALTER TABLE runs ADD COLUMN bug_generation_evidence "
@@ -2970,6 +2985,126 @@ def normalize_iteration_metadata(value: Any) -> Dict[str, Any]:
     }
 
 
+def difficulty_contract_schema() -> Dict[str, Any]:
+    """Describe the one non-trivial requirement that supports a hard task."""
+    return {
+        "type": "object",
+        "properties": {
+            "axis": {"type": "string", "enum": list(DIFFICULTY_CONTRACT_AXES)},
+            "hard_requirement": {"type": "string", "minLength": 1},
+            "acceptance_evidence": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+                "maxItems": 4,
+            },
+            "rejected_shortcut": {"type": "string", "minLength": 1},
+        },
+        "required": [
+            "axis", "hard_requirement", "acceptance_evidence", "rejected_shortcut",
+        ],
+        "additionalProperties": False,
+    }
+
+
+def normalize_difficulty_contract(value: Any) -> Dict[str, Any]:
+    """Normalize a reviewed generation-time difficulty contract for storage."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "{}")
+        except json.JSONDecodeError as exc:
+            raise WorkflowError("难度契约格式不正确") from exc
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise WorkflowError("难度契约格式不正确")
+    axis = re.sub(r"\s+", " ", str(value.get("axis") or "")).strip()
+    difficulty = reviewed_task_difficulty(value)
+    if not difficulty:
+        difficulty = re.sub(
+            r"\s+", "", str(value.get("estimated_task_difficulty") or "")
+        ).strip()
+    margin = re.sub(
+        r"\s+", " ", str(value.get("difficulty_margin") or "")
+    ).strip()
+    if axis not in DIFFICULTY_CONTRACT_AXES:
+        raise WorkflowError("难度契约缺少有效的主难点轴")
+    if difficulty not in REQUIRED_TASK_DIFFICULTIES:
+        raise WorkflowError("难度契约的出题预估必须为困难或地狱")
+    if margin and margin not in REQUIRED_TASK_DIFFICULTY_MARGINS:
+        raise WorkflowError("难度契约缺少明确困难以上的难度余量")
+    hard_requirement = re.sub(
+        r"\s+", " ", str(value.get("hard_requirement") or "")
+    ).strip()[:800]
+    rejected_shortcut = re.sub(
+        r"\s+", " ", str(value.get("rejected_shortcut") or "")
+    ).strip()[:800]
+    acceptance_evidence = normalize_iteration_text_list(
+        value.get("acceptance_evidence"), 4
+    )
+    hardness_basis = re.sub(
+        r"\s+", " ", str(value.get("hardness_basis") or "")
+    ).strip()[:800]
+    if not hard_requirement or not rejected_shortcut or not acceptance_evidence:
+        raise WorkflowError("难度契约缺少困难要求、验收证据或捷径反证")
+    return {
+        "version": 1,
+        "difficulty": difficulty,
+        "difficulty_margin": margin,
+        "axis": axis,
+        "hard_requirement": hard_requirement,
+        "acceptance_evidence": acceptance_evidence,
+        "rejected_shortcut": rejected_shortcut,
+        "hardness_basis": hardness_basis,
+    }
+
+
+def reviewed_difficulty_contract(validation: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a persisted contract from the independent generation review."""
+    raw = validation.get("difficulty_contract")
+    if not isinstance(raw, dict):
+        scope = validation.get("scope_review")
+        scope = scope if isinstance(scope, dict) else {}
+        if normalize_iteration_text_list(scope.get("custom_algorithm_families"), 1):
+            axis = "自定义算法"
+        elif normalize_iteration_text_list(scope.get("complex_mechanisms"), 1):
+            axis = "状态不变量"
+        else:
+            axis = "跨模块契约"
+        basis = re.sub(
+            r"\s+", " ", str(validation.get("hardness_basis") or "")
+        ).strip()
+        raw = {
+            "axis": axis,
+            "hard_requirement": basis or "题面中的核心跨模块契约必须完整实现",
+            "acceptance_evidence": [
+                basis or "核心验收场景能够直接观察困难要求是否成立"
+            ],
+            "rejected_shortcut": (
+                "仅完成普通 CRUD、字段校验或常规接口串联不能满足核心验收"
+            ),
+        }
+    return normalize_difficulty_contract(
+        {
+            **raw,
+            "difficulty": reviewed_task_difficulty(validation),
+            "difficulty_margin": validation.get("difficulty_margin"),
+            "hardness_basis": validation.get("hardness_basis"),
+        }
+    )
+
+
+def difficulty_contract_from_row(row: Any) -> Dict[str, Any]:
+    try:
+        value = row["difficulty_contract"]
+    except (IndexError, KeyError, TypeError):
+        value = {}
+    try:
+        return normalize_difficulty_contract(value)
+    except WorkflowError:
+        return {}
+
+
 def normalize_bug_generation_evidence(value: Any) -> Dict[str, Any]:
     """Keep the internal reproduction record behind an independent Bug prompt."""
     if isinstance(value, str):
@@ -3189,6 +3324,7 @@ def iteration_lineage_state(source_run_id: str) -> Dict[str, Any]:
                 "new_state_sets": normalize_iteration_text_list(
                     row["iteration_new_state_sets"], ITERATION_MAX_NEW_STATE_SETS
                 ),
+                "difficulty_contract": difficulty_contract_from_row(row),
             }
         )
     return {
@@ -4151,6 +4287,126 @@ def prompt_unit_similarity(left: str, right: str) -> Tuple[float, float]:
     )
 
 
+def compact_prompt_history_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only the history fields used by generation and review."""
+    compact: Dict[str, Any] = {}
+    for field in (
+        "reference", "source", "task_type", "remote_status", "expansion_axis",
+        "engineering_core", "main_user_flow", "modules", "complex_dimensions",
+        "api_or_actions", "new_state_sets", "sequence", "run_id", "phase",
+        "outcome", "counts_toward_quota", "dedup_required", "task_difficulty",
+        "difficulty_contract", "repo_key", "repo_name",
+    ):
+        if field in item:
+            compact[field] = item[field]
+    prompt = re.sub(r"\s+", " ", str(item.get("prompt") or "")).strip()
+    if prompt:
+        compact["prompt"] = prompt[:700]
+    summary = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip()
+    if summary:
+        compact["summary"] = summary[:360]
+    qc_summary = re.sub(
+        r"\s+", " ", str(item.get("qc_summary") or "")
+    ).strip()
+    if qc_summary:
+        compact["qc_summary"] = qc_summary[:240]
+    for field in ("lexical_similarity", "bigram_containment", "same_repository"):
+        if field in item:
+            compact[field] = item[field]
+    return compact
+
+
+def prompt_history_risk_score(
+    candidate: Optional[Dict[str, Any]], item: Dict[str, Any]
+) -> Tuple[float, float]:
+    """Rank history by stored or freshly calculated prompt similarity."""
+    try:
+        stored_sequence = float(item.get("lexical_similarity") or 0)
+        stored_bigram = float(item.get("bigram_containment") or 0)
+    except (TypeError, ValueError):
+        stored_sequence, stored_bigram = 0.0, 0.0
+    if not candidate:
+        return stored_sequence, stored_bigram
+    scores = [
+        prompt_unit_similarity(candidate_unit, history_unit)
+        for candidate_unit in prompt_dedup_units(candidate)
+        for history_unit in prompt_dedup_units(
+            item.get("prompt") or item.get("summary")
+        )
+    ]
+    if not scores:
+        return stored_sequence, stored_bigram
+    sequence, bigram = max(scores, key=lambda value: (value[0], value[1]))
+    return max(sequence, stored_sequence), max(bigram, stored_bigram)
+
+
+def compact_prompt_history(
+    history: Any,
+    limit: int,
+    candidate: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Return bounded, relevance-ranked history for a model call."""
+    items = [item for item in history or [] if isinstance(item, dict)]
+    if candidate:
+        items = [
+            item
+            for _, item in sorted(
+                enumerate(items),
+                key=lambda pair: (
+                    *prompt_history_risk_score(candidate, pair[1]), -pair[0]
+                ),
+                reverse=True,
+            )
+        ]
+    return [
+        compact_prompt_history_item(item)
+        for item in items[:max(1, int(limit))]
+    ]
+
+
+def compact_iteration_prompt_context(
+    context: Dict[str, Any],
+    candidate: Optional[Dict[str, Any]] = None,
+    repository_limit: int = ITERATION_GENERATION_HISTORY_LIMIT,
+) -> Dict[str, Any]:
+    """Bound repository context while retaining selection and dedup facts."""
+    compact = dict(context)
+    compact["readme"] = str(context.get("readme") or "")[:8000]
+    compact["original_or_current_prompt"] = str(
+        context.get("original_or_current_prompt") or ""
+    )[:6000]
+    tracked_files = context.get("tracked_files")
+    compact["tracked_files"] = (
+        [str(item) for item in tracked_files[:160]]
+        if isinstance(tracked_files, list)
+        else []
+    )
+    compact["iteration_history"] = compact_prompt_history(
+        context.get("iteration_history"), ITERATION_GENERATION_HISTORY_LIMIT,
+        candidate,
+    )
+    compact["repository_prompt_history"] = compact_prompt_history(
+        context.get("repository_prompt_history"), repository_limit, candidate,
+    )
+    return compact
+
+
+def semantic_dedup_review_needed(
+    candidate: Dict[str, Any], global_history: List[Dict[str, Any]]
+) -> bool:
+    """Reserve the extra cross-project model review for plausible matches."""
+    for item in global_history:
+        if item.get("dedup_required") is False:
+            continue
+        sequence, bigram = prompt_history_risk_score(candidate, item)
+        if (
+            sequence >= SEMANTIC_DEDUP_SEQUENCE_RISK
+            or bigram >= SEMANTIC_DEDUP_BIGRAM_RISK
+        ):
+            return True
+    return False
+
+
 def prompt_history_qc_duplicate(value: Any) -> bool:
     summary = str(value or "")
     return any(marker in summary for marker in ("雷同", "重复", "查重", "公共长片段"))
@@ -4730,6 +4986,7 @@ def run_codex_task_validation(
                 "type": "string", "enum": list(TASK_DIFFICULTY_MARGIN_OPTIONS)
             },
             "hardness_basis": {"type": "string", "minLength": 8},
+            "difficulty_contract": difficulty_contract_schema(),
             "history_overlap": {"type": "boolean"},
             "reasons": {"type": "array", "items": {"type": "string"}},
             "soft_suggestions": {"type": "array", "items": {"type": "string"}},
@@ -4784,8 +5041,8 @@ def run_codex_task_validation(
         },
         "required": [
             "approved", "difficulty", "difficulty_margin", "hardness_basis",
-            "history_overlap", "reasons", "soft_suggestions", "closest_history_repo",
-            "scope_review"
+            "difficulty_contract", "history_overlap", "reasons",
+            "soft_suggestions", "closest_history_repo", "scope_review"
         ],
         "additionalProperties": False,
     }
@@ -4822,7 +5079,7 @@ def run_codex_task_validation(
     encoded = json.dumps(review_payload, ensure_ascii=False)
     if len(encoded) > 110000:
         encoded = encoded[:110000]
-    prompt = f"""严格复核下面的 0-1 项目题目，并根据题面要求独立估计完成该项目的 difficulty。简单表示改动集中且路径直接；中等表示跨模块完成常规工程链路并处理常见失败；困难表示存在显著的状态不变量、故障恢复、复杂跨层一致性或具有独立测试判据的非平凡领域算法；地狱表示同时具有多组深层机制。不能采信题面、自报字段或措辞里的难度声明。另给出 difficulty_margin：低于困难表示明显只需常规实现，困难边缘表示虽然可评困难但实际产物很可能降为中等，明确困难表示题面存在无法用常规框架能力替代的主难点，地狱表示有充分的多组深层机制；hardness_basis 用一句话写出不可替代的具体难点。固定规则表、字段或 Schema 校验、单次请求内的遍历或两重循环、简单距离公式、排序取首项、普通 CRUD、常规接口串联、格式转换和测试数量都不能单独成为困难依据；专业业务名词、模块数量和 Docker 部署也不能抬高难度。若合格实现可以主要依靠这些常规路径完成，difficulty 最高为中等，difficulty_margin 必须为低于困难或困难边缘。先只根据 prompt 正文重新填写 scope_review，不能照抄或信任候选题自报的范围字段：识别工程核心数量；列出真正需要开发的业务或技术模块，README、测试、Docker、数据库本身不能单独算模块；列出数据库之外所有可独立运行的应用组件；把工程核心之外的幂等、重试、导入校验、聚合展示等列为辅助机制；把需要跨请求、进程或多步状态维持不变量的崩溃续作、反向补偿、有序确认与迟到消息抑制、二进制损坏恢复、密码学证明或密钥轮换等列为复杂机制，即使题面换了说法也必须识别；把需要自行实现并建立独立测试判据的格式解释或坐标归一化、领域编码、计算几何或碰撞检测、路径搜索、差异匹配、规则裁决分别列为 custom_algorithm_families，不能因共享一个业务输出而合并；undefined_domain_decisions 只记录会让核心验收结果不唯一的业务边界，字段命名、页面布局和内部实现选择等次要问题放入 soft_suggestions，不能因此否决；将没有明确数据或处理职责的数据库、worker、模拟器和独立服务列入 unjustified_infrastructure；按可独立操作和观察结果的路径统计验收场景，同一次用户操作下的多项校验若只产生同一个最终可观察结果，应合并为一个验收场景，只有操作或最终结果不同才分开计数。候选自报字段漏掉会突破范围上限的实质模块、组件、工作流或机制时才写入 undeclared_scope_items，轻微表述差异放入 soft_suggestions。history_overlap 仅在候选与任一历史题目的核心业务对象、数据模型、主要算法或交互结构实质重复时设为 true；此时 closest_history_repo 填最接近仓库，且 approved 必须为 false。只有同时满足这些硬条件才能 approved=true：difficulty 为困难或地狱，且 difficulty_margin 为明确困难或地狱；恰好一个可独立验收的工程核心和一条主要纵向链路；实际实现模块为 {TASK_MIN_IMPLEMENTATION_MODULES} 至 {TASK_MAX_IMPLEMENTATION_MODULES} 个；应用运行组件不超过 {TASK_MAX_RUNTIME_COMPONENTS} 个；核心以外的辅助机制不超过 {TASK_MAX_SUPPORTING_MECHANISMS} 项；全题复杂机制不超过 {TASK_MAX_COMPLEX_MECHANISMS} 项；自定义算法体系不超过 {TASK_MAX_CUSTOM_ALGORITHM_FAMILIES} 种，且复杂机制数与自定义算法体系数合计不超过 1；验收场景为 {TASK_MIN_ACCEPTANCE_SCENARIOS} 至 {TASK_MAX_ACCEPTANCE_SCENARIOS} 个；不存在未申报且会突破预算的范围、不存在会改变核心验收结果的未定义规则、没有无职责基础设施；prompt_char_count 在 {TASK_PROMPT_MIN_CHARS} 至 {TASK_PROMPT_MAX_CHARS} 字；正文和 repo_name 不含项目编号；不是普通实体 CRUD、审批、档案、认领或留痕主体，也不是泛化的“XX 管理系统”；没有重型架构；没有与历史题目实质重复；{category}边界正确；全部运行与验收可由 Docker Compose 完成。开头、结尾和通用交付项的位置只是写作质量建议，写入 soft_suggestions，不能单独导致 approved=false。reasons 只写硬性不通过原因；difficulty 低于困难或 difficulty_margin 不足时必须写明并令 approved=false；soft_suggestions 可写次要改进点，无建议时为空。数据如下：{encoded}"""
+    prompt = f"""严格复核下面的 0-1 项目题目，并根据题面要求独立估计完成该项目的 difficulty。简单表示改动集中且路径直接；中等表示跨模块完成常规工程链路并处理常见失败；困难表示存在显著的状态不变量、故障恢复、复杂跨层一致性或具有独立测试判据的非平凡领域算法；地狱表示同时具有多组深层机制。不能采信题面、自报字段或措辞里的难度声明。另给出 difficulty_margin：低于困难表示明显只需常规实现，困难边缘表示虽然可评困难但实际产物很可能降为中等，明确困难表示题面存在无法用常规框架能力替代的主难点，地狱表示有充分的多组深层机制；hardness_basis 用一句话写出不可替代的具体难点。difficulty_contract 必须选定状态不变量、自定义算法或跨模块契约中的一个主轴，写清困难要求、可直接观察的验收证据，以及为什么普通 CRUD、字段校验或常规接口串联不能替代。固定规则表、字段或 Schema 校验、单次请求内的遍历或两重循环、简单距离公式、排序取首项、普通 CRUD、常规接口串联、格式转换和测试数量都不能单独成为困难依据；专业业务名词、模块数量和 Docker 部署也不能抬高难度。若合格实现可以主要依靠这些常规路径完成，difficulty 最高为中等，difficulty_margin 必须为低于困难或困难边缘。先只根据 prompt 正文重新填写 scope_review，不能照抄或信任候选题自报的范围字段：识别工程核心数量；列出真正需要开发的业务或技术模块，README、测试、Docker、数据库本身不能单独算模块；列出数据库之外所有可独立运行的应用组件；把工程核心之外的幂等、重试、导入校验、聚合展示等列为辅助机制；把需要跨请求、进程或多步状态维持不变量的崩溃续作、反向补偿、有序确认与迟到消息抑制、二进制损坏恢复、密码学证明或密钥轮换等列为复杂机制，即使题面换了说法也必须识别；把需要自行实现并建立独立测试判据的格式解释或坐标归一化、领域编码、计算几何或碰撞检测、路径搜索、差异匹配、规则裁决分别列为 custom_algorithm_families，不能因共享一个业务输出而合并；undefined_domain_decisions 只记录会让核心验收结果不唯一的业务边界，字段命名、页面布局和内部实现选择等次要问题放入 soft_suggestions，不能因此否决；将没有明确数据或处理职责的数据库、worker、模拟器和独立服务列入 unjustified_infrastructure；按可独立操作和观察结果的路径统计验收场景，同一次用户操作下的多项校验若只产生同一个最终可观察结果，应合并为一个验收场景，只有操作或最终结果不同才分开计数。候选自报字段漏掉会突破范围上限的实质模块、组件、工作流或机制时才写入 undeclared_scope_items，轻微表述差异放入 soft_suggestions。history_overlap 仅在候选与任一历史题目的核心业务对象、数据模型、主要算法或交互结构实质重复时设为 true；此时 closest_history_repo 填最接近仓库，且 approved 必须为 false。只有同时满足这些硬条件才能 approved=true：difficulty 为困难或地狱，且 difficulty_margin 为明确困难或地狱；恰好一个可独立验收的工程核心和一条主要纵向链路；实际实现模块为 {TASK_MIN_IMPLEMENTATION_MODULES} 至 {TASK_MAX_IMPLEMENTATION_MODULES} 个；应用运行组件不超过 {TASK_MAX_RUNTIME_COMPONENTS} 个；核心以外的辅助机制不超过 {TASK_MAX_SUPPORTING_MECHANISMS} 项；全题复杂机制不超过 {TASK_MAX_COMPLEX_MECHANISMS} 项；自定义算法体系不超过 {TASK_MAX_CUSTOM_ALGORITHM_FAMILIES} 种，且复杂机制数与自定义算法体系数合计不超过 1；验收场景为 {TASK_MIN_ACCEPTANCE_SCENARIOS} 至 {TASK_MAX_ACCEPTANCE_SCENARIOS} 个；不存在未申报且会突破预算的范围、不存在会改变核心验收结果的未定义规则、没有无职责基础设施；prompt_char_count 在 {TASK_PROMPT_MIN_CHARS} 至 {TASK_PROMPT_MAX_CHARS} 字；正文和 repo_name 不含项目编号；不是普通实体 CRUD、审批、档案、认领或留痕主体，也不是泛化的“XX 管理系统”；没有重型架构；没有与历史题目实质重复；{category}边界正确；全部运行与验收可由 Docker Compose 完成。开头、结尾和通用交付项的位置只是写作质量建议，写入 soft_suggestions，不能单独导致 approved=false。reasons 只写硬性不通过原因；difficulty 低于困难或 difficulty_margin 不足时必须写明并令 approved=false；soft_suggestions 可写次要改进点，无建议时为空。数据如下：{encoded}"""
     return run_codex_generation_structured(
         prompt, schema, APP_DIR, "task-validation", max(1, int(timeout_seconds))
     )
@@ -5107,29 +5364,6 @@ def task_review_allows_targeted_rewrite(validation: Dict[str, Any]) -> bool:
     return True
 
 
-def generated_task_prompt_dedup_review(
-    candidate: Dict[str, Any], timeout_seconds: int
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Compare a new 0-1 prompt with submitted history before allocating a repo."""
-    global_history = global_prompt_dedup_history(
-        "",
-        candidate,
-        "0-1 代码生成",
-    )
-    if not global_history:
-        return {}, []
-    review = run_codex_prompt_dedup_validation(
-        candidate,
-        "0-1 代码生成",
-        [],
-        global_history,
-        timeout_seconds=min(
-            PROMPT_DEDUP_VALIDATION_TIMEOUT_SECONDS,
-            max(1, int(timeout_seconds)),
-        ),
-    )
-    return review, global_history
-
 
 def generate_task_draft(
     project_number: Optional[int] = None,
@@ -5171,8 +5405,9 @@ def generate_task_draft(
         return remaining
 
     generation_history = history[:TASK_GENERATION_HISTORY_LIMIT]
-    drafts: List[Dict[str, Any]] = []
-    local_errors: List[str] = []
+    failures: List[str] = []
+    rewrite_used = False
+    candidate_number = 0
     for batch_number in range(1, TASK_GENERATION_BATCH_ATTEMPTS + 1):
         report(f"第 {batch_number}/{TASK_GENERATION_BATCH_ATTEMPTS} 批候选生成中")
         raw_batch = run_codex_task_generation(
@@ -5184,7 +5419,7 @@ def generate_task_draft(
         )
         report(f"正在校验第 {batch_number}/{TASK_GENERATION_BATCH_ATTEMPTS} 批候选")
         local_candidates: List[Dict[str, Any]] = []
-        local_errors = []
+        local_errors: List[str] = []
         for raw in generated_candidate_batch(raw_batch):
             try:
                 closest_history = closest_history_for_candidate(
@@ -5205,7 +5440,9 @@ def generate_task_draft(
                     local_errors.append(message)
         if not local_candidates:
             feedback = "；".join(local_errors)[:2400] or "本批没有返回可用候选题"
+            failures.append(f"候选批次 {batch_number}：{feedback}")
             continue
+
         drafts = sorted(
             local_candidates,
             key=lambda candidate: generated_task_quality_key(
@@ -5215,121 +5452,158 @@ def generate_task_draft(
                 ),
             ),
         )
-        break
-
-    if not drafts:
-        raise WorkflowError(
-            f"连续 {TASK_GENERATION_BATCH_ATTEMPTS} 批未生成合规题目：{feedback}"
-        )
-
-    failures: List[str] = []
-    rewrite_used = False
-    for index, draft in enumerate(drafts, start=1):
-        review_history = closest_history_for_candidate(
-            draft, history, TASK_GENERATION_REVIEW_HISTORY_LIMIT
-        )
-        report("正在执行提交前语义查重")
-        dedup_review, global_history = generated_task_prompt_dedup_review(
-            draft, remaining_seconds()
-        )
-        dedup_reason = prompt_dedup_review_reason(dedup_review)
-        if dedup_reason:
-            failures.append(f"候选 {index}：{dedup_reason}")
-            report(dedup_reason)
-            if index < len(drafts):
-                report("当前候选与质检题库实质重复，改用下一候选")
-            continue
-        if dedup_review:
-            draft["prompt_dedup_review"] = dedup_review
-            draft["prompt_dedup_history_count"] = len(global_history)
-        report("正在独立复核候选题" if index == 1 else f"正在独立复核备选题 {index}/{len(drafts)}")
-        validation = run_codex_task_validation(
-            draft,
-            category,
-            review_history,
-            timeout_seconds=remaining_seconds(),
-        )
-        review_feedback, scope_errors = task_review_feedback(validation)
-        history_overlap = task_review_has_history_overlap(validation)
-        if validation.get("approved") and not scope_errors and not history_overlap:
-            draft["task_difficulty"] = UNASSESSED_TASK_DIFFICULTY
-            draft["repo_name"] = unique_repo_name(str(draft["repo_name"]))
-            return draft
-
-        failures.append(f"候选 {index}：{review_feedback}")
-        if history_overlap:
-            if index < len(drafts):
-                report("当前候选与历史题面实质重复，改用下一候选")
-            continue
-        if rewrite_used or not task_review_allows_targeted_rewrite(validation):
-            continue
-
-        rewrite_used = True
-        report("正在按复核意见定向改写")
-        rewritten_raw = run_codex_task_rewrite(
-            draft,
-            category,
-            review_history,
-            review_feedback,
-            review=validation,
-            timeout_seconds=remaining_seconds(),
-        )
-        rewritten_history = closest_history_for_candidate(
-            rewritten_raw, history, TASK_GENERATION_HISTORY_LIMIT
-        )
-        try:
-            rewritten = validate_generated_task(
-                rewritten_raw,
-                project_number,
-                category,
-                rewritten_history,
-                resolve_unique_name=False,
+        for index, draft in enumerate(drafts, start=1):
+            candidate_number += 1
+            review_history = closest_history_for_candidate(
+                draft, history, TASK_GENERATION_REVIEW_HISTORY_LIMIT
             )
-        except WorkflowError as exc:
-            failures.append(f"候选 {index} 定向改写：本地校验未通过：{exc}")
-            if index < len(drafts):
-                report("定向改写仍未通过，改用下一候选")
-            continue
+            global_history = global_prompt_dedup_history(
+                "", draft, "0-1 代码生成"
+            )
+            if semantic_dedup_review_needed(draft, global_history):
+                report("正在执行高风险题面的提交前语义查重")
+                dedup_review = run_codex_prompt_dedup_validation(
+                    draft,
+                    "0-1 代码生成",
+                    [],
+                    global_history,
+                    timeout_seconds=min(
+                        PROMPT_DEDUP_VALIDATION_TIMEOUT_SECONDS,
+                        remaining_seconds(),
+                    ),
+                )
+                dedup_reason = prompt_dedup_review_reason(dedup_review)
+                if dedup_reason:
+                    failures.append(f"候选 {candidate_number}：{dedup_reason}")
+                    feedback = dedup_reason[:2400]
+                    report(dedup_reason)
+                    continue
+                draft["prompt_dedup_review"] = dedup_review
+                draft["prompt_dedup_history_count"] = len(global_history)
+            report(
+                "正在独立复核候选题"
+                if candidate_number == 1
+                else f"正在独立复核按需候选 {candidate_number}"
+            )
+            validation = run_codex_task_validation(
+                draft,
+                category,
+                review_history,
+                timeout_seconds=remaining_seconds(),
+            )
+            review_feedback, scope_errors = task_review_feedback(validation)
+            history_overlap = task_review_has_history_overlap(validation)
+            if validation.get("approved") and not scope_errors and not history_overlap:
+                draft["task_difficulty"] = UNASSESSED_TASK_DIFFICULTY
+                draft["difficulty_contract"] = reviewed_difficulty_contract(validation)
+                draft["repo_name"] = unique_repo_name(str(draft["repo_name"]))
+                return draft
 
-        report("正在执行改写题面的提交前语义查重")
-        dedup_review, global_history = generated_task_prompt_dedup_review(
-            rewritten, remaining_seconds()
-        )
-        dedup_reason = prompt_dedup_review_reason(dedup_review)
-        if dedup_reason:
-            failures.append(f"候选 {index} 定向改写：{dedup_reason}")
-            report(dedup_reason)
-            if index < len(drafts):
-                report("改写题面仍与质检题库重复，改用下一候选")
-            continue
-        if dedup_review:
-            rewritten["prompt_dedup_review"] = dedup_review
-            rewritten["prompt_dedup_history_count"] = len(global_history)
-        report("正在复核定向改写结果")
-        final_validation = run_codex_task_validation(
-            rewritten,
-            category,
-            closest_history_for_candidate(
-                rewritten, history, TASK_GENERATION_REVIEW_HISTORY_LIMIT
-            ),
-            timeout_seconds=remaining_seconds(),
-        )
-        final_feedback, final_scope_errors = task_review_feedback(final_validation)
-        final_history_overlap = task_review_has_history_overlap(final_validation)
-        if (
-            final_validation.get("approved")
-            and not final_scope_errors
-            and not final_history_overlap
-        ):
-            rewritten["task_difficulty"] = UNASSESSED_TASK_DIFFICULTY
-            rewritten["repo_name"] = unique_repo_name(str(rewritten["repo_name"]))
-            return rewritten
-        failures.append(f"候选 {index} 定向改写：{final_feedback}")
-        if index < len(drafts):
-            report("定向改写复核未通过，改用下一候选")
+            failures.append(f"候选 {candidate_number}：{review_feedback}")
+            feedback = review_feedback[:2400]
+            more_candidates_available = (
+                index < len(drafts)
+                or batch_number < TASK_GENERATION_BATCH_ATTEMPTS
+            )
+            if history_overlap:
+                if more_candidates_available:
+                    report("当前候选与历史题面实质重复，按需生成下一候选")
+                continue
+            if rewrite_used or not task_review_allows_targeted_rewrite(validation):
+                continue
+
+            rewrite_used = True
+            report("正在按复核意见定向改写")
+            rewritten_raw = run_codex_task_rewrite(
+                draft,
+                category,
+                review_history,
+                review_feedback,
+                review=validation,
+                timeout_seconds=remaining_seconds(),
+            )
+            rewritten_history = closest_history_for_candidate(
+                rewritten_raw, history, TASK_GENERATION_HISTORY_LIMIT
+            )
+            try:
+                rewritten = validate_generated_task(
+                    rewritten_raw,
+                    project_number,
+                    category,
+                    rewritten_history,
+                    resolve_unique_name=False,
+                )
+            except WorkflowError as exc:
+                feedback = str(exc)[:2400]
+                failures.append(
+                    f"候选 {candidate_number} 定向改写：本地校验未通过：{exc}"
+                )
+                if more_candidates_available:
+                    report("定向改写仍未通过，按需生成下一候选")
+                continue
+
+            rewritten_global_history = global_prompt_dedup_history(
+                "", rewritten, "0-1 代码生成"
+            )
+            if semantic_dedup_review_needed(rewritten, rewritten_global_history):
+                report("正在执行改写题面的高风险语义查重")
+                dedup_review = run_codex_prompt_dedup_validation(
+                    rewritten,
+                    "0-1 代码生成",
+                    [],
+                    rewritten_global_history,
+                    timeout_seconds=min(
+                        PROMPT_DEDUP_VALIDATION_TIMEOUT_SECONDS,
+                        remaining_seconds(),
+                    ),
+                )
+                dedup_reason = prompt_dedup_review_reason(dedup_review)
+                if dedup_reason:
+                    feedback = dedup_reason[:2400]
+                    failures.append(
+                        f"候选 {candidate_number} 定向改写：{dedup_reason}"
+                    )
+                    if more_candidates_available:
+                        report("改写题面仍与质检题库重复，按需生成下一候选")
+                    continue
+                rewritten["prompt_dedup_review"] = dedup_review
+                rewritten["prompt_dedup_history_count"] = len(
+                    rewritten_global_history
+                )
+            report("正在复核定向改写结果")
+            final_validation = run_codex_task_validation(
+                rewritten,
+                category,
+                closest_history_for_candidate(
+                    rewritten, history, TASK_GENERATION_REVIEW_HISTORY_LIMIT
+                ),
+                timeout_seconds=remaining_seconds(),
+            )
+            final_feedback, final_scope_errors = task_review_feedback(final_validation)
+            final_history_overlap = task_review_has_history_overlap(final_validation)
+            if (
+                final_validation.get("approved")
+                and not final_scope_errors
+                and not final_history_overlap
+            ):
+                rewritten["task_difficulty"] = UNASSESSED_TASK_DIFFICULTY
+                rewritten["difficulty_contract"] = reviewed_difficulty_contract(
+                    final_validation
+                )
+                rewritten["repo_name"] = unique_repo_name(
+                    str(rewritten["repo_name"])
+                )
+                return rewritten
+            feedback = final_feedback[:2400]
+            failures.append(
+                f"候选 {candidate_number} 定向改写：{final_feedback}"
+            )
+            if more_candidates_available:
+                report("定向改写复核未通过，按需生成下一候选")
 
     final_feedback = "；".join(failures)[-4000:] or "所有候选均未通过独立复核"
     raise WorkflowError(f"候选复核与一次定向改写后仍不合规：{final_feedback}")
+
 
 
 def iteration_project_context(row: sqlite3.Row) -> Dict[str, Any]:
@@ -5669,12 +5943,69 @@ def run_codex_bugfix_generation(
     return normalize_generated_bugfix_candidate(result)
 
 
+def iteration_candidate_schema(target_task_type: str) -> Dict[str, Any]:
+    """Canonical structured output for Feature and new-module prompts."""
+    target_task_type = validate_iteration_task_type(target_task_type)
+    if target_task_type == "Bug 修复":
+        raise WorkflowError("Bug 修复使用独立的复现证据结构")
+    is_new_module = target_task_type == "0-1 代码生成"
+    module_max_items = (
+        NEW_MODULE_ITERATION_MAX_MODULES if is_new_module else ITERATION_MAX_MODULES
+    )
+    runtime_component_limit = (
+        NEW_MODULE_ITERATION_MAX_RUNTIME_COMPONENTS if is_new_module else 0
+    )
+    return {
+        "type": "object",
+        "properties": {
+            "task_type": {"type": "string", "enum": [target_task_type]},
+            "prompt": {"type": "string"},
+            "expansion_axis": {"type": "string", "minLength": 1},
+            "engineering_core": {"type": "string", "minLength": 1},
+            "main_user_flow": {"type": "string", "minLength": 1},
+            "modules": {
+                "type": "array", "items": {"type": "string"},
+                "minItems": ITERATION_MIN_MODULES, "maxItems": module_max_items,
+            },
+            "new_runtime_components": {
+                "type": "array", "items": {"type": "string"},
+                "maxItems": runtime_component_limit,
+            },
+            "complex_mechanisms": {
+                "type": "array", "items": {"type": "string"},
+                "maxItems": ITERATION_MAX_COMPLEX_MECHANISMS,
+            },
+            "api_or_actions": {
+                "type": "array", "items": {"type": "string"},
+                "maxItems": ITERATION_MAX_API_OR_ACTIONS,
+            },
+            "new_state_sets": {
+                "type": "array", "items": {"type": "string"},
+                "maxItems": ITERATION_MAX_NEW_STATE_SETS,
+            },
+            "acceptance_scenarios": {
+                "type": "array", "items": {"type": "string"},
+                "minItems": ITERATION_MIN_ACCEPTANCE_SCENARIOS,
+                "maxItems": ITERATION_MAX_ACCEPTANCE_SCENARIOS,
+            },
+        },
+        "required": [
+            "task_type", "prompt", "expansion_axis", "engineering_core",
+            "main_user_flow", "modules", "new_runtime_components",
+            "complex_mechanisms", "api_or_actions", "new_state_sets",
+            "acceptance_scenarios",
+        ],
+        "additionalProperties": False,
+    }
+
+
 def run_codex_iteration_generation(
     context: Dict[str, Any],
     retry_feedback: str = "",
     target_task_type: str = "Feature 迭代",
 ) -> Dict[str, Any]:
     target_task_type = validate_iteration_task_type(target_task_type)
+    context = compact_iteration_prompt_context(context)
     if target_task_type == "Bug 修复":
         return run_codex_bugfix_generation(context, retry_feedback)
     is_new_module = target_task_type == "0-1 代码生成"
@@ -6184,6 +6515,51 @@ def run_codex_iteration_format_repair(
     return repaired
 
 
+def run_codex_iteration_targeted_repair(
+    context: Dict[str, Any],
+    candidate: Dict[str, Any],
+    target_task_type: str,
+    review_feedback: str,
+    validation: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Repair review findings without repeating repository analysis."""
+    target_task_type = validate_iteration_task_type(target_task_type)
+    if target_task_type == "Bug 修复":
+        raise WorkflowError("Bug 修复证据不允许通过题面改写绕过复核")
+    payload = {
+        "project": {
+            "repo_name": str(context.get("repo_name") or ""),
+            "project_category": str(context.get("project_category") or ""),
+            "language_framework": str(context.get("language_framework") or ""),
+            "original_or_current_prompt": str(
+                context.get("original_or_current_prompt") or ""
+            )[:3000],
+        },
+        "candidate": candidate,
+        "review_feedback": re.sub(
+            r"\s+", " ", str(review_feedback or "")
+        ).strip()[:2400],
+        "independent_review": validation if isinstance(validation, dict) else {},
+    }
+    prompt = (
+        f"定向修复下面这道{target_task_type}候选，不重新分析仓库、不换业务对象，也不新增第二条主流程。"
+        "保留已经通过的项目贴合度、现有模块和兼容边界，只修复 review_feedback 指出的难度、"
+        "范围或核心验收歧义；范围超限时删去非核心职责，难度不足时只能强化既有工程核心中的"
+        "状态不变量、自定义判据或不可拆分跨层契约，不能增加独立服务、无关功能或测试数量。"
+        "同步更新 prompt 与所有内部范围字段，确保二者逐项一致。表达格式仍保持单段中文、四至六句、"
+        f"最多 {ITERATION_MAX_SEMICOLONS} 个分号，每句最多 {ITERATION_MAX_SENTENCE_CHARS} 字。"
+        "返回完整候选结构。数据：" + json.dumps(payload, ensure_ascii=False)
+    )
+    return run_codex_generation_structured(
+        prompt,
+        iteration_candidate_schema(target_task_type),
+        APP_DIR,
+        "iteration-targeted-repair",
+        ITERATION_TARGETED_REPAIR_TIMEOUT_SECONDS,
+        model=ITERATION_GENERATION_MODEL,
+    )
+
+
 def run_codex_bugfix_validation(
     context: Dict[str, Any], candidate: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -6196,6 +6572,7 @@ def run_codex_bugfix_validation(
                 "type": "string", "enum": list(TASK_DIFFICULTY_MARGIN_OPTIONS)
             },
             "hardness_basis": {"type": "string", "minLength": 8},
+            "difficulty_contract": difficulty_contract_schema(),
             "reasons": {"type": "array", "items": {"type": "string"}},
             "task_type": {"type": "string", "enum": ["Bug 修复"]},
             "bug_review": {
@@ -6220,16 +6597,22 @@ def run_codex_bugfix_validation(
         },
         "required": [
             "approved", "difficulty", "difficulty_margin", "hardness_basis",
-            "reasons", "task_type", "bug_review"
+            "difficulty_contract", "reasons", "task_type", "bug_review"
         ],
         "additionalProperties": False,
     }
     payload = json.dumps(
-        {"project": context, "candidate": candidate}, ensure_ascii=False
+        {
+            "project": compact_iteration_prompt_context(
+                context, candidate, repository_limit=ITERATION_REVIEW_HISTORY_LIMIT
+            ),
+            "candidate": candidate,
+        },
+        ensure_ascii=False,
     )
     if len(payload) > 110000:
         payload = payload[:110000]
-    prompt = f"""独立复核下面这份 Bug 修复题面。重新读取项目代码并执行必要的只读检查，逐项确认 candidate.confirmed_bugs 的复现步骤、实际结果和证据真实存在，不能采信候选自己的结论。根据确认后的问题、涉及模块、定位负担、状态边界和预计修复范围独立返回 difficulty：简单表示局部直接修正，中等表示跨模块处理常见失败，困难表示需要跨模块定位并维持显著状态不变量、恢复边界或复杂一致性，地狱表示同时包含多组深层机制。另返回 difficulty_margin 和 hardness_basis；只有不可替代的困难机制清楚且不容易在实际修复中降为中等时，difficulty_margin 才能为明确困难或地狱。普通路由、Compose profile、健康检查、字段校验、文档同步、简单条件分支及常规测试修补，即使凑满多个问题，也只能判为低于困难或困难边缘。只有 difficulty 为困难或地狱、difficulty_margin 为明确困难或地狱，并且 3 至 4 个问题都能稳定复现、集中在一条用户流程或紧密相关功能、预计修改范围不大、没有重复历史时才能 approved=true；难度或余量不足时必须 approved=false，系统会直接跳过，不能为提高难度编造或扩大问题。除当前 iteration_history 外，必须逐条检查 project.repository_prompt_history；该清单覆盖同一 GitHub 仓库的其他 Session，已提交题面即使状态为已废弃也参与去重。同一故障根因、触发操作或正确结果只改措辞仍算重复，写入 reasons 并令 approved=false；若重叠项属于当前迭代链，同时写入 overlapping_sequences。外部服务、环境或依赖故障，缺少测试或文档，未证实风险，新功能建议，复杂并发、安全攻防、架构替换和需要大范围重做的问题都不合格。检查最终 prompt 是否为 {FIRST_BUGFIX_PROMPT_MIN_CHARS} 至 {FIRST_BUGFIX_PROMPT_MAX_CHARS} 字的一个自然段：第一句必须是包含项目业务对象、用户流程和受影响模块的专属范围说明，其后每个 Bug 各占一句自然 customer_summary，写清项目对象、触发条件、当前可观察结果和正确状态。最终题面不得添加通用开场、序号、解决方法、文件名、函数名、具体命令、测试框架、回归测试、Docker Compose 验收、范围免责尾巴、标题或列表；验收要求只保留在控制台内部。将无法复现的问题写入 unverified_bugs，解决方法泄漏和表达问题分别写入对应字段。通过时 reasons 及各问题列表必须为空。数据：{payload}"""
+    prompt = f"""独立复核下面这份 Bug 修复题面。重新读取项目代码并执行必要的只读检查，逐项确认 candidate.confirmed_bugs 的复现步骤、实际结果和证据真实存在，不能采信候选自己的结论。根据确认后的问题、涉及模块、定位负担、状态边界和预计修复范围独立返回 difficulty：简单表示局部直接修正，中等表示跨模块处理常见失败，困难表示需要跨模块定位并维持显著状态不变量、恢复边界或复杂一致性，地狱表示同时包含多组深层机制。另返回 difficulty_margin、hardness_basis 和 difficulty_contract；difficulty_contract 必须从状态不变量、自定义算法或跨模块契约中选择一个主轴，写清困难要求、验收证据和常规实现捷径为何不成立；只有不可替代的困难机制清楚且不容易在实际修复中降为中等时，difficulty_margin 才能为明确困难或地狱。普通路由、Compose profile、健康检查、字段校验、文档同步、简单条件分支及常规测试修补，即使凑满多个问题，也只能判为低于困难或困难边缘。只有 difficulty 为困难或地狱、difficulty_margin 为明确困难或地狱，并且 3 至 4 个问题都能稳定复现、集中在一条用户流程或紧密相关功能、预计修改范围不大、没有重复历史时才能 approved=true；难度或余量不足时必须 approved=false，系统会直接跳过，不能为提高难度编造或扩大问题。除当前 iteration_history 外，必须逐条检查 project.repository_prompt_history；该清单覆盖同一 GitHub 仓库的其他 Session，已提交题面即使状态为已废弃也参与去重。同一故障根因、触发操作或正确结果只改措辞仍算重复，写入 reasons 并令 approved=false；若重叠项属于当前迭代链，同时写入 overlapping_sequences。外部服务、环境或依赖故障，缺少测试或文档，未证实风险，新功能建议，复杂并发、安全攻防、架构替换和需要大范围重做的问题都不合格。检查最终 prompt 是否为 {FIRST_BUGFIX_PROMPT_MIN_CHARS} 至 {FIRST_BUGFIX_PROMPT_MAX_CHARS} 字的一个自然段：第一句必须是包含项目业务对象、用户流程和受影响模块的专属范围说明，其后每个 Bug 各占一句自然 customer_summary，写清项目对象、触发条件、当前可观察结果和正确状态。最终题面不得添加通用开场、序号、解决方法、文件名、函数名、具体命令、测试框架、回归测试、Docker Compose 验收、范围免责尾巴、标题或列表；验收要求只保留在控制台内部。将无法复现的问题写入 unverified_bugs，解决方法泄漏和表达问题分别写入对应字段。通过时 reasons 及各问题列表必须为空。数据：{payload}"""
     return run_codex_generation_structured(
         prompt,
         schema,
@@ -6257,6 +6640,7 @@ def run_codex_iteration_validation(
                 "type": "string", "enum": list(TASK_DIFFICULTY_MARGIN_OPTIONS)
             },
             "hardness_basis": {"type": "string", "minLength": 8},
+            "difficulty_contract": difficulty_contract_schema(),
             "reasons": {"type": "array", "items": {"type": "string"}},
             "task_type": {"type": "string", "enum": list(ITERATION_TASK_TYPES)},
             "scope_review": {
@@ -6311,12 +6695,18 @@ def run_codex_iteration_validation(
         },
         "required": [
             "approved", "difficulty", "difficulty_margin", "hardness_basis",
-            "reasons", "task_type", "scope_review"
+            "difficulty_contract", "reasons", "task_type", "scope_review"
         ],
         "additionalProperties": False,
     }
     payload = json.dumps(
-        {"project": context, "candidate": candidate}, ensure_ascii=False
+        {
+            "project": compact_iteration_prompt_context(
+                context, candidate, repository_limit=ITERATION_REVIEW_HISTORY_LIMIT
+            ),
+            "candidate": candidate,
+        },
+        ensure_ascii=False,
     )
     if len(payload) > 110000:
         payload = payload[:110000]
@@ -6332,7 +6722,7 @@ def run_codex_iteration_validation(
         "同时增加新服务、复杂状态机、跨进程恢复或多组异常工作流，或为了跨模块而加入没有必要的数据层、worker、页面或部署项，"
         "均视为范围膨胀，必须 approved=false。"
     )
-    prompt = f"""独立复核下面的任务题面，同时判断实际 task_type、项目贴合度、跨模块完整性、范围负担、历史差异、可验收性、表达质量和预计 difficulty。difficulty 必须依据题面和项目代码独立估计：简单表示局部直接改动，中等表示跨模块完成常规链路并处理常见失败，困难表示存在显著的状态不变量、故障恢复、复杂跨层一致性或具有独立测试判据的非平凡领域算法，地狱表示同时包含多组深层机制；不能采信题面或候选的难度自报。另给出 difficulty_margin 与 hardness_basis；固定规则、简单距离或换算、遍历排序、Schema 校验、普通 CRUD、常规接口串联和测试数量都不能单独形成困难余量，若按现有框架的常规写法即可完成，必须判为低于困难或困难边缘。不要相信 candidate 自报的范围字段，必须从 prompt 和项目代码重新提取实际工程核心、修改模块、复杂机制、新接口或用户操作、新状态集合、新运行组件和验收场景，并完整写入 scope_review。project.iteration_history 包含从根任务到当前版本的代码能力历史；project.repository_prompt_history 是同一 GitHub 仓库跨 Session、跨项目链的提交去重清单。iteration_history 中 outcome=abandoned 或 counts_toward_quota=false 的条目不能视为代码已经具备对应能力，但 repository_prompt_history 中的已提交题面不论当前状态如何都必须参与去重。同一工程核心、用户操作、故障根因或验收结果只更换业务措辞或交互细节，必须令 history_overlap=true、在 reasons 写出对应 reference 并 approved=false；重叠项属于当前链时再列出 overlapping_sequences。只有从未提交且没有产物的本地失败草稿才允许围绕原方向重新设计。只有 difficulty 为困难或地狱、difficulty_margin 为明确困难或地狱、实际类型严格为“{target_task_type}”且其余条件全部满足时才能 approved=true：0-1 代码生成是在当前项目中从零构建此前不存在、拥有自身核心对象和生命周期并可独立验收的完整纵向模块；Feature 迭代是复用既有核心对象，对已有流程、状态机、接口或页面做向后兼容的平滑扩展。需求必须建立在现有项目真实功能、文件结构和技术边界上，涉及三个至四个真实模块或层次并修改多个文件；包含一个工程核心、一条完整主流程、必要的状态或数据扩展、清楚的模块契约、直接相关的错误反馈、回归要求和本地可观察结果；不是简单 CRUD、单页面、单文件、纯文案或推倒重写，也没有膨胀到架构替换、多个大型独立子系统或多套复杂机制；纯后端不要求前端，纯前端不引入业务后端，全栈保持真实联调；题面是一段四至六句、可原样转发的中文，不带标题、列表、Markdown 或生成说明，单句不过长且分号不超过两个。{new_module_review_rule}{DEVELOPER_PROMPT_STYLE_GUIDANCE}如果题面像字段拼装、连续命令句、无来源地堆叠版本代号或结尾验收清单，将具体问题写入 ai_style_issues，且即使技术内容完整也必须 approved=false。difficulty 低于困难或 difficulty_margin 不足时在 reasons 写明并令 approved=false；通过时 reasons 返回空数组。开发完成后的最终评分仍必须依据真实轨迹和产物重新判定。数据：{payload}"""
+    prompt = f"""独立复核下面的任务题面，同时判断实际 task_type、项目贴合度、跨模块完整性、范围负担、历史差异、可验收性、表达质量和预计 difficulty。difficulty 必须依据题面和项目代码独立估计：简单表示局部直接改动，中等表示跨模块完成常规链路并处理常见失败，困难表示存在显著的状态不变量、故障恢复、复杂跨层一致性或具有独立测试判据的非平凡领域算法，地狱表示同时包含多组深层机制；不能采信题面或候选的难度自报。另给出 difficulty_margin、hardness_basis 与 difficulty_contract；difficulty_contract 必须从状态不变量、自定义算法或跨模块契约中选择一个主轴，写清困难要求、可观察验收证据和常规实现捷径为何不成立；固定规则、简单距离或换算、遍历排序、Schema 校验、普通 CRUD、常规接口串联和测试数量都不能单独形成困难余量，若按现有框架的常规写法即可完成，必须判为低于困难或困难边缘。不要相信 candidate 自报的范围字段，必须从 prompt 和项目代码重新提取实际工程核心、修改模块、复杂机制、新接口或用户操作、新状态集合、新运行组件和验收场景，并完整写入 scope_review。project.iteration_history 包含从根任务到当前版本的代码能力历史；project.repository_prompt_history 是同一 GitHub 仓库跨 Session、跨项目链的提交去重清单。iteration_history 中 outcome=abandoned 或 counts_toward_quota=false 的条目不能视为代码已经具备对应能力，但 repository_prompt_history 中的已提交题面不论当前状态如何都必须参与去重。同一工程核心、用户操作、故障根因或验收结果只更换业务措辞或交互细节，必须令 history_overlap=true、在 reasons 写出对应 reference 并 approved=false；重叠项属于当前链时再列出 overlapping_sequences。只有从未提交且没有产物的本地失败草稿才允许围绕原方向重新设计。只有 difficulty 为困难或地狱、difficulty_margin 为明确困难或地狱、实际类型严格为“{target_task_type}”且其余条件全部满足时才能 approved=true：0-1 代码生成是在当前项目中从零构建此前不存在、拥有自身核心对象和生命周期并可独立验收的完整纵向模块；Feature 迭代是复用既有核心对象，对已有流程、状态机、接口或页面做向后兼容的平滑扩展。需求必须建立在现有项目真实功能、文件结构和技术边界上，涉及三个至四个真实模块或层次并修改多个文件；包含一个工程核心、一条完整主流程、必要的状态或数据扩展、清楚的模块契约、直接相关的错误反馈、回归要求和本地可观察结果；不是简单 CRUD、单页面、单文件、纯文案或推倒重写，也没有膨胀到架构替换、多个大型独立子系统或多套复杂机制；纯后端不要求前端，纯前端不引入业务后端，全栈保持真实联调；题面是一段四至六句、可原样转发的中文，不带标题、列表、Markdown 或生成说明，单句不过长且分号不超过两个。{new_module_review_rule}{DEVELOPER_PROMPT_STYLE_GUIDANCE}如果题面像字段拼装、连续命令句、无来源地堆叠版本代号或结尾验收清单，将具体问题写入 ai_style_issues，且即使技术内容完整也必须 approved=false。difficulty 低于困难或 difficulty_margin 不足时在 reasons 写明并令 approved=false；通过时 reasons 返回空数组。开发完成后的最终评分仍必须依据真实轨迹和产物重新判定。数据：{payload}"""
     return run_codex_generation_structured(
         prompt,
         schema,
@@ -6400,11 +6790,11 @@ def run_codex_prompt_dedup_validation(
         "same_repository_history": [
             compact_history_item(item) for item in repository_history
             if item.get("dedup_required") is not False
-        ][:REPOSITORY_PROMPT_HISTORY_LIMIT],
+        ][:DEDUP_MODEL_HISTORY_LIMIT],
         "cross_repository_shortlist": [
             compact_history_item(item) for item in global_history
             if item.get("dedup_required") is not False
-        ][:GLOBAL_PROMPT_DEDUP_SHORTLIST_LIMIT],
+        ][:DEDUP_MODEL_HISTORY_LIMIT],
     }
     prompt = (
         "你是提交前的高精度题面语义查重器，只判断候选题是否实质重复，不评价难度、写法或开发质量。"
@@ -6557,6 +6947,49 @@ def iteration_review_scope_errors(
     return errors
 
 
+def iteration_review_only_style_errors(
+    validation: Dict[str, Any], errors: List[str]
+) -> bool:
+    """Return whether the candidate needs only a local wording cleanup."""
+    if not errors or not all(
+        error.startswith("独立复核认定题面表达模板化：")
+        for error in errors
+    ):
+        return False
+    reasons = validation.get("reasons")
+    reason_items = (
+        [str(item).strip() for item in reasons if str(item).strip()]
+        if isinstance(reasons, list)
+        else []
+    )
+    return not reason_items or all(
+        any(marker in reason for marker in ("表达", "模板", "句", "分号", "格式"))
+        for reason in reason_items
+    )
+
+
+def iteration_review_is_repairable(
+    validation: Dict[str, Any], target_task_type: str, errors: List[str]
+) -> bool:
+    """Reserve full regeneration for duplicates, wrong types, and Bug evidence."""
+    if target_task_type == "Bug 修复":
+        return False
+    if str(validation.get("task_type") or "") != target_task_type:
+        return False
+    scope = validation.get("scope_review")
+    if isinstance(scope, dict) and scope.get("history_overlap") is True:
+        return False
+    reasons = validation.get("reasons")
+    reason_text = (
+        " ".join(str(item) for item in reasons if str(item).strip())
+        if isinstance(reasons, list)
+        else ""
+    )
+    if any(marker in reason_text for marker in ("历史", "重复", "查重")):
+        return False
+    return bool(errors or reason_text)
+
+
 def update_current_iteration_job_stage(stage: str) -> None:
     key = current_job_key()
     if not key.startswith("iteration:"):
@@ -6589,6 +7022,7 @@ def generate_iteration_candidate(
         raise WorkflowError("当前任务缺少可迭代的 Git 快照或首轮记录")
     context = iteration_project_context(row)
     feedback = initial_feedback.strip()
+    targeted_repair_used = False
     with WORKER_GATE.slot(
         WORKER_PRIORITY_NEW,
         resource_key=worker_repository_resource_key(row),
@@ -6654,30 +7088,7 @@ def generate_iteration_candidate(
                 )
                 if obvious_global_duplicate:
                     raise WorkflowError(obvious_global_duplicate)
-            except JobCancelled:
-                raise
-            except TaskDifficultyBelowRequired:
-                raise
-            except WorkflowError as exc:
-                feedback = str(exc)
-                continue
 
-            dedup_review: Dict[str, Any] = {}
-            if repository_history or global_history:
-                update_current_iteration_job_stage("提交前语义查重")
-                dedup_review = run_codex_prompt_dedup_validation(
-                    checked_candidate,
-                    target_task_type,
-                    repository_history,
-                    global_history,
-                )
-                dedup_reason = prompt_dedup_review_reason(dedup_review)
-                if dedup_reason:
-                    update_current_iteration_job_stage(dedup_reason[:700])
-                    feedback = dedup_reason
-                    continue
-
-            try:
                 update_current_iteration_job_stage("独立复核中")
                 validation = run_codex_iteration_validation(
                     context, checked_candidate, target_task_type
@@ -6691,6 +7102,78 @@ def generate_iteration_candidate(
                         raise TaskDifficultyBelowRequired(
                             f"Bug 修复{difficulty_issue}，已跳过"
                         )
+                if iteration_review_only_style_errors(validation, scope_errors):
+                    update_current_iteration_job_stage("局部修复题面表达")
+                    candidate = run_codex_iteration_format_repair(
+                        context,
+                        checked_candidate,
+                        target_task_type,
+                        "；".join(scope_errors),
+                    )
+                    normalized_prompt = validate_generated_iteration(
+                        candidate,
+                        target_task_type,
+                        iteration_history,
+                        repository_history,
+                    )
+                    checked_candidate = dict(candidate)
+                    checked_candidate["prompt"] = normalized_prompt
+                    scope_errors = []
+                    validation = dict(validation)
+                    validation["approved"] = True
+                    validation["reasons"] = []
+                    global_history = global_prompt_dedup_history(
+                        str(context.get("repo_key") or ""),
+                        checked_candidate,
+                        target_task_type,
+                    )
+                elif (
+                    not targeted_repair_used
+                    and iteration_review_is_repairable(
+                        validation, target_task_type, scope_errors
+                    )
+                ):
+                    reasons = validation.get("reasons")
+                    repair_reasons = (
+                        [str(reason).strip() for reason in reasons if str(reason).strip()]
+                        if isinstance(reasons, list)
+                        else []
+                    )
+                    repair_feedback = "；".join(repair_reasons + scope_errors)
+                    targeted_repair_used = True
+                    update_current_iteration_job_stage("按复核意见定向修复")
+                    candidate = run_codex_iteration_targeted_repair(
+                        context,
+                        checked_candidate,
+                        target_task_type,
+                        repair_feedback,
+                        validation,
+                    )
+                    normalized_prompt = validate_generated_iteration(
+                        candidate,
+                        target_task_type,
+                        iteration_history,
+                        repository_history,
+                    )
+                    checked_candidate = dict(candidate)
+                    checked_candidate["prompt"] = normalized_prompt
+                    global_history = global_prompt_dedup_history(
+                        str(context.get("repo_key") or ""),
+                        checked_candidate,
+                        target_task_type,
+                    )
+                    obvious_global_duplicate = cross_repository_bug_duplicate_reason(
+                        checked_candidate, target_task_type, global_history
+                    )
+                    if obvious_global_duplicate:
+                        raise WorkflowError(obvious_global_duplicate)
+                    update_current_iteration_job_stage("复核定向修复结果")
+                    validation = run_codex_iteration_validation(
+                        context, checked_candidate, target_task_type
+                    )
+                    scope_errors = iteration_review_scope_errors(
+                        validation, target_task_type
+                    )
             except JobCancelled:
                 raise
             except TaskDifficultyBelowRequired:
@@ -6698,6 +7181,7 @@ def generate_iteration_candidate(
             except WorkflowError as exc:
                 feedback = str(exc)
                 continue
+
             reasons = validation.get("reasons")
             review_reasons = (
                 [str(reason).strip() for reason in reasons if str(reason).strip()]
@@ -6711,12 +7195,32 @@ def generate_iteration_candidate(
                 and reviewed_task_type == target_task_type
                 and not scope_errors
             ):
-                if dedup_review:
-                    checked_candidate["prompt_dedup_review"] = dedup_review
-                    checked_candidate["prompt_dedup_history_counts"] = {
-                        "same_repository": len(repository_history),
-                        "cross_repository": len(global_history),
-                    }
+                checked_candidate["difficulty_contract"] = (
+                    reviewed_difficulty_contract(validation)
+                )
+                if semantic_dedup_review_needed(checked_candidate, global_history):
+                    update_current_iteration_job_stage("提交前语义查重")
+                    try:
+                        dedup_review = run_codex_prompt_dedup_validation(
+                            checked_candidate,
+                            target_task_type,
+                            repository_history,
+                            global_history,
+                        )
+                    except WorkflowError as exc:
+                        # The mandatory local and independent reviews already ran.
+                        # Preserve availability when this supplemental call fails.
+                        checked_candidate["prompt_dedup_warning"] = str(exc)[:700]
+                    else:
+                        dedup_reason = prompt_dedup_review_reason(dedup_review)
+                        if dedup_reason:
+                            feedback = dedup_reason
+                            continue
+                        checked_candidate["prompt_dedup_review"] = dedup_review
+                        checked_candidate["prompt_dedup_history_counts"] = {
+                            "same_repository": len(repository_history),
+                            "cross_repository": len(global_history),
+                        }
                 if target_task_type == "Bug 修复":
                     checked_candidate["independent_review"] = validation
                     checked_candidate["evidence_verified_at"] = now_text()
@@ -6731,6 +7235,7 @@ def generate_iteration_candidate(
     raise WorkflowError(
         f"连续 {ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求：{feedback}"
     )
+
 
 
 def generate_iteration_prompt(
@@ -6832,6 +7337,8 @@ def generate_and_start_iteration(
                 "new_state_sets": candidate.get("new_state_sets"),
             },
         }
+        if isinstance(candidate.get("difficulty_contract"), dict):
+            payload["_difficulty_contract"] = candidate["difficulty_contract"]
         if bug_generation_evidence:
             payload["_bug_generation_evidence"] = bug_generation_evidence
         if baseline_sha:
@@ -8264,7 +8771,7 @@ def update_run(run_id: str, **fields: Any) -> None:
         "iteration_expansion_axis", "iteration_modules", "iteration_engineering_core",
         "iteration_complex_dimensions", "iteration_main_user_flow",
         "iteration_api_or_actions", "iteration_new_state_sets",
-        "bug_generation_evidence",
+        "difficulty_contract", "bug_generation_evidence",
     }
     unknown = set(fields) - allowed
     if unknown:
@@ -8304,7 +8811,8 @@ def update_run_if_phase(run_id: str, expected_phase: str, **fields: Any) -> bool
         "stage_retry_name", "stage_retry_count", "retry_not_before_epoch", "deleted_at",
         "iteration_expansion_axis", "iteration_modules", "iteration_engineering_core",
         "iteration_complex_dimensions", "iteration_main_user_flow",
-        "iteration_api_or_actions", "iteration_new_state_sets", "bug_generation_evidence",
+        "iteration_api_or_actions", "iteration_new_state_sets",
+        "difficulty_contract", "bug_generation_evidence",
     }
     unknown = set(fields) - allowed
     if unknown:
@@ -8585,6 +9093,7 @@ def serialize_run(row: sqlite3.Row, include_events: bool = True) -> Dict[str, An
         except json.JSONDecodeError:
             data[key] = []
     data["iteration_metadata"] = iteration_metadata_from_row(row)
+    data["difficulty_contract"] = difficulty_contract_from_row(row)
     data["bug_generation_evidence"] = bug_generation_evidence_from_row(row)
     try:
         data["review_result"] = json.loads(data.get("review_result") or "{}")
@@ -9027,6 +9536,33 @@ def turn_manual_evaluation(row: Dict[str, Any]) -> Dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         return {}
     return evaluation if isinstance(evaluation, dict) else {}
+
+
+def review_findings_grounding_evidence(review: Any) -> str:
+    """Return factual evidence fields from a saved independent review."""
+    if not isinstance(review, dict):
+        return ""
+    evidence: List[str] = []
+    for key in ("bugs", "remaining_bugs", "quality_gaps"):
+        items = review.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = re.sub(r"\s+", " ", str(item.get("evidence") or "")).strip()
+            if text:
+                evidence.append(text)
+    return "\n".join(dict.fromkeys(evidence))
+
+
+def turn_review_grounding_evidence(row: Dict[str, Any]) -> str:
+    """Read review facts without letting score prose prove itself."""
+    try:
+        review = json.loads(row.get("turn_review_result") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    return review_findings_grounding_evidence(review)
 
 
 def normalize_generated_evaluation_wording(evaluation: Dict[str, Any]) -> None:
@@ -9744,6 +10280,100 @@ def automatic_evaluation_description_repair_issues(
     return list(dict.fromkeys(issues))
 
 
+def evaluation_supplemental_attribution_issues(
+    evaluation: Dict[str, Any],
+    trajectory: str,
+    verification: Any = "",
+    supplemental_evidence: Any = "",
+) -> List[str]:
+    """Detect review-only facts presented as original-turn observations."""
+    supplemental_text = (
+        supplemental_evidence
+        if isinstance(supplemental_evidence, str)
+        else json.dumps(supplemental_evidence, ensure_ascii=False)
+    )
+    supplemental_compact = compact_evaluation_evidence(supplemental_text)
+    if not supplemental_compact:
+        return []
+    tool_text, result_text, _call_lines = trajectory_evaluation_evidence(trajectory)
+    verification_text = (
+        verification
+        if isinstance(verification, str)
+        else json.dumps(verification, ensure_ascii=False)
+    )
+    primary_compact = compact_evaluation_evidence(
+        f"{tool_text}\n{result_text}\n{verification_text}"
+    )
+    issues: List[str] = []
+    for key in EVALUATION_DIMENSION_KEYS:
+        item = evaluation.get(key)
+        if not isinstance(item, dict):
+            continue
+        label = EVALUATION_DIMENSION_LABELS[key]
+        description = str(item.get("description") or "")
+        for sentence in evaluation_description_sentences(description):
+            if EVALUATION_PUBLIC_EXTERNAL_VALIDATION_RE.search(sentence):
+                continue
+            anchors = evaluation_position_anchors(sentence)
+            supplemental_anchor = next(
+                (
+                    anchor
+                    for anchor in anchors
+                    if compact_evaluation_evidence(anchor) not in primary_compact
+                    and compact_evaluation_evidence(anchor) in supplemental_compact
+                ),
+                "",
+            )
+            sentence_without_turn = re.sub(
+                r"第\s*\d+\s*(?:轮|步(?:操作|调用)?)", "", sentence
+            )
+            supplemental_number = next(
+                (
+                    number
+                    for number in re.findall(
+                        r"(?<![A-Za-z0-9])\d+(?:\.\d+)?(?![A-Za-z0-9])",
+                        sentence_without_turn,
+                    )
+                    if compact_evaluation_evidence(number) not in primary_compact
+                    and compact_evaluation_evidence(number) in supplemental_compact
+                ),
+                "",
+            )
+            evidence = supplemental_anchor or supplemental_number
+            if evidence:
+                issues.append(
+                    f"自动检查的{label}描述引用后续独立复核证据但没有注明来源："
+                    f"{evidence}"
+                )
+                break
+    return issues
+
+
+def completed_turn_supplemental_attribution_issues(
+    row: Dict[str, Any], evaluation: Dict[str, Any]
+) -> List[str]:
+    """Check saved evaluations against review evidence as an advisory repair."""
+    trajectory_value = str(
+        row.get("turn_trajectory_path") or row.get("run_trajectory_path") or ""
+    ).strip()
+    trajectory_path = Path(trajectory_value).expanduser() if trajectory_value else None
+    if not trajectory_path or not trajectory_path.is_file():
+        return []
+    trajectory = transcript_excerpt_from_path(
+        trajectory_path,
+        str(row.get("turn_prompt_id") or "") or None,
+    )
+    return evaluation_supplemental_attribution_issues(
+        evaluation,
+        trajectory,
+        {
+            "prompt": str(row.get("turn_prompt") or ""),
+            "verification": str(row.get("turn_verification") or ""),
+        },
+        turn_review_grounding_evidence(row),
+    )
+
+
 def completed_turn_repairable_evaluation_issues(
     row: Dict[str, Any],
     evaluation: Optional[Dict[str, Any]] = None,
@@ -9752,6 +10382,7 @@ def completed_turn_repairable_evaluation_issues(
     current = evaluation if isinstance(evaluation, dict) else turn_evaluation(row)
     policy_issues = completed_turn_evaluation_policy_issues(row, current)
     repairable = automatic_evaluation_description_repair_issues(current)
+    repairable.extend(completed_turn_supplemental_attribution_issues(row, current))
     repairable.extend(solo_qa_returned_evaluation_repair_issues(row, current))
     return list(dict.fromkeys(repairable)), policy_issues
 
@@ -26298,6 +26929,9 @@ def create_run(payload: Dict[str, Any]) -> Dict[str, Any]:
     iteration_metadata = normalize_iteration_metadata(
         payload.get("_iteration_metadata")
     )
+    difficulty_contract = normalize_difficulty_contract(
+        payload.get("_difficulty_contract")
+    )
     bug_generation_evidence = normalize_bug_generation_evidence(
         payload.get("_bug_generation_evidence")
     )
@@ -26369,8 +27003,9 @@ def create_run(payload: Dict[str, Any]) -> Dict[str, Any]:
                   iteration_expansion_axis, iteration_modules, iteration_engineering_core,
                   iteration_complex_dimensions, iteration_main_user_flow,
                   iteration_api_or_actions, iteration_new_state_sets,
-                  bug_generation_evidence, verification_commands, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待打开终端', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  difficulty_contract, bug_generation_evidence,
+                  verification_commands, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待打开终端', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     repo_name,
@@ -26399,6 +27034,7 @@ def create_run(payload: Dict[str, Any]) -> Dict[str, Any]:
                     iteration_metadata["main_user_flow"] or None,
                     json.dumps(iteration_metadata["api_or_actions"], ensure_ascii=False),
                     json.dumps(iteration_metadata["new_state_sets"], ensure_ascii=False),
+                    json.dumps(difficulty_contract, ensure_ascii=False),
                     json.dumps(bug_generation_evidence, ensure_ascii=False),
                     json.dumps(commands, ensure_ascii=False),
                     timestamp,
@@ -26506,7 +27142,8 @@ def automatic_generation_worker(run_id: str) -> None:
                 """UPDATE runs
                    SET repo_name = ?, task_type = ?, project_category = ?,
                        language_framework = ?, repo_path = ?, run_directory = ?,
-                       first_prompt = ?, verification_commands = ?, phase = 'queued',
+                       first_prompt = ?, difficulty_contract = ?,
+                       verification_commands = ?, phase = 'queued',
                        status_detail = '题面生成完成，等待创建仓库', error = NULL,
                        generation_feedback = NULL,
                        updated_at = ?
@@ -26519,6 +27156,12 @@ def automatic_generation_worker(run_id: str) -> None:
                     str(final_repo_path),
                     str(final_directory),
                     str(draft["first_prompt"]),
+                    json.dumps(
+                        normalize_difficulty_contract(
+                            draft.get("difficulty_contract")
+                        ),
+                        ensure_ascii=False,
+                    ),
                     commands,
                     timestamp,
                     run_id,
@@ -26935,6 +27578,7 @@ def _create_first_turn_retry_locked(
         "_model": row["model"] or current_model(),
         "_defer_start": automatic,
         "_iteration_metadata": iteration_metadata_from_row(row),
+        "_difficulty_contract": difficulty_contract_from_row(row),
         "_bug_generation_evidence": bug_generation_evidence_from_row(row),
     }
     project_root = numbered_project_root(run_directory_for(row))

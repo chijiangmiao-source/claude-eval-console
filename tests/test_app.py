@@ -8275,6 +8275,35 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn('"command": "docker compose build"', repair_call.args[0])
         self.assertIn("使用了后续独立复核事实却没有注明来源", repair_call.args[0])
 
+    def test_saved_review_only_fact_enters_advisory_source_repair(self):
+        evaluation = sample_evaluation()
+        evaluation["delivery"]["description"] = (
+            "第 1 轮交付了页面，src/review_panel.py 的确认按钮仍不可用。"
+        )
+        supplemental = "src/review_panel.py:88 确认按钮仍不可用"
+
+        issues = app.evaluation_supplemental_attribution_issues(
+            evaluation,
+            "STEP 1: 第 1 步完成页面开发\nTOOL RESULT: 页面已生成",
+            "",
+            supplemental,
+        )
+
+        self.assertTrue(any("没有注明来源" in issue for issue in issues))
+        evaluation["delivery"]["description"] = (
+            "第 1 轮交付了页面；后续独立复核显示 "
+            "src/review_panel.py 的确认按钮仍不可用。"
+        )
+        self.assertEqual(
+            app.evaluation_supplemental_attribution_issues(
+                evaluation,
+                "STEP 1: 第 1 步完成页面开发\nTOOL RESULT: 页面已生成",
+                "",
+                supplemental,
+            ),
+            [],
+        )
+
     def test_review_persists_versioned_score_stage_with_legacy_projection(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "repo"
@@ -14434,7 +14463,7 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(draft["repo_name"], alternate["repo_slug"])
         self.assertEqual(validate.call_count, 2)
         rewrite.assert_not_called()
-        self.assertIn("当前候选与历史题面实质重复，改用下一候选", progress)
+        self.assertIn("当前候选与历史题面实质重复，按需生成下一候选", progress)
 
     def test_new_task_semantic_dedup_tries_the_second_candidate(self):
         preferred = self.candidate()
@@ -14464,11 +14493,18 @@ class DraftTests(unittest.TestCase):
             "overlap_kind": "none",
             "reason": "没有高置信度重复",
         }
-        history = [{
+        preferred_history = [{
             "reference": "SOLO-QA #12592",
             "task_type": "0-1代码生成",
             "remote_status": "DISCARDED",
-            "prompt": "历史质检已废弃题面",
+            "prompt": preferred["prompt"],
+            "dedup_required": True,
+        }]
+        alternate_history = [{
+            "reference": "SOLO-QA #12593",
+            "task_type": "0-1代码生成",
+            "remote_status": "DISCARDED",
+            "prompt": alternate["prompt"],
             "dedup_required": True,
         }]
         with tempfile.TemporaryDirectory() as directory:
@@ -14486,7 +14522,8 @@ class DraftTests(unittest.TestCase):
             ), mock.patch.object(
                 app, "run_codex_task_validation", return_value=self.scope_review()
             ) as validate, mock.patch.object(
-                app, "global_prompt_dedup_history", return_value=history
+                app, "global_prompt_dedup_history",
+                side_effect=[preferred_history, alternate_history]
             ), mock.patch.object(
                 app, "run_codex_prompt_dedup_validation",
                 side_effect=[duplicate, distinct],
@@ -14546,8 +14583,8 @@ class DraftTests(unittest.TestCase):
             app.run_codex_task_generation(2, "纯前端", [])
 
         schema = codex.call_args.args[1]
-        self.assertEqual(schema["properties"]["candidates"]["minItems"], 2)
-        self.assertEqual(schema["properties"]["candidates"]["maxItems"], 2)
+        self.assertEqual(schema["properties"]["candidates"]["minItems"], 1)
+        self.assertEqual(schema["properties"]["candidates"]["maxItems"], 1)
         properties = schema["properties"]["candidates"]["items"]["properties"]
         self.assertNotIn("task_difficulty", properties)
         for field in app.TASK_DIVERSITY_FIELDS:
@@ -14618,6 +14655,11 @@ class DraftTests(unittest.TestCase):
         self.assertIn("difficulty", schema["required"])
         self.assertIn("difficulty_margin", schema["required"])
         self.assertIn("hardness_basis", schema["required"])
+        self.assertIn("difficulty_contract", schema["required"])
+        self.assertEqual(
+            schema["properties"]["difficulty_contract"]["properties"]["axis"]["enum"],
+            ["状态不变量", "自定义算法", "跨模块契约"],
+        )
         self.assertIn("difficulty 为困难或地狱", codex.call_args.args[0])
         self.assertIn("困难边缘", codex.call_args.args[0])
         self.assertIn("两重循环", codex.call_args.args[0])
@@ -16231,7 +16273,57 @@ class IterationGenerationTests(unittest.TestCase):
         self.assertIn('"summary"', prompt)
         self.assertLess(len(prompt), 10000)
 
-    def test_semantic_dedup_retries_a_discarded_same_repo_match(self):
+    def test_iteration_context_keeps_only_relevant_bounded_history(self):
+        candidate = self.candidate()
+        history = [
+            {
+                "reference": f"history-{index}",
+                "prompt": "完全不同的旧流程。" * 80,
+                "engineering_core": f"旧核心 {index}",
+            }
+            for index in range(20)
+        ]
+        history.append(
+            {
+                "reference": "closest",
+                "prompt": candidate["prompt"],
+                "engineering_core": candidate["engineering_core"],
+            }
+        )
+        context = {
+            "readme": "R" * 12000,
+            "original_or_current_prompt": "P" * 9000,
+            "tracked_files": [f"src/file-{index}.py" for index in range(300)],
+            "iteration_history": history,
+            "repository_prompt_history": history,
+        }
+
+        compact = app.compact_iteration_prompt_context(
+            context, candidate, repository_limit=5
+        )
+
+        self.assertEqual(compact["repository_prompt_history"][0]["reference"], "closest")
+        self.assertEqual(len(compact["repository_prompt_history"]), 5)
+        self.assertEqual(len(compact["iteration_history"]), 12)
+        self.assertEqual(len(compact["readme"]), 8000)
+        self.assertEqual(len(compact["tracked_files"]), 160)
+
+    def test_semantic_dedup_model_is_reserved_for_high_risk_history(self):
+        candidate = self.candidate()
+        self.assertFalse(
+            app.semantic_dedup_review_needed(
+                candidate,
+                [{"prompt": "完全不同的业务对象和操作结果", "dedup_required": True}],
+            )
+        )
+        self.assertTrue(
+            app.semantic_dedup_review_needed(
+                candidate,
+                [{"prompt": candidate["prompt"], "dedup_required": True}],
+            )
+        )
+
+    def test_low_risk_cross_project_history_skips_extra_model_dedup(self):
         candidate = self.candidate()
         context = {
             "repo_path": "/tmp/existing-project",
@@ -16253,22 +16345,6 @@ class IterationGenerationTests(unittest.TestCase):
             "first_prompt_id": "prompt-1",
             "imported_baseline": 0,
         }
-        duplicate = {
-            "duplicate": True,
-            "confidence": "medium",
-            "match_scope": "same_repository",
-            "reference": "SOLO-QA #11969",
-            "overlap_kind": "same_user_flow",
-            "reason": "都在同一录入页面增加不改变答案的辅助操作",
-        }
-        distinct = {
-            "duplicate": False,
-            "confidence": "low",
-            "match_scope": "none",
-            "reference": "",
-            "overlap_kind": "none",
-            "reason": "功能入口和结果不同",
-        }
         with mock.patch.object(app, "run_row", return_value=source), mock.patch.object(
             app, "iteration_project_context", return_value=context
         ), mock.patch.object(
@@ -16278,18 +16354,16 @@ class IterationGenerationTests(unittest.TestCase):
         ), mock.patch.object(
             app, "run_codex_iteration_validation", return_value=self.review_result()
         ) as validate, mock.patch.object(
-            app, "run_codex_prompt_dedup_validation",
-            side_effect=[duplicate, distinct],
+            app, "run_codex_prompt_dedup_validation"
         ) as dedup:
             result = app.generate_iteration_candidate("source111111")
 
         self.assertEqual(result["prompt"], candidate["prompt"])
-        self.assertEqual(generate.call_count, 2)
-        self.assertEqual(dedup.call_count, 2)
+        generate.assert_called_once()
+        dedup.assert_not_called()
         validate.assert_called_once()
-        self.assertIn("SOLO-QA #11969", generate.call_args_list[1].args[1])
 
-    def test_semantic_dedup_failure_does_not_start_an_unchecked_iteration(self):
+    def test_supplemental_dedup_failure_keeps_mandatory_reviewed_iteration(self):
         candidate = self.candidate()
         context = {
             "repo_path": "/tmp/existing-project",
@@ -16315,18 +16389,25 @@ class IterationGenerationTests(unittest.TestCase):
         ), mock.patch.object(
             app, "run_codex_iteration_generation", return_value=candidate
         ), mock.patch.object(
-            app, "global_prompt_dedup_history", return_value=[]
+            app, "global_prompt_dedup_history",
+            return_value=[{
+                "reference": "SOLO-QA #11970",
+                "prompt": candidate["prompt"],
+                "task_type": "Feature迭代",
+                "dedup_required": True,
+            }]
         ), mock.patch.object(
             app, "run_codex_iteration_validation", return_value=self.review_result()
         ), mock.patch.object(
             app, "run_codex_prompt_dedup_validation",
             side_effect=app.WorkflowError("prompt-dedup-validation 504"),
-        ) as dedup, self.assertRaisesRegex(
-            app.WorkflowError, "prompt-dedup-validation 504"
-        ):
-            app.generate_iteration_candidate("source111111")
+        ) as dedup:
+            result = app.generate_iteration_candidate("source111111")
 
         dedup.assert_called_once()
+        self.assertEqual(
+            result["prompt_dedup_warning"], "prompt-dedup-validation 504"
+        )
 
     def test_iteration_prompt_is_normalized_and_requires_cross_module_scope(self):
         candidate = self.candidate()
@@ -16736,7 +16817,7 @@ class IterationGenerationTests(unittest.TestCase):
 
         generate.assert_called_once()
 
-    def test_iteration_generation_retries_reviewed_low_difficulty(self):
+    def test_iteration_generation_repairs_reviewed_low_difficulty_in_place(self):
         context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
         source = {
             "phase": "complete",
@@ -16749,8 +16830,12 @@ class IterationGenerationTests(unittest.TestCase):
         ), mock.patch.object(
             app,
             "run_codex_iteration_generation",
-            side_effect=[self.candidate(), self.candidate()],
+            return_value=self.candidate(),
         ) as generate, mock.patch.object(
+            app,
+            "run_codex_iteration_targeted_repair",
+            return_value=self.candidate(),
+        ) as repair, mock.patch.object(
             app,
             "run_codex_iteration_validation",
             side_effect=[
@@ -16761,9 +16846,10 @@ class IterationGenerationTests(unittest.TestCase):
             prompt = app.generate_iteration_prompt("source111111")
 
         self.assertEqual(prompt, self.candidate()["prompt"])
-        self.assertEqual(generate.call_count, 2)
+        generate.assert_called_once()
+        repair.assert_called_once()
         self.assertEqual(review.call_count, 2)
-        self.assertIn("预计难度为中等，低于困难", generate.call_args_list[1].args[1])
+        self.assertIn("预计难度为中等，低于困难", repair.call_args.args[3])
 
     def test_iteration_generation_accepts_stopped_completed_baseline(self):
         context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
@@ -16975,6 +17061,7 @@ class IterationGenerationTests(unittest.TestCase):
         self.assertIn("difficulty", schema["required"])
         self.assertIn("difficulty_margin", schema["required"])
         self.assertIn("hardness_basis", schema["required"])
+        self.assertIn("difficulty_contract", schema["required"])
         self.assertEqual(
             schema["properties"]["difficulty"]["enum"],
             ["简单", "中等", "困难", "地狱"],
@@ -20107,6 +20194,45 @@ class ExportTests(unittest.TestCase):
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_difficulty_contract_is_normalized_persisted_and_serialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            contract = {
+                "difficulty": "困难",
+                "difficulty_margin": "明确困难",
+                "axis": "状态不变量",
+                "hard_requirement": "恢复后仍保持唯一生效版本",
+                "acceptance_evidence": ["中断恢复后旧版本不能重新生效"],
+                "rejected_shortcut": "普通字段更新无法处理跨请求恢复",
+                "hardness_basis": "需要跨请求维护唯一版本不变量",
+            }
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "schedule_worker"
+            ), mock.patch.object(
+                app, "HISTORY_PATH", root / "history-prompts.md"
+            ):
+                app.initialize_database()
+                created = app.create_run(
+                    {
+                        "repo_name": "contract-demo",
+                        "project_directory": ".",
+                        "first_prompt": "实现版本恢复链路",
+                        "_difficulty_contract": contract,
+                        "_defer_start": True,
+                    }
+                )
+
+                row = app.run_row(created["id"])
+
+        self.assertEqual(created["difficulty_contract"]["version"], 1)
+        self.assertEqual(created["difficulty_contract"]["axis"], "状态不变量")
+        self.assertEqual(
+            json.loads(row["difficulty_contract"])["hard_requirement"],
+            "恢复后仍保持唯一生效版本",
+        )
+
     def test_iteration_scope_metadata_is_persisted_and_reused_in_history(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

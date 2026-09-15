@@ -14481,7 +14481,11 @@ class DraftTests(unittest.TestCase):
             ["简单", "中等", "困难", "地狱"],
         )
         self.assertIn("difficulty", schema["required"])
+        self.assertIn("difficulty_margin", schema["required"])
+        self.assertIn("hardness_basis", schema["required"])
         self.assertIn("difficulty 为困难或地狱", codex.call_args.args[0])
+        self.assertIn("困难边缘", codex.call_args.args[0])
+        self.assertIn("两重循环", codex.call_args.args[0])
         self.assertIn("scope_review", schema["properties"])
         self.assertIn("soft_suggestions", schema["properties"])
         self.assertIn("不能照抄或信任候选题自报的范围字段", codex.call_args.args[0])
@@ -14553,6 +14557,17 @@ class DraftTests(unittest.TestCase):
         errors = app.task_review_scope_errors(review)
 
         self.assertIn("独立复核预计难度为中等，低于困难", errors)
+
+    def test_independent_review_rejects_narrow_difficulty_margin(self):
+        review = self.scope_review()
+        review["difficulty_margin"] = "困难边缘"
+
+        errors = app.task_review_scope_errors(review)
+
+        self.assertIn(
+            "独立复核难度余量为困难边缘，实际产物仍可能降为中等",
+            errors,
+        )
 
     def test_local_task_validation_hard_limit_is_600_chars(self):
         candidate = self.candidate()
@@ -16399,8 +16414,12 @@ class IterationGenerationTests(unittest.TestCase):
             app.run_codex_iteration_validation(context, self.candidate())
 
         review_prompt = codex.call_args.args[0]
+        schema = codex.call_args.args[1]
         self.assertIn(app.DEVELOPER_PROMPT_STYLE_GUIDANCE, review_prompt)
         self.assertIn("即使技术内容完整也必须 approved=false", review_prompt)
+        self.assertIn("difficulty_margin", schema["required"])
+        self.assertIn("hardness_basis", schema["required"])
+        self.assertIn("遍历排序", review_prompt)
 
     def test_new_module_review_rejects_combined_complex_mechanisms(self):
         context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
@@ -16772,11 +16791,14 @@ class IterationGenerationTests(unittest.TestCase):
 
         schema = codex.call_args.args[1]
         self.assertIn("difficulty", schema["required"])
+        self.assertIn("difficulty_margin", schema["required"])
+        self.assertIn("hardness_basis", schema["required"])
         self.assertEqual(
             schema["properties"]["difficulty"]["enum"],
             ["简单", "中等", "困难", "地狱"],
         )
         self.assertIn("系统会直接跳过", codex.call_args.args[0])
+        self.assertIn("Compose profile", codex.call_args.args[0])
 
     def test_bugfix_candidate_keeps_independent_review_and_source_commit(self):
         candidate = self.bugfix_candidate()

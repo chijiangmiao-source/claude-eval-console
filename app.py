@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260915.67"
+APP_VERSION = "20260915.68"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -5080,6 +5080,33 @@ def task_review_has_history_overlap(validation: Dict[str, Any]) -> bool:
     )
 
 
+def task_review_allows_targeted_rewrite(validation: Dict[str, Any]) -> bool:
+    """Only rewrite a candidate when the same design can be repaired cheaply."""
+    if task_review_has_history_overlap(validation):
+        return False
+    scope = validation.get("scope_review")
+    if not isinstance(scope, dict):
+        return False
+    list_limits = (
+        ("implementation_modules", TASK_MAX_IMPLEMENTATION_MODULES),
+        ("runtime_components", TASK_MAX_RUNTIME_COMPONENTS),
+        ("supporting_mechanisms", TASK_MAX_SUPPORTING_MECHANISMS),
+        ("complex_mechanisms", TASK_MAX_COMPLEX_MECHANISMS),
+        ("custom_algorithm_families", TASK_MAX_CUSTOM_ALGORITHM_FAMILIES),
+    )
+    for field, maximum in list_limits:
+        values = scope.get(field)
+        if not isinstance(values, list) or len(values) > maximum:
+            return False
+    complex_mechanisms = scope.get("complex_mechanisms") or []
+    custom_algorithms = scope.get("custom_algorithm_families") or []
+    if len(complex_mechanisms) + len(custom_algorithms) > 1:
+        return False
+    if scope.get("undeclared_scope_items") or scope.get("unjustified_infrastructure"):
+        return False
+    return True
+
+
 def generated_task_prompt_dedup_review(
     candidate: Dict[str, Any], timeout_seconds: int
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -5201,6 +5228,20 @@ def generate_task_draft(
         review_history = closest_history_for_candidate(
             draft, history, TASK_GENERATION_REVIEW_HISTORY_LIMIT
         )
+        report("正在执行提交前语义查重")
+        dedup_review, global_history = generated_task_prompt_dedup_review(
+            draft, remaining_seconds()
+        )
+        dedup_reason = prompt_dedup_review_reason(dedup_review)
+        if dedup_reason:
+            failures.append(f"候选 {index}：{dedup_reason}")
+            report(dedup_reason)
+            if index < len(drafts):
+                report("当前候选与质检题库实质重复，改用下一候选")
+            continue
+        if dedup_review:
+            draft["prompt_dedup_review"] = dedup_review
+            draft["prompt_dedup_history_count"] = len(global_history)
         report("正在独立复核候选题" if index == 1 else f"正在独立复核备选题 {index}/{len(drafts)}")
         validation = run_codex_task_validation(
             draft,
@@ -5211,20 +5252,6 @@ def generate_task_draft(
         review_feedback, scope_errors = task_review_feedback(validation)
         history_overlap = task_review_has_history_overlap(validation)
         if validation.get("approved") and not scope_errors and not history_overlap:
-            report("正在执行提交前语义查重")
-            dedup_review, global_history = generated_task_prompt_dedup_review(
-                draft, remaining_seconds()
-            )
-            dedup_reason = prompt_dedup_review_reason(dedup_review)
-            if dedup_reason:
-                failures.append(f"候选 {index}：{dedup_reason}")
-                report(dedup_reason)
-                if index < len(drafts):
-                    report("当前候选与质检题库实质重复，改用下一候选")
-                continue
-            if dedup_review:
-                draft["prompt_dedup_review"] = dedup_review
-                draft["prompt_dedup_history_count"] = len(global_history)
             draft["task_difficulty"] = UNASSESSED_TASK_DIFFICULTY
             draft["repo_name"] = unique_repo_name(str(draft["repo_name"]))
             return draft
@@ -5234,7 +5261,7 @@ def generate_task_draft(
             if index < len(drafts):
                 report("当前候选与历史题面实质重复，改用下一候选")
             continue
-        if rewrite_used:
+        if rewrite_used or not task_review_allows_targeted_rewrite(validation):
             continue
 
         rewrite_used = True
@@ -5264,6 +5291,20 @@ def generate_task_draft(
                 report("定向改写仍未通过，改用下一候选")
             continue
 
+        report("正在执行改写题面的提交前语义查重")
+        dedup_review, global_history = generated_task_prompt_dedup_review(
+            rewritten, remaining_seconds()
+        )
+        dedup_reason = prompt_dedup_review_reason(dedup_review)
+        if dedup_reason:
+            failures.append(f"候选 {index} 定向改写：{dedup_reason}")
+            report(dedup_reason)
+            if index < len(drafts):
+                report("改写题面仍与质检题库重复，改用下一候选")
+            continue
+        if dedup_review:
+            rewritten["prompt_dedup_review"] = dedup_review
+            rewritten["prompt_dedup_history_count"] = len(global_history)
         report("正在复核定向改写结果")
         final_validation = run_codex_task_validation(
             rewritten,
@@ -5280,20 +5321,6 @@ def generate_task_draft(
             and not final_scope_errors
             and not final_history_overlap
         ):
-            report("正在执行改写题面的提交前语义查重")
-            dedup_review, global_history = generated_task_prompt_dedup_review(
-                rewritten, remaining_seconds()
-            )
-            dedup_reason = prompt_dedup_review_reason(dedup_review)
-            if dedup_reason:
-                failures.append(f"候选 {index} 定向改写：{dedup_reason}")
-                report(dedup_reason)
-                if index < len(drafts):
-                    report("改写题面仍与质检题库重复，改用下一候选")
-                continue
-            if dedup_review:
-                rewritten["prompt_dedup_review"] = dedup_review
-                rewritten["prompt_dedup_history_count"] = len(global_history)
             rewritten["task_difficulty"] = UNASSESSED_TASK_DIFFICULTY
             rewritten["repo_name"] = unique_repo_name(str(rewritten["repo_name"]))
             return rewritten
@@ -6351,21 +6378,38 @@ def run_codex_prompt_dedup_validation(
         ],
         "additionalProperties": False,
     }
+    def compact_history_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep semantic identity while avoiding full prompt copies in dedup calls."""
+        return {
+            "reference": str(item.get("reference") or ""),
+            "repo_key": str(item.get("repo_key") or ""),
+            "repo_name": str(item.get("repo_name") or ""),
+            "task_type": str(item.get("task_type") or ""),
+            "remote_status": str(item.get("remote_status") or ""),
+            "summary": summarize_historical_prompt(str(item.get("prompt") or "")),
+            "qc_summary": re.sub(
+                r"\s+", " ", str(item.get("qc_summary") or "")
+            ).strip()[:360],
+            "same_repository": bool(item.get("same_repository")),
+            "dedup_required": item.get("dedup_required") is not False,
+        }
+
     payload = {
         "task_type": target_task_type,
         "candidate": candidate,
         "same_repository_history": [
-            item for item in repository_history
+            compact_history_item(item) for item in repository_history
             if item.get("dedup_required") is not False
         ][:REPOSITORY_PROMPT_HISTORY_LIMIT],
         "cross_repository_shortlist": [
-            item for item in global_history
+            compact_history_item(item) for item in global_history
             if item.get("dedup_required") is not False
         ][:GLOBAL_PROMPT_DEDUP_SHORTLIST_LIMIT],
     }
     prompt = (
         "你是提交前的高精度题面语义查重器，只判断候选题是否实质重复，不评价难度、写法或开发质量。"
-        "同仓库历史必须严格检查：工程核心、主要操作入口、故障根因、状态变化或最终验收结果实质相同，"
+        "历史项的 summary 是原题压缩摘要，qc_summary 是已有质检结论。同仓库历史必须严格检查："
+        "工程核心、主要操作入口、故障根因、状态变化或最终验收结果实质相同，"
         "即使更换字段、参数、页面细节或同义词，也判为重复；只有功能入口和业务结果都明确不同才可放行。"
         "remote_status=DISCARDED 的记录仍是已经提交过的题面，必须参与查重；qc_summary 中写明的雷同对象和原因"
         "属于质检事实，应优先用于判断，不得因该记录已废弃而忽略。"
@@ -6610,6 +6654,30 @@ def generate_iteration_candidate(
                 )
                 if obvious_global_duplicate:
                     raise WorkflowError(obvious_global_duplicate)
+            except JobCancelled:
+                raise
+            except TaskDifficultyBelowRequired:
+                raise
+            except WorkflowError as exc:
+                feedback = str(exc)
+                continue
+
+            dedup_review: Dict[str, Any] = {}
+            if repository_history or global_history:
+                update_current_iteration_job_stage("提交前语义查重")
+                dedup_review = run_codex_prompt_dedup_validation(
+                    checked_candidate,
+                    target_task_type,
+                    repository_history,
+                    global_history,
+                )
+                dedup_reason = prompt_dedup_review_reason(dedup_review)
+                if dedup_reason:
+                    update_current_iteration_job_stage(dedup_reason[:700])
+                    feedback = dedup_reason
+                    continue
+
+            try:
                 update_current_iteration_job_stage("独立复核中")
                 validation = run_codex_iteration_validation(
                     context, checked_candidate, target_task_type
@@ -6643,19 +6711,7 @@ def generate_iteration_candidate(
                 and reviewed_task_type == target_task_type
                 and not scope_errors
             ):
-                if repository_history or global_history:
-                    update_current_iteration_job_stage("提交前语义查重")
-                    dedup_review = run_codex_prompt_dedup_validation(
-                        checked_candidate,
-                        target_task_type,
-                        repository_history,
-                        global_history,
-                    )
-                    dedup_reason = prompt_dedup_review_reason(dedup_review)
-                    if dedup_reason:
-                        update_current_iteration_job_stage(dedup_reason[:700])
-                        feedback = dedup_reason
-                        continue
+                if dedup_review:
                     checked_candidate["prompt_dedup_review"] = dedup_review
                     checked_candidate["prompt_dedup_history_counts"] = {
                         "same_repository": len(repository_history),

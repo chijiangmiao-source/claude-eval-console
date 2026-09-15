@@ -14354,7 +14354,7 @@ class DraftTests(unittest.TestCase):
                 ),
             ), mock.patch.object(
                 app, "run_codex_task_validation", return_value=self.scope_review()
-            ), mock.patch.object(
+            ) as validate, mock.patch.object(
                 app, "global_prompt_dedup_history", return_value=history
             ), mock.patch.object(
                 app, "run_codex_prompt_dedup_validation",
@@ -14365,6 +14365,10 @@ class DraftTests(unittest.TestCase):
 
         self.assertEqual(draft["repo_name"], alternate["repo_slug"])
         self.assertEqual(dedup.call_count, 2)
+        validate.assert_called_once()
+        self.assertEqual(
+            validate.call_args.args[0]["repo_name"], alternate["repo_slug"]
+        )
         self.assertEqual(draft["prompt_dedup_history_count"], 1)
 
     def test_task_generation_has_a_ten_minute_overall_deadline(self):
@@ -14549,6 +14553,22 @@ class DraftTests(unittest.TestCase):
         self.assertTrue(any("未申报的实质范围" in error for error in errors))
         self.assertTrue(any("未定义规则" in error for error in errors))
         self.assertTrue(any("没有实际职责的基础设施" in error for error in errors))
+
+    def test_targeted_rewrite_skips_candidates_with_expensive_scope_errors(self):
+        repairable = self.scope_review()
+        repairable["approved"] = False
+        repairable["reasons"] = ["难度余量不足"]
+        self.assertTrue(app.task_review_allows_targeted_rewrite(repairable))
+
+        stacked = self.scope_review()
+        stacked["approved"] = False
+        stacked["scope_review"]["complex_mechanisms"] = ["崩溃续作", "反向补偿"]
+        self.assertFalse(app.task_review_allows_targeted_rewrite(stacked))
+
+        undeclared = self.scope_review()
+        undeclared["approved"] = False
+        undeclared["scope_review"]["undeclared_scope_items"] = ["设备模拟器"]
+        self.assertFalse(app.task_review_allows_targeted_rewrite(undeclared))
 
     def test_independent_review_rejects_below_difficult(self):
         review = self.scope_review()
@@ -16050,6 +16070,36 @@ class IterationGenerationTests(unittest.TestCase):
         self.assertIn("SOLO-QA #12596", prompt)
         self.assertIn("同仓库需求雷同，该条数据作废", prompt)
 
+    def test_semantic_dedup_compacts_long_history_prompts(self):
+        review = {
+            "duplicate": False,
+            "confidence": "low",
+            "match_scope": "none",
+            "reference": "",
+            "overlap_kind": "none",
+            "reason": "没有高置信度重复",
+        }
+        long_prompt = "历史题面的完整实现细节。" * 120
+        history = [{
+            "reference": "SOLO-QA #12597",
+            "task_type": "Feature迭代",
+            "remote_status": "DISCARDED",
+            "prompt": long_prompt,
+            "qc_summary": "同仓库功能入口重复。",
+            "dedup_required": True,
+        }]
+        with mock.patch.object(
+            app, "run_codex_generation_structured", return_value=review
+        ) as structured:
+            app.run_codex_prompt_dedup_validation(
+                self.candidate(), "Feature 迭代", history, []
+            )
+
+        prompt = structured.call_args.args[0]
+        self.assertNotIn(long_prompt, prompt)
+        self.assertIn('"summary"', prompt)
+        self.assertLess(len(prompt), 10000)
+
     def test_semantic_dedup_retries_a_discarded_same_repo_match(self):
         candidate = self.candidate()
         context = {
@@ -16096,7 +16146,7 @@ class IterationGenerationTests(unittest.TestCase):
             app, "global_prompt_dedup_history", return_value=[]
         ), mock.patch.object(
             app, "run_codex_iteration_validation", return_value=self.review_result()
-        ), mock.patch.object(
+        ) as validate, mock.patch.object(
             app, "run_codex_prompt_dedup_validation",
             side_effect=[duplicate, distinct],
         ) as dedup:
@@ -16105,6 +16155,7 @@ class IterationGenerationTests(unittest.TestCase):
         self.assertEqual(result["prompt"], candidate["prompt"])
         self.assertEqual(generate.call_count, 2)
         self.assertEqual(dedup.call_count, 2)
+        validate.assert_called_once()
         self.assertIn("SOLO-QA #11969", generate.call_args_list[1].args[1])
 
     def test_semantic_dedup_failure_does_not_start_an_unchecked_iteration(self):

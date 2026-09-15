@@ -8039,7 +8039,10 @@ class ReviewTests(unittest.TestCase):
             self.assertNotIn('"command": "make test"', prompt)
             self.assertNotIn("本轮验收结果：", prompt)
             self.assertEqual(call.kwargs["sandbox"], "read-only")
-            self.assertEqual(call.kwargs["reasoning_effort"], "low")
+            self.assertEqual(
+                call.kwargs["reasoning_effort"],
+                app.EVALUATION_REASONING_EFFORT,
+            )
         self.assertEqual(result["task_type"], "Feature 迭代")
 
     def test_regrade_rewrites_only_description_with_independent_validation(self):
@@ -8217,6 +8220,13 @@ class ReviewTests(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(runner.call_count, 2)
+        self.assertTrue(
+            all(
+                call.kwargs["reasoning_effort"]
+                == app.TASK_GENERATION_REASONING_EFFORT
+                for call in runner.call_args_list
+            )
+        )
         wait.assert_called_once_with(15)
 
     def test_generation_structured_does_not_retry_content_failure(self):
@@ -8601,7 +8611,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(runner.call_args_list[0].args[3], "first-review")
         self.assertEqual(runner.call_args_list[1].args[3], "first-review")
         self.assertEqual(
-            runner.call_args_list[1].kwargs["reasoning_effort"], "low"
+            runner.call_args_list[0].kwargs["reasoning_effort"],
+            app.FIRST_REVIEW_REASONING_EFFORT,
+        )
+        self.assertEqual(
+            runner.call_args_list[1].kwargs["reasoning_effort"],
+            app.FIRST_REVIEW_RETRY_REASONING_EFFORT,
         )
         self.assertIn("首次紧凑轨迹", runner.call_args_list[0].args[0])
         self.assertIn("重试紧凑轨迹", runner.call_args_list[1].args[0])
@@ -8880,7 +8895,11 @@ class ReviewTests(unittest.TestCase):
             all(call.kwargs["sandbox"] == "read-only" for call in split_calls)
         )
         self.assertTrue(
-            all(call.kwargs["reasoning_effort"] == "low" for call in split_calls)
+            all(
+                call.kwargs["reasoning_effort"]
+                == app.EVALUATION_REASONING_EFFORT
+                for call in split_calls
+            )
         )
         validator.assert_called_once()
         self.assertEqual(validator.call_args.kwargs["repairs_per_target"], 0)
@@ -10447,7 +10466,10 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn("delivery", schema["properties"])
         self.assertIn("不改五个维度的分数、公开点评", prompt)
         self.assertEqual(runner.call_args.kwargs["sandbox"], "read-only")
-        self.assertEqual(runner.call_args.kwargs["reasoning_effort"], "low")
+        self.assertEqual(
+            runner.call_args.kwargs["reasoning_effort"],
+            app.EVALUATION_REASONING_EFFORT,
+        )
 
     def test_generated_fact_wording_is_preserved_locally(self):
         evaluation = sample_evaluation("0-1 代码生成")
@@ -10654,7 +10676,7 @@ class ReviewTests(unittest.TestCase):
                     "repair_prompt": "修复接口缺少边界校验的问题，并补充回归测试和 Docker 验收。",
                     "evaluation": sample_evaluation(),
                 }
-                with mock.patch.object(app, "run_codex_review", return_value=review), mock.patch.object(
+                with mock.patch.object(app, "run_codex_review", return_value=review) as reviewer, mock.patch.object(
                     app, "schedule_worker"
                 ) as scheduler:
                     app.review_worker("review111111")
@@ -10668,6 +10690,10 @@ class ReviewTests(unittest.TestCase):
                 self.assertEqual(stored["turn_count"], 2)
                 scheduler.assert_called_once_with(
                     "review111111", "second_queued", app.second_turn_worker
+                )
+                self.assertEqual(
+                    reviewer.call_args.kwargs["findings_reasoning_effort"],
+                    app.FIRST_REVIEW_REASONING_EFFORT,
                 )
 
     def test_review_worker_requeues_invalid_evaluation_without_completing_turn(self):
@@ -10721,7 +10747,7 @@ class ReviewTests(unittest.TestCase):
         self.assertIsNone(stored_turn["review_result"])
         schedule_retry.assert_called_once()
 
-    def test_review_worker_retry_preserves_full_trace_and_uses_low_reasoning(self):
+    def test_review_worker_retry_preserves_full_trace_and_uses_medium_reasoning(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo = root / "repo"
@@ -10777,7 +10803,10 @@ class ReviewTests(unittest.TestCase):
                     app.review_worker("compact11111")
 
         self.assertEqual(review.call_args.args[3], full_trajectory)
-        self.assertEqual(review.call_args.kwargs["findings_reasoning_effort"], "low")
+        self.assertEqual(
+            review.call_args.kwargs["findings_reasoning_effort"],
+            app.FIRST_REVIEW_RETRY_REASONING_EFFORT,
+        )
 
     def test_review_worker_preserves_evidence_draft_and_stops_automatic_retry(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260915.63"
+APP_VERSION = "20260915.64"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -177,6 +177,10 @@ except ValueError:
     MAX_PARALLEL_RUNS = 6
 REVIEW_MODEL = "gpt-5.6-sol"
 TASK_GENERATION_MODEL = REVIEW_MODEL
+TASK_GENERATION_REASONING_EFFORT = "medium"
+EVALUATION_REASONING_EFFORT = "medium"
+FIRST_REVIEW_REASONING_EFFORT = "high"
+FIRST_REVIEW_RETRY_REASONING_EFFORT = "medium"
 TASK_GENERATION_BATCH_SIZE = 2
 TASK_GENERATION_BATCH_ATTEMPTS = 2
 TASK_GENERATION_HISTORY_LIMIT = 15
@@ -7627,6 +7631,7 @@ def run_codex_generation_structured(
                 prefix,
                 max(1, int(math.ceil(deadline - time.monotonic()))),
                 model=model,
+                reasoning_effort=TASK_GENERATION_REASONING_EFFORT,
             )
         except WorkflowError as exc:
             last_error = exc
@@ -21750,7 +21755,7 @@ def run_codex_evaluation_structured(
     timeout: int,
     *,
     sandbox: str = "read-only",
-    reasoning_effort: str = "low",
+    reasoning_effort: str = EVALUATION_REASONING_EFFORT,
     dimension_key: str = "",
     process_group: Optional[LocalCodexProcessGroup] = None,
 ) -> Dict[str, Any]:
@@ -21880,7 +21885,7 @@ def run_codex_evaluation_description_repair(
         f"completed-{dimension_key}-description-repair",
         15 * 60,
         sandbox="read-only",
-        reasoning_effort="low",
+        reasoning_effort=EVALUATION_REASONING_EFFORT,
         dimension_key=dimension_key,
     )
     description = re.sub(
@@ -22335,7 +22340,7 @@ def run_codex_evaluation_dimension_repair(
                 part_prefix,
                 20 * 60,
                 sandbox="read-only",
-                reasoning_effort="low",
+                reasoning_effort=EVALUATION_REASONING_EFFORT,
                 dimension_key=part_dimension_key,
             )
 
@@ -22484,7 +22489,7 @@ def run_codex_evaluation_metadata_repair(
             f"{target.casefold()}-metadata-repair",
             20 * 60,
             sandbox="read-only",
-            reasoning_effort="low",
+            reasoning_effort=EVALUATION_REASONING_EFFORT,
         )
     value = re.sub(r"\s+", " ", str(result.get(target) or "")).strip()
     if not value:
@@ -23048,7 +23053,7 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
                     prefix,
                     20 * 60,
                     sandbox="read-only",
-                    reasoning_effort="low",
+                    reasoning_effort=EVALUATION_REASONING_EFFORT,
                     dimension_key=dimension_key,
                     process_group=split_processes,
                 )
@@ -24222,7 +24227,7 @@ def run_codex_review(
     commit_sha: str = "",
     existing_findings: Optional[Dict[str, Any]] = None,
     findings_notifier: Optional[Callable[[Dict[str, Any]], None]] = None,
-    findings_reasoning_effort: str = "",
+    findings_reasoning_effort: str = FIRST_REVIEW_REASONING_EFFORT,
     evaluation_trajectory: Optional[str] = None,
 ) -> Dict[str, Any]:
     schema = review_findings_schema("bugs")
@@ -24232,7 +24237,7 @@ def run_codex_review(
     findings_trajectory = trajectory
     findings_trajectory_limit = (
         EVALUATION_SCORING_FALLBACK_TRAJECTORY_MAX_CHARS
-        if findings_reasoning_effort == "low"
+        if findings_reasoning_effort == FIRST_REVIEW_RETRY_REASONING_EFFORT
         else REVIEW_FINDINGS_TRAJECTORY_MAX_CHARS
     )
     if (
@@ -24283,7 +24288,7 @@ def run_codex_review(
             )
         except Exception as exc:
             if (
-                findings_reasoning_effort == "low"
+                findings_reasoning_effort == FIRST_REVIEW_RETRY_REASONING_EFFORT
                 or not retryable_evaluation_regrade_output_error(str(exc))
             ):
                 raise
@@ -24304,7 +24309,7 @@ def run_codex_review(
                 commit_sha=commit_sha,
                 existing_findings=None,
                 findings_notifier=findings_notifier,
-                findings_reasoning_effort="low",
+                findings_reasoning_effort=FIRST_REVIEW_RETRY_REASONING_EFFORT,
                 evaluation_trajectory=full_evaluation_trajectory,
             )
     findings, legacy_evaluation = normalize_review_findings(
@@ -25199,12 +25204,12 @@ def review_worker(run_id: str) -> None:
                 run_id,
                 "找 Bug 使用紧凑证据副本；五维评分、归档和上传继续读取永久完整轨迹",
             )
-        findings_reasoning_effort = ""
+        findings_reasoning_effort = FIRST_REVIEW_REASONING_EFFORT
         if int(row["stage_retry_count"] or 0) > 0:
-            findings_reasoning_effort = "low"
+            findings_reasoning_effort = FIRST_REVIEW_RETRY_REASONING_EFFORT
             add_event(
                 run_id,
-                "首轮复核重试改用更短的紧凑证据副本和低推理强度",
+                "首轮复核重试改用更短的紧凑证据副本和中等推理强度",
                 "warning",
             )
         def note_evaluation_repair(label: str, detail: str) -> None:

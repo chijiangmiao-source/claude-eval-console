@@ -6429,9 +6429,14 @@ class ValidationTests(unittest.TestCase):
 
     def test_new_run_button_tracks_durable_background_generation(self):
         javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        renderer = javascript.split("function renderNewRunButtonState()", 1)[1].split(
+            "function runMatchesStatus", 1
+        )[0]
         self.assertIn('generation_queued: ["题目生成排队中"', javascript)
         self.assertIn('generation_running: ["题目生成中"', javascript)
         self.assertIn("function renderNewRunButtonState()", javascript)
+        self.assertIn("state.health?.task_generation_max_parallel", renderer)
+        self.assertNotIn("state.health.task_generation_max_parallel", renderer)
         self.assertIn('navigateTo("#runs")', javascript)
 
     def test_iteration_button_keeps_background_job_state_across_detail_refreshes(self):

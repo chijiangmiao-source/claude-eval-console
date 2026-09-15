@@ -16327,8 +16327,22 @@ class IterationGenerationTests(unittest.TestCase):
                 [{"prompt": candidate["prompt"], "dedup_required": True}],
             )
         )
+        self.assertTrue(
+            app.semantic_dedup_review_needed(
+                candidate,
+                [],
+                [{"prompt": "文字完全不同的同仓库题面", "dedup_required": True}],
+            )
+        )
+        self.assertFalse(
+            app.semantic_dedup_review_needed(
+                candidate,
+                [],
+                [{"prompt": "本地未提交草稿", "dedup_required": False}],
+            )
+        )
 
-    def test_low_risk_cross_project_history_skips_extra_model_dedup(self):
+    def test_same_repository_history_always_runs_semantic_dedup(self):
         candidate = self.candidate()
         context = {
             "repo_path": "/tmp/existing-project",
@@ -16359,13 +16373,27 @@ class IterationGenerationTests(unittest.TestCase):
         ), mock.patch.object(
             app, "run_codex_iteration_validation", return_value=self.review_result()
         ) as validate, mock.patch.object(
-            app, "run_codex_prompt_dedup_validation"
+            app,
+            "run_codex_prompt_dedup_validation",
+            return_value={
+                "duplicate": False,
+                "confidence": "low",
+                "match_scope": "none",
+                "reference": "",
+                "overlap_kind": "none",
+                "reason": "没有实质重复",
+            },
         ) as dedup:
             result = app.generate_iteration_candidate("source111111")
 
         self.assertEqual(result["prompt"], candidate["prompt"])
         generate.assert_called_once()
-        dedup.assert_not_called()
+        dedup.assert_called_once_with(
+            mock.ANY,
+            "Feature 迭代",
+            context["repository_prompt_history"],
+            [],
+        )
         validate.assert_called_once()
 
     def test_supplemental_dedup_failure_keeps_mandatory_reviewed_iteration(self):

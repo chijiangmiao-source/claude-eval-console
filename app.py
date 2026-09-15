@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.73"
+APP_VERSION = "20260916.74"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -4392,9 +4392,18 @@ def compact_iteration_prompt_context(
 
 
 def semantic_dedup_review_needed(
-    candidate: Dict[str, Any], global_history: List[Dict[str, Any]]
+    candidate: Dict[str, Any],
+    global_history: List[Dict[str, Any]],
+    repository_history: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
-    """Reserve the extra cross-project model review for plausible matches."""
+    """Review all same-repository continuations and risky cross-repo matches."""
+    if any(
+        item.get("dedup_required") is not False
+        and bool(str(item.get("prompt") or "").strip())
+        for item in repository_history or []
+        if isinstance(item, dict)
+    ):
+        return True
     for item in global_history:
         if item.get("dedup_required") is False:
             continue
@@ -7198,7 +7207,11 @@ def generate_iteration_candidate(
                 checked_candidate["difficulty_contract"] = (
                     reviewed_difficulty_contract(validation)
                 )
-                if semantic_dedup_review_needed(checked_candidate, global_history):
+                if semantic_dedup_review_needed(
+                    checked_candidate,
+                    global_history,
+                    repository_history,
+                ):
                     update_current_iteration_job_stage("提交前语义查重")
                     try:
                         dedup_review = run_codex_prompt_dedup_validation(

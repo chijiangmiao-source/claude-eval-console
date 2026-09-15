@@ -14007,6 +14007,7 @@ class DraftTests(unittest.TestCase):
     def scope_review(self):
         return {
             "approved": True,
+            "difficulty": "困难",
             "history_overlap": False,
             "reasons": [],
             "soft_suggestions": [],
@@ -14320,7 +14321,7 @@ class DraftTests(unittest.TestCase):
         self.assertTrue(all(len(item["summary"]) <= 260 for item in payload))
         self.assertEqual(len(closest), 10)
 
-    def test_task_generation_schema_has_scope_dimensions_but_no_difficulty(self):
+    def test_task_generation_requires_difficult_scope_without_self_report(self):
         with mock.patch.object(
             app,
             "run_codex_structured",
@@ -14351,6 +14352,8 @@ class DraftTests(unittest.TestCase):
         self.assertIn("最多 2 个", generation_prompt)
         self.assertIn("自定义算法只能选择一条作为主难点", generation_prompt)
         self.assertIn("没有需要持久化的数据就不要启动数据库", generation_prompt)
+        self.assertIn("预计难度必须达到困难或地狱", generation_prompt)
+        self.assertIn("不能靠堆模块", generation_prompt)
         self.assertNotIn("复杂度控制在中等偏易", generation_prompt)
 
     def test_task_batch_rejects_repeated_scope_dimensions(self):
@@ -14374,12 +14377,13 @@ class DraftTests(unittest.TestCase):
         )
         self.assertEqual(app.category_for_project_number(11), "纯后端")
 
-    def test_task_validation_does_not_expose_a_difficulty_gate(self):
+    def test_task_validation_exposes_difficulty_gate(self):
         with mock.patch.object(
             app,
             "run_codex_structured",
             return_value={
                 "approved": True,
+                "difficulty": "困难",
                 "reasons": [],
                 "soft_suggestions": [],
                 "closest_history_repo": "",
@@ -14391,8 +14395,12 @@ class DraftTests(unittest.TestCase):
                 [],
             )
         schema = codex.call_args.args[1]
-        self.assertNotIn("difficulty", schema["properties"])
-        self.assertNotIn("required_difficulty", codex.call_args.args[0])
+        self.assertEqual(
+            schema["properties"]["difficulty"]["enum"],
+            ["简单", "中等", "困难", "地狱"],
+        )
+        self.assertIn("difficulty", schema["required"])
+        self.assertIn("difficulty 为困难或地狱", codex.call_args.args[0])
         self.assertIn("scope_review", schema["properties"])
         self.assertIn("soft_suggestions", schema["properties"])
         self.assertIn("不能照抄或信任候选题自报的范围字段", codex.call_args.args[0])
@@ -14457,6 +14465,14 @@ class DraftTests(unittest.TestCase):
         self.assertTrue(any("未定义规则" in error for error in errors))
         self.assertTrue(any("没有实际职责的基础设施" in error for error in errors))
 
+    def test_independent_review_rejects_below_difficult(self):
+        review = self.scope_review()
+        review["difficulty"] = "中等"
+
+        errors = app.task_review_scope_errors(review)
+
+        self.assertIn("独立复核预计难度为中等，低于困难", errors)
+
     def test_local_task_validation_hard_limit_is_600_chars(self):
         candidate = self.candidate()
         candidate["prompt"] += "补充异常恢复约束。" * 80
@@ -14485,7 +14501,7 @@ class DraftTests(unittest.TestCase):
         candidate = self.candidate()
         candidate["prompt"] = "从空仓库实现一个回调故障复盘服务。" + candidate["prompt"]
         validated = app.validate_generated_task(candidate, 1, "纯后端", [])
-        self.assertGreater(app.generated_task_quality_key(validated, [])[2], 0)
+        self.assertGreater(app.generated_task_quality_key(validated, [])[3], 0)
 
     def test_local_task_validation_treats_delivery_checklist_ending_as_soft_quality_issue(self):
         candidate = self.candidate()
@@ -14494,13 +14510,13 @@ class DraftTests(unittest.TestCase):
             "不得留下占位实现、假数据或未实现分支。"
         )
         validated = app.validate_generated_task(candidate, 1, "纯后端", [])
-        self.assertGreater(app.generated_task_quality_key(validated, [])[3], 0)
+        self.assertGreater(app.generated_task_quality_key(validated, [])[4], 0)
 
     def test_local_task_validation_does_not_hard_reject_historical_edge_similarity(self):
         candidate = self.candidate()
         history = [{"repo_name": "old-relay", "prompt": candidate["prompt"][:120] + "甲" * 900}]
         validated = app.validate_generated_task(candidate, 1, "纯后端", history)
-        self.assertGreater(app.generated_task_quality_key(validated, history)[4], 0)
+        self.assertGreater(app.generated_task_quality_key(validated, history)[5], 0)
 
     def test_local_task_validation_still_rejects_a_substantive_history_duplicate(self):
         candidate = self.candidate()
@@ -15839,7 +15855,13 @@ class IterationGenerationTests(unittest.TestCase):
             ],
         }
 
-    def review_result(self, task_type="Feature 迭代", approved=True, reasons=None):
+    def review_result(
+        self,
+        task_type="Feature 迭代",
+        approved=True,
+        reasons=None,
+        difficulty="困难",
+    ):
         candidate = (
             self.new_module_candidate()
             if task_type == "0-1 代码生成"
@@ -15847,6 +15869,7 @@ class IterationGenerationTests(unittest.TestCase):
         )
         return {
             "approved": approved,
+            "difficulty": difficulty,
             "reasons": list(reasons or []),
             "task_type": task_type,
             "scope_review": {
@@ -16431,7 +16454,7 @@ class IterationGenerationTests(unittest.TestCase):
 
         generate.assert_called_once()
 
-    def test_iteration_generation_ignores_reviewed_difficulty(self):
+    def test_iteration_generation_retries_reviewed_low_difficulty(self):
         context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
         source = {
             "phase": "complete",
@@ -16442,17 +16465,23 @@ class IterationGenerationTests(unittest.TestCase):
         with mock.patch.object(app, "run_row", return_value=source), mock.patch.object(
             app, "iteration_project_context", return_value=context
         ), mock.patch.object(
-            app, "run_codex_iteration_generation", return_value=self.candidate()
+            app,
+            "run_codex_iteration_generation",
+            side_effect=[self.candidate(), self.candidate()],
         ) as generate, mock.patch.object(
             app,
             "run_codex_iteration_validation",
-            return_value={**self.review_result(), "difficulty": "困难"},
+            side_effect=[
+                self.review_result(difficulty="中等"),
+                self.review_result(difficulty="困难"),
+            ],
         ) as review:
             prompt = app.generate_iteration_prompt("source111111")
 
         self.assertEqual(prompt, self.candidate()["prompt"])
-        generate.assert_called_once()
-        review.assert_called_once()
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(review.call_count, 2)
+        self.assertIn("预计难度为中等，低于困难", generate.call_args_list[1].args[1])
 
     def test_iteration_generation_accepts_stopped_completed_baseline(self):
         context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
@@ -16618,6 +16647,7 @@ class IterationGenerationTests(unittest.TestCase):
     def test_bugfix_review_requires_verified_focused_scope(self):
         approved = {
             "approved": True,
+            "difficulty": "困难",
             "reasons": [],
             "task_type": "Bug 修复",
             "bug_review": {
@@ -16637,10 +16667,41 @@ class IterationGenerationTests(unittest.TestCase):
             app.iteration_review_scope_errors(approved, "Bug 修复")[0],
         )
 
+    def test_bugfix_validation_schema_requires_difficulty(self):
+        review = {
+            "approved": True,
+            "difficulty": "困难",
+            "reasons": [],
+            "task_type": "Bug 修复",
+            "bug_review": {
+                "verified_bug_count": 4,
+                "unverified_bugs": [],
+                "overlapping_sequences": [],
+                "solution_leaks": [],
+                "style_issues": [],
+                "scope_too_large": False,
+                "single_focus": True,
+            },
+        }
+        context = {"repo_path": "/tmp/existing-project", "repo_name": "demo"}
+        with mock.patch.object(
+            app, "run_codex_structured", return_value=review
+        ) as codex:
+            app.run_codex_bugfix_validation(context, self.bugfix_candidate())
+
+        schema = codex.call_args.args[1]
+        self.assertIn("difficulty", schema["required"])
+        self.assertEqual(
+            schema["properties"]["difficulty"]["enum"],
+            ["简单", "中等", "困难", "地狱"],
+        )
+        self.assertIn("系统会直接跳过", codex.call_args.args[0])
+
     def test_bugfix_candidate_keeps_independent_review_and_source_commit(self):
         candidate = self.bugfix_candidate()
         review = {
             "approved": True,
+            "difficulty": "困难",
             "reasons": [],
             "task_type": "Bug 修复",
             "bug_review": {
@@ -16681,6 +16742,51 @@ class IterationGenerationTests(unittest.TestCase):
         self.assertEqual(result["independent_review"], review)
         self.assertEqual(result["evidence_source_commit"], "a" * 40)
         self.assertTrue(result["evidence_verified_at"])
+
+    def test_bugfix_low_difficulty_is_skipped_without_regeneration(self):
+        candidate = self.bugfix_candidate()
+        review = {
+            "approved": False,
+            "difficulty": "中等",
+            "reasons": ["预计难度低于困难"],
+            "task_type": "Bug 修复",
+            "bug_review": {
+                "verified_bug_count": 4,
+                "unverified_bugs": [],
+                "overlapping_sequences": [],
+                "solution_leaks": [],
+                "style_issues": [],
+                "scope_too_large": False,
+                "single_focus": True,
+            },
+        }
+        source = {
+            "phase": "complete",
+            "container_cleaned": 1,
+            "repo_url": "https://example.invalid/sample-handoff-ledger",
+            "first_prompt_id": "prompt-root",
+            "imported_baseline": 0,
+        }
+        context = {
+            "repo_path": "/tmp/existing-project",
+            "repo_name": "sample-handoff-ledger",
+            "current_commit": "a" * 40,
+            "iteration_history": [],
+        }
+        with mock.patch.object(app, "run_row", return_value=source), mock.patch.object(
+            app, "iteration_project_context", return_value=context
+        ), mock.patch.object(
+            app, "run_codex_iteration_generation", return_value=candidate
+        ) as generate, mock.patch.object(
+            app, "run_codex_iteration_validation", return_value=review
+        ) as validate, self.assertRaisesRegex(
+            app.TaskDifficultyBelowRequired,
+            "预计难度为中等，低于困难，已跳过",
+        ):
+            app.generate_iteration_candidate("source111111", "Bug 修复")
+
+        generate.assert_called_once()
+        validate.assert_called_once()
 
     def test_complete_module_choice_is_enforced_by_generation_and_review(self):
         candidate = self.new_module_candidate()
@@ -17077,6 +17183,45 @@ class IterationGenerationTests(unittest.TestCase):
             self.assertIn("禁止自动重试", job["stage"])
             record_skip.assert_called_once()
             record_failure.assert_not_called()
+        finally:
+            with app.ITERATION_JOB_LOCK:
+                app.ITERATION_JOBS.pop("source111111", None)
+
+    def test_auto_refill_skips_low_difficulty_bugfix_without_retry(self):
+        detail = "Bug 修复独立复核预计难度为中等，低于困难，已跳过"
+        with app.ITERATION_JOB_LOCK:
+            app.ITERATION_JOBS["source111111"] = {
+                "status": "generating",
+                "baseline_run_id": "baseline1111",
+                "task_type": "Bug 修复",
+                "target_sequence": 3,
+            }
+        try:
+            with mock.patch.object(
+                app,
+                "generate_and_start_iteration",
+                side_effect=app.TaskDifficultyBelowRequired(detail),
+            ), mock.patch.object(app, "add_event") as event, mock.patch.object(
+                app, "record_auto_refill_candidate_skip"
+            ) as record_skip, mock.patch.object(
+                app, "record_auto_refill_failure"
+            ) as record_failure, mock.patch.object(
+                app.threading, "Thread"
+            ) as thread:
+                app.automatic_iteration_worker(
+                    "source111111", "Bug 修复", False, True
+                )
+
+            with app.ITERATION_JOB_LOCK:
+                job = dict(app.ITERATION_JOBS["source111111"])
+            self.assertEqual(job["status"], "blocked")
+            self.assertEqual(job["stage"], "Bug 修复难度低于困难，已跳过")
+            event.assert_called_once_with(
+                "source111111", f"自动 Bug 修复已跳过：{detail}", "warning"
+            )
+            record_skip.assert_called_once()
+            record_failure.assert_not_called()
+            thread.assert_not_called()
         finally:
             with app.ITERATION_JOB_LOCK:
                 app.ITERATION_JOBS.pop("source111111", None)
@@ -19565,7 +19710,7 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(missing_result["remote_missing"], 1)
         self.assertEqual(missing["state"], "remote_missing")
 
-    def test_solo_qa_readiness_rejects_simple_first_round(self):
+    def test_solo_qa_readiness_rejects_below_difficult(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
@@ -19574,7 +19719,7 @@ class ExportTests(unittest.TestCase):
                 app.initialize_database()
                 self.insert_completed_turn(root)
                 evaluation = sample_evaluation()
-                evaluation["task_difficulty"] = "简单"
+                evaluation["task_difficulty"] = "中等"
                 app.update_turn(
                     "abc123abc123",
                     1,
@@ -19584,7 +19729,7 @@ class ExportTests(unittest.TestCase):
                 ready, issues = app.solo_qa_readiness(row)
 
         self.assertFalse(ready)
-        self.assertIn("SOLO-QA 首轮不能提交简单难度", issues)
+        self.assertIn("SOLO-QA 只允许提交困难及以上难度，当前为中等", issues)
 
     def test_delete_run_is_recoverable_and_preserves_project_files(self):
         with tempfile.TemporaryDirectory() as directory:

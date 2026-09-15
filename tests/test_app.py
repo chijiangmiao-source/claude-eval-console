@@ -189,7 +189,9 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("score_plan", schema["required"])
         self.assertEqual(plan["properties"]["independent_scores"]["minItems"], 5)
         self.assertEqual(plan["properties"]["independent_scores"]["maxItems"], 5)
-        self.assertTrue(plan["properties"]["strength_order"]["uniqueItems"])
+        # The Responses API strict-schema subset rejects ``uniqueItems``. The
+        # application validates uniqueness after decoding instead.
+        self.assertNotIn("uniqueItems", plan["properties"]["strength_order"])
         self.assertEqual(
             set(plan["properties"]["strength_order"]["items"]["enum"]),
             set(app.EVALUATION_DIMENSION_KEYS),

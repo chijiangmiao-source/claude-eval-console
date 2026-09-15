@@ -17922,6 +17922,92 @@ class ExportTests(unittest.TestCase):
         self.assertIn("交付完整性", issues[0])
         self.assertIn("不是连贯中文叙述", issues[0])
 
+    def test_solo_qa_nonfull_positive_only_return_targets_nonfull_dimensions(self):
+        evaluation = with_score_stage(sample_evaluation())
+        for key in ("instruction_following", "planning"):
+            evaluation[key]["score"] = 4
+            evaluation["scores"][app.EVALUATION_DIMENSION_KEYS.index(key)] = 4
+        row = {
+            "solo_qa_state": "needs_fix",
+            "solo_qa_remote_submission_id": "9005",
+            "solo_qa_remote_status": "PENDING_FIX",
+            "solo_qa_remote_updated_at": "2026-09-16T10:00:00",
+            "solo_qa_qc_summary": (
+                "指令遵循打了 4 分，但整段只写完成了哪些改动，没有一句指出"
+                "扣掉的 1 分在哪里；任务规划同样没有交代问题出在哪一步、造成什么后果。"
+            ),
+        }
+
+        issues = app.solo_qa_returned_evaluation_repair_issues(row, evaluation)
+
+        self.assertEqual(len(issues), 2)
+        self.assertTrue(all("具体扣分事实、定位与已发生后果" in issue for issue in issues))
+        self.assertTrue(any("指令遵循" in issue for issue in issues))
+        self.assertTrue(any("任务规划" in issue for issue in issues))
+
+    def test_returned_nonfull_repair_rejects_positive_only_and_accepts_grounded_gap(self):
+        evaluation = with_score_stage(sample_evaluation())
+        evaluation["planning"]["score"] = 4
+        evaluation["scores"][2] = 4
+        repair_issues = [
+            "自动检查的任务规划非满分描述没有写清具体扣分事实、定位与已发生后果"
+        ]
+        positive_only = "完成了需求拆解、实现检查和测试验证，整体安排清楚。"
+        grounded = (
+            "verify/run.sh 未调用 npm --prefix web run e2e，因此容器验收没有执行页面场景，"
+            "平台复核需要额外核对独立输出。"
+        )
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            app,
+            "run_codex_evaluation_structured",
+            return_value={"description": positive_only},
+        ) as generate:
+            with self.assertRaisesRegex(app.WorkflowError, "具体扣分事实"):
+                app.run_codex_evaluation_description_repair(
+                    Path(directory),
+                    "完成项目",
+                    "读取 verify/run.sh 后运行容器验收",
+                    evaluation,
+                    "planning",
+                    1,
+                    repair_issues,
+                )
+            self.assertIn("必须从本维内部事实或原始轨迹中选择一个真实不足", generate.call_args.args[0])
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            app,
+            "run_codex_evaluation_structured",
+            return_value={"description": grounded},
+        ):
+            result = app.run_codex_evaluation_description_repair(
+                Path(directory),
+                "完成项目",
+                "读取 verify/run.sh 后运行容器验收",
+                evaluation,
+                "planning",
+                1,
+                repair_issues,
+            )
+
+        self.assertEqual(result, grounded)
+
+    def test_similarity_repair_requires_project_specific_anchor(self):
+        with self.assertRaisesRegex(app.WorkflowError, "项目独有"):
+            app.validate_returned_evaluation_description_repair(
+                "delivery",
+                5,
+                "完成了主要功能并通过全部检查。",
+                require_unique_anchor=True,
+            )
+
+        app.validate_returned_evaluation_description_repair(
+            "delivery",
+            5,
+            "services.py 完成分片快照读取并通过对应检查。",
+            require_unique_anchor=True,
+        )
+
     def test_solo_qa_environment_attribution_return_targets_named_dimension(self):
         row = {
             "solo_qa_state": "needs_fix",

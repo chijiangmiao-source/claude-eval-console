@@ -17558,7 +17558,7 @@ class IterationGenerationTests(unittest.TestCase):
             "source111111", "自动生成迭代需求失败：模型复核未通过", "error"
         )
 
-    def test_auto_refill_cools_down_source_after_internal_rewrite_is_exhausted(self):
+    def test_auto_refill_permanently_skips_exhausted_quality_source(self):
         detail = (
             f"连续 {app.ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求："
             "迭代题面应为 260 至 800 字，当前共 845 字"
@@ -17586,8 +17586,11 @@ class IterationGenerationTests(unittest.TestCase):
 
             with app.ITERATION_JOB_LOCK:
                 job = dict(app.ITERATION_JOBS["source111111"])
-            self.assertEqual(job["status"], "failed")
-            self.assertGreater(job["cooldown_until_epoch"], int(time.time()))
+            self.assertEqual(job["status"], "blocked")
+            self.assertEqual(
+                job["stage"], "连续两次候选未通过，当前来源已永久跳过"
+            )
+            self.assertIsNone(job["cooldown_until_epoch"])
             event.assert_called_once_with(
                 "source111111", f"自动生成迭代需求失败：{detail}", "error"
             )
@@ -17665,6 +17668,34 @@ class IterationGenerationTests(unittest.TestCase):
         self.assertIsNone(saved[0]["cooldown_until_epoch"])
         thread.assert_not_called()
 
+    def test_exhausted_source_blocking_keeps_infrastructure_failures_retryable(self):
+        prefix = (
+            f"连续 {app.ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求："
+        )
+        base = {
+            "status": "failed",
+            "source_run_id": "source111111",
+            "task_type": "Feature 迭代",
+            "auto_refill": True,
+        }
+        quality_failure = {
+            **base,
+            "last_error": prefix + "独立复核认为范围过小且难度只有中等",
+        }
+        infrastructure_failure = {
+            **base,
+            "last_error": prefix + "504 Gateway Time-out",
+        }
+
+        self.assertTrue(
+            app.exhausted_auto_iteration_source_should_be_blocked(quality_failure)
+        )
+        self.assertFalse(
+            app.exhausted_auto_iteration_source_should_be_blocked(
+                infrastructure_failure
+            )
+        )
+
     def test_auto_refill_still_counts_generation_timeout_as_platform_failure(self):
         detail = (
             f"连续 {app.ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求："
@@ -17691,6 +17722,10 @@ class IterationGenerationTests(unittest.TestCase):
 
             record_skip.assert_not_called()
             record_failure.assert_called_once()
+            with app.ITERATION_JOB_LOCK:
+                job = dict(app.ITERATION_JOBS["source111111"])
+            self.assertEqual(job["status"], "failed")
+            self.assertGreater(job["cooldown_until_epoch"], int(time.time()))
         finally:
             with app.ITERATION_JOB_LOCK:
                 app.ITERATION_JOBS.pop("source111111", None)

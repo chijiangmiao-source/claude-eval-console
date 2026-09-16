@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.77"
+APP_VERSION = "20260916.78"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -7503,6 +7503,30 @@ def automatic_iteration_status(
     return job
 
 
+def iteration_generation_infrastructure_failure(detail: str) -> bool:
+    """Keep transient service failures retryable instead of blocking a source."""
+    text = str(detail or "").casefold()
+    if retryable_control_error(detail):
+        return True
+    if any(marker in text for marker in GENERATION_TRANSIENT_ERROR_MARKERS):
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "认证",
+            "鉴权",
+            "连接失败",
+            "请求失败",
+            "模型调用失败",
+            "无响应",
+            "限流",
+            "certificate",
+            "ssl",
+            "找不到 codex 命令",
+        )
+    )
+
+
 def same_repository_rule_c_failure(detail: str) -> bool:
     """Identify exhausted candidates rejected by same-repository Rule C."""
     text = re.sub(r"\s+", " ", str(detail or "")).strip()
@@ -7513,14 +7537,14 @@ def same_repository_rule_c_failure(detail: str) -> bool:
 
 
 def exhausted_auto_iteration_source_should_be_blocked(job: Dict[str, Any]) -> bool:
-    """Keep deterministic semantic saturation out of the refill pool."""
+    """Keep every exhausted deterministic candidate source out of the pool."""
     if not bool(job.get("auto_refill")):
         return False
     detail = str(job.get("error") or job.get("last_error") or "").strip()
     exhausted = detail.startswith(
         f"连续 {ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求"
     )
-    return bool(exhausted and same_repository_rule_c_failure(detail))
+    return bool(exhausted and not iteration_generation_infrastructure_failure(detail))
 
 
 def exhausted_auto_iteration_block_stage(job: Dict[str, Any]) -> str:
@@ -7697,14 +7721,9 @@ def automatic_iteration_worker(
                 daemon=True,
             ).start()
             return
-        infrastructure_markers = (
-            "超时", "api error", "认证", "鉴权", "连接失败", "请求失败",
-            "模型调用失败", "无响应", "限流",
-        )
         candidate_quality_failure = difficulty_skipped or (
-            generation_exhausted and not any(
-                marker in detail.casefold() for marker in infrastructure_markers
-            )
+            generation_exhausted
+            and not iteration_generation_infrastructure_failure(detail)
         )
         block_bugfix_retry = bool(
             auto_refill
@@ -7712,7 +7731,7 @@ def automatic_iteration_worker(
             and candidate_quality_failure
         )
         block_current_source = bool(
-            block_bugfix_retry or (auto_refill and rule_c_failure)
+            auto_refill and candidate_quality_failure
         )
         result = {
             "status": "blocked" if block_current_source else "failed",
@@ -7727,6 +7746,8 @@ def automatic_iteration_worker(
                     if difficulty_skipped
                     else "当前代码基线无合规 Bug，已禁止自动重试"
                     if block_bugfix_retry
+                    else "连续两次候选未通过，当前来源已永久跳过"
+                    if block_current_source
                     else "生成失败"
                 )
             ),

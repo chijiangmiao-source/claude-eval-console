@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.84"
+APP_VERSION = "20260916.85"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -12846,7 +12846,12 @@ def difficulty_reassessment_material(row: Dict[str, Any]) -> Dict[str, Any]:
             trajectory_path,
             str(row.get("turn_prompt_id") or "") or None,
         )
-        trajectory = bounded_review_trajectory(trajectory, 12000)
+        trajectory = scoring_trajectory_excerpt(
+            trajectory,
+            trajectory_path,
+            str(row.get("turn_prompt") or ""),
+            12000,
+        )
     try:
         review = json.loads(str(row.get("turn_review_result") or "{}"))
     except (json.JSONDecodeError, TypeError):

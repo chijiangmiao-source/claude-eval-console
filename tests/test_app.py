@@ -20762,6 +20762,65 @@ class ExportTests(unittest.TestCase):
 
 
 class DifficultyReassessmentTests(unittest.TestCase):
+    def test_material_bounds_a_long_trajectory_with_the_current_excerpt_helper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.jsonl"
+            events = [
+                {
+                    "type": "user",
+                    "promptId": "prompt-1",
+                    "message": {"content": "实现需求"},
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "x" * 15000},
+                            {"type": "text", "text": "y" * 15000},
+                            {
+                                "type": "tool_use",
+                                "id": "call-1",
+                                "name": "Bash",
+                                "input": {"command": "pytest"},
+                            },
+                        ]
+                    },
+                },
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "call-1",
+                                "content": "passed",
+                            }
+                        ]
+                    },
+                },
+            ]
+            trace.write_text(
+                "\n".join(json.dumps(event) for event in events) + "\n",
+                encoding="utf-8",
+            )
+            material = app.difficulty_reassessment_material(
+                {
+                    "run_id": "abc123abc123",
+                    "turn_number": 1,
+                    "turn_prompt": "实现需求",
+                    "turn_prompt_id": "prompt-1",
+                    "turn_trajectory_path": str(trace),
+                    "turn_verification": "[]",
+                    "turn_review_result": "{}",
+                    "current_difficulty": "中等",
+                }
+            )
+
+        self.assertLessEqual(len(material["trajectory"]), 12000)
+        self.assertIn("TRACE_SOURCE ", material["trajectory"])
+        self.assertIn("STEP_INDEX 1 ", material["trajectory"])
+        self.assertIn("pytest", material["trajectory"])
+
     def test_candidates_read_the_stored_evaluation_without_public_cleanup(self):
         evaluation = with_score_stage(sample_evaluation())
         evaluation["task_difficulty"] = "中等"

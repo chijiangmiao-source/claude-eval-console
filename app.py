@@ -138,7 +138,12 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.74"
+APP_VERSION = "20260916.76"
+COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
+_COMPLETED_TURN_CACHE_LOCK = threading.RLock()
+_COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
+_TRAJECTORY_DIGEST_CACHE_LOCK = threading.RLock()
+_TRAJECTORY_DIGEST_CACHE: Dict[str, Tuple[Tuple[int, int, int, int], str]] = {}
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 BACKGROUND_ID_RE = re.compile(r"backgrounded\s+[·•]\s+([A-Za-z0-9_-]+)", re.I)
@@ -10526,7 +10531,7 @@ def completed_turn_evaluation_repair_prerequisite_error(
     if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
         return "缺少轨迹 SHA-256，不能自动重写评分描述"
     try:
-        actual_digest = hashlib.sha256(trajectory_path.read_bytes()).hexdigest()
+        actual_digest = _cached_trajectory_sha256(trajectory_path)
     except OSError as exc:
         return f"轨迹文件读取失败：{exc}"
     if actual_digest != expected_digest:
@@ -11418,9 +11423,13 @@ def legacy_evaluation_waivable_issues(row: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(issue for issue in issues if issue))
 
 
-def evaluation_confirmation_preview_issues(row: Dict[str, Any]) -> List[str]:
+def evaluation_confirmation_preview_issues(
+    row: Dict[str, Any],
+    export_issues: Optional[List[str]] = None,
+) -> List[str]:
     """Return lightweight blockers for enabling the confirmation control."""
-    _, export_issues = export_readiness(row)
+    if export_issues is None:
+        _, export_issues = export_readiness(row)
     issues = list(export_issues)
     if legacy_evaluation_can_be_human_confirmed(row):
         waivable = set(legacy_evaluation_waivable_issues(row))
@@ -12159,57 +12168,149 @@ def sync_solo_qa_submissions(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def completed_turns() -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
-    for row in completed_turn_rows():
-        raw_evaluation = turn_evaluation(row)
-        evaluation = public_turn_evaluation(row)
+def _path_revision(path: Optional[Path]) -> Tuple[Any, ...]:
+    if path is None:
+        return ()
+    try:
+        stat = path.stat()
+    except OSError:
+        return (str(path), "missing")
+    return (
+        str(path),
+        int(stat.st_dev),
+        int(stat.st_ino),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+    )
+
+
+def _completed_turn_record_revision(row: Dict[str, Any]) -> str:
+    """Fingerprint every list dependency without reopening the trajectory."""
+    trajectory_value = str(
+        row.get("turn_trajectory_path") or row.get("run_trajectory_path") or ""
+    ).strip()
+    trajectory_path = Path(trajectory_value).expanduser() if trajectory_value else None
+    terminal_paths = terminal_asset_paths(str(row.get("run_id") or ""))
+    payload = {
+        "app_version": APP_VERSION,
+        "database": str(DB_PATH),
+        "row": row,
+        "trajectory": _path_revision(trajectory_path),
+        "terminal": {
+            key: _path_revision(terminal_paths[key])
+            for key in ("terminal_window", "cleanup_prepared", "container_removed")
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _completed_turn_record(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw_evaluation = turn_evaluation(row)
+    evaluation = public_turn_evaluation(row)
+    remote_state = str(row.get("solo_qa_state") or "")
+    remote_status = str(row.get("solo_qa_remote_status") or "")
+    repair_locked = (
+        remote_state in {"submitting", "qc_pending", "qc_passed", "discarded"}
+        or remote_status in {"SUBMITTED", "QC_PASSED", "DISCARDED"}
+    )
+    if repair_locked:
+        # These states cannot be rewritten locally. Avoid reopening hundreds of
+        # immutable trajectories only to rediscover that same prerequisite.
+        repairable_issues = []
+        evaluation_policy_issues = completed_turn_evaluation_policy_issues(
+            row, raw_evaluation
+        )
+    else:
         repairable_issues, evaluation_policy_issues = (
             completed_turn_repairable_evaluation_issues(row, raw_evaluation)
         )
-        confirmation = evaluation_confirmation_metadata(row)
-        turn_number = int(row["turn_number"])
-        fallback_difficulty = (
-            row.get("run_task_difficulty") if int(row.get("turn_count") or 0) == 1 else ""
-        )
-        export_ready, export_issues = export_readiness(row)
-        confirmation_issues = evaluation_confirmation_preview_issues(row)
-        solo_qa_ready, solo_qa_issues = solo_qa_readiness(
-            row, export_ready, export_issues
-        )
-        records.append({
-            "key": f"{row['run_id']}:{turn_number}",
-            "run_id": row["run_id"],
-            "project_number": run_project_number_label(row),
-            "repo_name": row["repo_name"],
-            "turn_number": turn_number,
-            "prompt": row.get("turn_prompt") or "",
-            "task_type": completed_turn_task_type(row, evaluation) or "未记录",
-            "task_difficulty": evaluation.get("task_difficulty") or fallback_difficulty or "未记录",
-            "model": row.get("turn_model") or "未记录",
-            "completed_at": row.get("turn_updated_at") or "",
-            "evaluation": evaluation,
-            "evaluation_confirmation": confirmation,
-            "evaluation_confirmation_status": confirmation["legacy_status"] if evaluation else "",
-            "evaluation_confirmation_ready": bool(evaluation) and not confirmation_issues,
-            "evaluation_confirmation_issues": confirmation_issues,
-            "evaluation_overridden": bool(turn_manual_evaluation(row)),
-            "evaluation_override_updated_at": row.get("turn_manual_evaluation_updated_at") or "",
-            "evaluation_evidence_issues": manual_evaluation_evidence_issues(row),
-            "review_copy_ready": bool(evaluation),
-            "export_ready": export_ready,
-            "export_issues": export_issues,
-            "evaluation_repair": completed_turn_evaluation_repair_state(
-                row,
-                export_issues=export_issues,
-                repairable_issues=repairable_issues,
-                policy_issues=evaluation_policy_issues,
-            ),
-            "solo_qa_ready": solo_qa_ready,
-            "solo_qa_issues": solo_qa_issues,
-            "solo_qa_gate": solo_qa_runtime_gate(row),
-            "solo_qa": solo_qa_state_summary(row, solo_qa_ready),
-        })
+    confirmation = evaluation_confirmation_metadata(row)
+    turn_number = int(row["turn_number"])
+    fallback_difficulty = (
+        row.get("run_task_difficulty") if int(row.get("turn_count") or 0) == 1 else ""
+    )
+    export_ready, export_issues = export_readiness(
+        row,
+        evaluation=raw_evaluation,
+        evaluation_policy_issues=evaluation_policy_issues,
+    )
+    confirmation_issues = evaluation_confirmation_preview_issues(
+        row, export_issues
+    )
+    solo_qa_ready, solo_qa_issues = solo_qa_readiness(
+        row, export_ready, export_issues
+    )
+    return {
+        "key": f"{row['run_id']}:{turn_number}",
+        "run_id": row["run_id"],
+        "project_number": run_project_number_label(row),
+        "repo_name": row["repo_name"],
+        "turn_number": turn_number,
+        "prompt": row.get("turn_prompt") or "",
+        "task_type": completed_turn_task_type(row, evaluation) or "未记录",
+        "task_difficulty": evaluation.get("task_difficulty") or fallback_difficulty or "未记录",
+        "model": row.get("turn_model") or "未记录",
+        "completed_at": row.get("turn_updated_at") or "",
+        "evaluation": evaluation,
+        "evaluation_confirmation": confirmation,
+        "evaluation_confirmation_status": confirmation["legacy_status"] if evaluation else "",
+        "evaluation_confirmation_ready": bool(evaluation) and not confirmation_issues,
+        "evaluation_confirmation_issues": confirmation_issues,
+        "evaluation_overridden": bool(turn_manual_evaluation(row)),
+        "evaluation_override_updated_at": row.get("turn_manual_evaluation_updated_at") or "",
+        "evaluation_evidence_issues": manual_evaluation_evidence_issues(row),
+        "review_copy_ready": bool(evaluation),
+        "export_ready": export_ready,
+        "export_issues": export_issues,
+        "evaluation_repair": completed_turn_evaluation_repair_state(
+            row,
+            export_issues=export_issues,
+            repairable_issues=repairable_issues,
+            policy_issues=evaluation_policy_issues,
+        ),
+        "solo_qa_ready": solo_qa_ready,
+        "solo_qa_issues": solo_qa_issues,
+        "solo_qa_gate": solo_qa_runtime_gate(row),
+        "solo_qa": solo_qa_state_summary(row, solo_qa_ready),
+    }
+
+
+def completed_turns() -> List[Dict[str, Any]]:
+    """Return list summaries while reusing unchanged, expensive trace checks."""
+    rows = completed_turn_rows()
+    now = time.monotonic()
+    records: List[Dict[str, Any]] = []
+    active_cache_keys: set[str] = set()
+    # Serialize cache misses so simultaneous browser refreshes do not each scan
+    # hundreds of immutable trajectory files.
+    with _COMPLETED_TURN_CACHE_LOCK:
+        for row in rows:
+            cache_key = f"{DB_PATH}:{row['run_id']}:{int(row['turn_number'])}"
+            active_cache_keys.add(cache_key)
+            revision = _completed_turn_record_revision(row)
+            cached = _COMPLETED_TURN_RECORD_CACHE.get(cache_key)
+            if (
+                cached
+                and cached[0] == revision
+                and now - cached[1] < COMPLETED_TURN_CACHE_TTL_SECONDS
+            ):
+                records.append(cached[2])
+                continue
+            record = _completed_turn_record(row)
+            _COMPLETED_TURN_RECORD_CACHE[cache_key] = (revision, now, record)
+            records.append(record)
+        database_prefix = f"{DB_PATH}:"
+        for cache_key in list(_COMPLETED_TURN_RECORD_CACHE):
+            if cache_key.startswith(database_prefix) and cache_key not in active_cache_keys:
+                _COMPLETED_TURN_RECORD_CACHE.pop(cache_key, None)
     return records
 
 
@@ -12333,10 +12434,39 @@ def delivery_export_row(row: Dict[str, Any]) -> List[Any]:
     return values
 
 
-def export_readiness(row: Dict[str, Any]) -> Tuple[bool, List[str]]:
+def _cached_trajectory_sha256(path: Path) -> str:
+    """Hash a stable trajectory once for list rendering; preflight hashes fresh."""
+    stat = path.stat()
+    signature = (
+        int(stat.st_dev),
+        int(stat.st_ino),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+    )
+    key = str(path)
+    with _TRAJECTORY_DIGEST_CACHE_LOCK:
+        cached = _TRAJECTORY_DIGEST_CACHE.get(key)
+        if cached and cached[0] == signature:
+            return cached[1]
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    value = digest.hexdigest()
+    with _TRAJECTORY_DIGEST_CACHE_LOCK:
+        _TRAJECTORY_DIGEST_CACHE[key] = (signature, value)
+    return value
+
+
+def export_readiness(
+    row: Dict[str, Any],
+    *,
+    evaluation: Optional[Dict[str, Any]] = None,
+    evaluation_policy_issues: Optional[List[str]] = None,
+) -> Tuple[bool, List[str]]:
     """Validate evidence fields before a completed turn can be formally delivered."""
     issues: List[str] = []
-    evaluation = turn_evaluation(row)
+    evaluation = evaluation if isinstance(evaluation, dict) else turn_evaluation(row)
     if (
         evaluation
         and evaluation.get("score_stage_version") != 2
@@ -12371,7 +12501,7 @@ def export_readiness(row: Dict[str, Any]) -> Tuple[bool, List[str]]:
         expected_digest = str(row.get("turn_trajectory_sha256") or "").strip()
         if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_digest):
             issues.append("缺少轨迹 SHA-256")
-        elif hashlib.sha256(trajectory_path.read_bytes()).hexdigest() != expected_digest.lower():
+        elif _cached_trajectory_sha256(trajectory_path) != expected_digest.lower():
             issues.append("轨迹文件摘要不匹配")
     for field in (
         "environment_reproducibility",
@@ -12411,7 +12541,10 @@ def export_readiness(row: Dict[str, Any]) -> Tuple[bool, List[str]]:
     if evaluation and not legacy_policy_accepted:
         # Revalidate with the concrete turn number so turn-aware wording and
         # consistency checks use the same policy as review generation.
-        issues.extend(completed_turn_evaluation_policy_issues(row, evaluation))
+        if evaluation_policy_issues is None:
+            issues.extend(completed_turn_evaluation_policy_issues(row, evaluation))
+        else:
+            issues.extend(evaluation_policy_issues)
     harness_version = normalize_harness_version(row.get("harness_version") or "")
     if not harness_version:
         issues.append("缺少 Harness 版本")

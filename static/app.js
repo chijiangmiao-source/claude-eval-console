@@ -1,4 +1,4 @@
-const UI_VERSION = "20260916.74";
+const UI_VERSION = "20260916.76";
 const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 const SOLO_QA_AUTO_REPAIR_POLL_MS = 3000;
@@ -1519,7 +1519,14 @@ async function queueAutomaticEvaluationRepairs() {
   return request;
 }
 
-async function loadCompletedTurns({ autoRepair = true } = {}) {
+async function loadCompletedTurns({ autoRepair = true, force = true } = {}) {
+  const cacheFresh = state.exportLastLoadedAt
+    && Date.now() - state.exportLastLoadedAt < EXPORT_REFRESH_INTERVAL_MS;
+  if (!force && cacheFresh) {
+    renderExportPage();
+    if (autoRepair) queueAutomaticEvaluationRepairs();
+    return;
+  }
   try {
     state.completedTurns = await api("/api/exports/turns");
     state.exportLastLoadedAt = Date.now();
@@ -2106,8 +2113,9 @@ async function showExportPage() {
   exportView.classList.remove("hidden");
   setActiveModuleTab("exports");
   setPageHeader("导出与提交", "可随时导出复核副本；正式提交前须检查证据、人工确认并完成项目收尾。", true);
-  $("#export-turn-list").innerHTML = '<tr><td colspan="11" class="table-empty">正在读取已完成轮次…</td></tr>';
-  await loadCompletedTurns();
+  if (state.completedTurns.length) renderExportPage();
+  else $("#export-turn-list").innerHTML = '<tr><td colspan="11" class="table-empty">正在读取已完成轮次…</td></tr>';
+  await loadCompletedTurns({ force: false });
   pingSoloQaBridge();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }

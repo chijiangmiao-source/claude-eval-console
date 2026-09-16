@@ -7821,11 +7821,11 @@ class ParsingTests(unittest.TestCase):
                 ) as code_probe, mock.patch.object(
                     app,
                     "running_stage_elapsed_seconds",
-                    return_value=app.NO_CODE_OUTPUT_GRACE_SECONDS + 1,
+                    return_value=app.NO_CODE_OUTPUT_DEADLINE_SECONDS + 1,
                 ), mock.patch.object(
                     app.time,
                     "monotonic",
-                    side_effect=[0, app.NO_CODE_OUTPUT_GRACE_SECONDS + 1],
+                    side_effect=[0, app.NO_CODE_OUTPUT_DEADLINE_SECONDS + 1],
                 ), mock.patch.object(
                     app, "stop_run_for_no_code_output", side_effect=stop_no_code
                 ) as stop:
@@ -7833,7 +7833,7 @@ class ParsingTests(unittest.TestCase):
 
         code_probe.assert_called_once()
         stop.assert_called_once()
-        self.assertIn("连续 15 分钟没有轨迹活动", stop.call_args.args[1])
+        self.assertIn("至少 25 分钟", stop.call_args.args[1])
 
     def test_active_first_turn_without_code_stops_at_hard_deadline(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -7868,18 +7868,66 @@ class ParsingTests(unittest.TestCase):
                 ), mock.patch.object(
                     app,
                     "running_stage_elapsed_seconds",
-                    return_value=app.NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS + 1,
+                    return_value=app.NO_CODE_OUTPUT_DEADLINE_SECONDS + 1,
                 ), mock.patch.object(
                     app.time,
                     "monotonic",
-                    side_effect=[0, app.NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS + 1],
+                    side_effect=[0, app.NO_CODE_OUTPUT_DEADLINE_SECONDS + 1],
                 ), mock.patch.object(
                     app, "stop_run_for_no_code_output", side_effect=stop_no_code
                 ) as stop:
                     app.monitor_docker_turn(created["id"], 1)
 
         stop.assert_called_once()
-        self.assertIn("至少 2 小时", stop.call_args.args[1])
+        self.assertIn("未改变文件的命令不计为代码产出", stop.call_args.args[1])
+
+    def test_no_code_watchdog_warns_at_15_minutes_without_stopping(self):
+        active = {
+            "phase": "first_running",
+            "container_name": "container-demo",
+            "screen_name": "screen-demo",
+            "retry_not_before_epoch": 0,
+        }
+        with mock.patch.object(
+            app, "run_row", side_effect=[active, {"phase": "stopped"}]
+        ), mock.patch.object(
+            app, "turn_row", return_value={"created_at": app.now_text()}
+        ), mock.patch.object(
+            app, "refresh_trace_snapshot", return_value=(Path("/tmp/snapshot"), None)
+        ), mock.patch.object(
+            app, "docker_container_running", return_value=True
+        ), mock.patch.object(
+            app, "terminal_screen_text", return_value="Stewing (15m)"
+        ), mock.patch.object(
+            app, "trace_activity_signature", return_value=(1, 10, 20)
+        ), mock.patch.object(
+            app, "completion_recovery_sent_epoch", return_value=None
+        ), mock.patch.object(
+            app, "final_summary_recovery_sent_epoch", return_value=None
+        ), mock.patch.object(
+            app, "workspace_business_code_output_paths", return_value=[]
+        ), mock.patch.object(
+            app,
+            "running_stage_elapsed_seconds",
+            return_value=app.NO_CODE_OUTPUT_WARNING_SECONDS + 1,
+        ), mock.patch.object(
+            app.time,
+            "monotonic",
+            side_effect=[0, app.NO_CODE_OUTPUT_WARNING_SECONDS + 1],
+        ), mock.patch.object(
+            app.time, "sleep", return_value=None
+        ), mock.patch.object(
+            app, "add_event"
+        ) as event, mock.patch.object(
+            app, "update_run_if_phase"
+        ), mock.patch.object(
+            app, "stop_run_for_no_code_output"
+        ) as stop:
+            app.monitor_docker_turn("watch1111111", 1)
+
+        messages = [call.args[1] for call in event.call_args_list]
+        self.assertTrue(any("15 分钟" in message and "25 分钟" in message for message in messages))
+        stop.assert_not_called()
 
     def test_six_hour_notice_keeps_read_only_monitor_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -15314,6 +15362,122 @@ class AutoRefillTests(unittest.TestCase):
                 self.assertEqual(enabled["bugfix_slots"], [2, 5])
                 self.assertIsNone(enabled["disable_at"])
 
+    def test_rule_c_saturation_requires_two_distinct_remote_returns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root):
+                app.initialize_database()
+                with app.db_connection() as database:
+                    self.insert_run(database, "root11111111", "shared-repo")
+                    self.insert_run(database, "root22222222", "shared-repo")
+                    database.execute(
+                        "UPDATE runs SET repo_url = ? WHERE id IN (?, ?)",
+                        (
+                            "https://example.invalid/shared-repo",
+                            "root11111111",
+                            "root22222222",
+                        ),
+                    )
+                    timestamp = app.now_text()
+                    database.executemany(
+                        """INSERT INTO run_turns(
+                             run_id, turn_number, intent_type, prompt, status,
+                             created_at, updated_at
+                           ) VALUES (?, 1, '0-1 代码生成', '需求', 'complete', ?, ?)""",
+                        [
+                            ("root11111111", timestamp, timestamp),
+                            ("root22222222", timestamp, timestamp),
+                        ],
+                    )
+                    database.execute(
+                        """INSERT INTO solo_qa_submissions(
+                             run_id, turn_number, remote_submission_id, remote_status,
+                             state, qc_summary, error, created_at, updated_at
+                           ) VALUES (?, 1, ?, 'PENDING_FIX', 'needs_fix', ?, '', ?, ?)""",
+                        (
+                            "root11111111",
+                            "remote-1",
+                            "命中查重规则 C：与同仓库历史题面语义重复",
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                candidate = {
+                    "repo_name": "shared-repo",
+                    "repo_url": "https://example.invalid/shared-repo",
+                }
+                self.assertEqual(app.repository_semantic_saturation_reason(candidate), "")
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO solo_qa_submissions(
+                             run_id, turn_number, remote_submission_id, remote_status,
+                             state, qc_summary, error, created_at, updated_at
+                           ) VALUES (?, 1, ?, 'DISCARDED', 'discarded', ?, '', ?, ?)""",
+                        (
+                            "root22222222",
+                            "remote-2",
+                            "同一个仓库规则 C 命中，确认语义重复",
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                reason = app.repository_semantic_saturation_reason(candidate)
+
+        self.assertIn("至少 2 条", reason)
+
+    def test_rule_c_infrastructure_error_is_not_strong_saturation_evidence(self):
+        detail = "连续 2 次未生成合规迭代需求：同仓库规则 C 检查遇到 504 Gateway Time-out"
+        self.assertTrue(app.same_repository_rule_c_failure(detail))
+        self.assertFalse(app.strong_same_repository_rule_c_failure(detail))
+
+    def test_refill_precheck_skips_saturated_repository_before_generation(self):
+        source = {
+            "id": "root11111111",
+            "repo_name": "shared-repo",
+            "repo_url": "https://example.invalid/shared-repo",
+            "iteration_count": 2,
+            "next_iteration_task_type": "Bug 修复",
+        }
+        created = {"id": "new01111111", "project_number": "0009"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root):
+                app.initialize_database()
+                app.set_auto_refill({"enabled": True, "project_directory": "team-a"})
+                with mock.patch.object(
+                    app, "automatic_refill_occupancy", return_value=1
+                ), mock.patch.object(
+                    app, "auto_refill_new_project_backlog", return_value=0
+                ), mock.patch.object(
+                    app, "auto_refill_iteration_candidate", return_value=source
+                ), mock.patch.object(
+                    app,
+                    "repository_semantic_saturation_reason",
+                    return_value="同仓库已有至少 2 条 SOLO-QA 规则 C 退回记录",
+                ), mock.patch.object(
+                    app, "put_iteration_job"
+                ) as put, mock.patch.object(
+                    app, "queue_refill_iteration"
+                ) as queue, mock.patch.object(
+                    app, "create_automatic_run", return_value=created
+                ), mock.patch.object(
+                    app, "add_event"
+                ), mock.patch.object(
+                    app, "record_auto_refill_candidate_skip"
+                ), mock.patch.object(
+                    app, "record_auto_refill_detail"
+                ):
+                    result = app.automatic_refill_once()
+
+        self.assertEqual(result["action"], "0-1")
+        self.assertIn("生成前确认仓库语义已饱和", result["detail"])
+        self.assertEqual(put.call_args.args[0]["status"], "blocked")
+        queue.assert_not_called()
+
     def test_scheduled_refill_shutdown_is_persistent_and_does_not_stop_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -20595,6 +20759,142 @@ class ExportTests(unittest.TestCase):
                     app.delete_run_record("aaa111aaa111")
                 with self.assertRaisesRegex(app.WorkflowError, "请先删除后续任务"):
                     app.delete_run_record("bbb222bbb222")
+
+
+class DifficultyReassessmentTests(unittest.TestCase):
+    def test_remote_lock_allows_only_never_submitted_or_failed_without_remote_id(self):
+        self.assertFalse(app.difficulty_reassessment_remote_locked({}))
+        self.assertFalse(
+            app.difficulty_reassessment_remote_locked({"solo_qa_state": "failed"})
+        )
+        self.assertTrue(
+            app.difficulty_reassessment_remote_locked(
+                {
+                    "solo_qa_state": "needs_fix",
+                    "solo_qa_remote_submission_id": "15711",
+                    "solo_qa_remote_status": "PENDING_FIX",
+                }
+            )
+        )
+        self.assertTrue(
+            app.difficulty_reassessment_remote_locked(
+                {"solo_qa_state": "not_submitted", "solo_qa_remote_submission_id": "15712"}
+            )
+        )
+
+    def prepare_proposed_job(self, root: Path, *, run_id: str = "abc123abc123"):
+        ExportTests().insert_completed_turn(root, run_id=run_id)
+        row = app.completed_turn_row(f"{run_id}:1")
+        review = json.loads(row["turn_review_result"])
+        review["evaluation"]["task_difficulty"] = "中等"
+        manual = json.loads(json.dumps(review["evaluation"], ensure_ascii=False))
+        manual["score_stage_version"] = 2
+        timestamp = app.now_text()
+        with app.db_connection() as database:
+            database.execute(
+                """UPDATE run_turns
+                      SET review_result = ?, manual_evaluation = ?,
+                          manual_evaluation_updated_at = ?,
+                          evaluation_confirmed_at = ?, evaluation_confirmed_by = ?,
+                          evaluation_confirmation_sha256 = ?
+                    WHERE run_id = ? AND turn_number = 1""",
+                (
+                    json.dumps(review, ensure_ascii=False),
+                    json.dumps(manual, ensure_ascii=False),
+                    timestamp,
+                    timestamp,
+                    "刘昱",
+                    "old-confirmation",
+                    run_id,
+                ),
+            )
+            database.execute(
+                "UPDATE runs SET task_difficulty = '中等' WHERE id = ?",
+                (run_id,),
+            )
+        row = app.completed_turn_row(f"{run_id}:1")
+        source_sha256 = app.difficulty_reassessment_source_sha256(row)
+        job_id = "abcd1234abcd"
+        with app.db_connection() as database:
+            database.execute(
+                """INSERT INTO difficulty_reassessment_jobs(
+                     id, scope_date, low_only, status, total, processed, changed,
+                     created_at, updated_at, finished_at
+                   ) VALUES (?, ?, 1, 'ready_to_apply', 1, 1, 1, ?, ?, ?)""",
+                (job_id, timestamp[:10], timestamp, timestamp, timestamp),
+            )
+            database.execute(
+                """INSERT INTO difficulty_reassessment_items(
+                     job_id, run_id, turn_number, source_sha256, old_difficulty,
+                     proposed_difficulty, confidence, rationale, evidence,
+                     status, updated_at
+                   ) VALUES (?, ?, 1, ?, '中等', '困难', '高', ?, ?, 'proposed', ?)""",
+                (
+                    job_id,
+                    run_id,
+                    source_sha256,
+                    "跨模块状态约束达到困难",
+                    '["app.py 的状态处理"]',
+                    timestamp,
+                ),
+            )
+        return job_id, review["evaluation"]["descriptions"]
+
+    def test_apply_changes_only_difficulty_and_invalidates_previous_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ):
+                app.initialize_database()
+                job_id, descriptions = self.prepare_proposed_job(root)
+                result = app.apply_difficulty_reassessment(job_id, ["abc123abc123:1"])
+                row = app.completed_turn_row("abc123abc123:1")
+                automatic = app.automatic_turn_evaluation(row)
+                manual = app.turn_manual_evaluation(row)
+                run = app.run_row("abc123abc123")
+
+        self.assertEqual(result["applied"], 1)
+        self.assertEqual(automatic["task_difficulty"], "困难")
+        self.assertEqual(manual["task_difficulty"], "困难")
+        self.assertEqual(automatic["descriptions"], descriptions)
+        self.assertEqual(manual["descriptions"], descriptions)
+        self.assertEqual(run["task_difficulty"], "困难")
+        self.assertFalse(row["turn_evaluation_confirmed_at"])
+        self.assertFalse(row["turn_evaluation_confirmation_sha256"])
+
+    def test_apply_skips_when_remote_submission_appears_after_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ), mock.patch.object(app, "PROJECTS_ROOT", root), mock.patch.object(
+                app, "HISTORY_PATH", root / "history.md"
+            ):
+                app.initialize_database()
+                job_id, _ = self.prepare_proposed_job(root)
+                timestamp = app.now_text()
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO solo_qa_submissions(
+                             run_id, turn_number, remote_submission_id, remote_status,
+                             state, qc_summary, error, created_at, updated_at
+                           ) VALUES ('abc123abc123', 1, '15711', 'PENDING_FIX',
+                                     'needs_fix', '', '', ?, ?)""",
+                        (timestamp, timestamp),
+                    )
+                result = app.apply_difficulty_reassessment(
+                    job_id, ["abc123abc123:1"]
+                )
+                row = app.completed_turn_row("abc123abc123:1")
+                status = app.difficulty_reassessment_job(job_id)["items"][0]["status"]
+
+        self.assertEqual(result["applied"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(app.turn_evaluation(row)["task_difficulty"], "中等")
+        self.assertEqual(status, "stale")
 
 
 class DatabaseTests(unittest.TestCase):

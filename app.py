@@ -88,10 +88,9 @@ MAX_BODY_BYTES = 1_000_000
 POLL_SECONDS = 3
 RUN_TIMEOUT_SECONDS = 6 * 60 * 60
 INACTIVITY_WARNING_SECONDS = 30 * 60
-NO_CODE_OUTPUT_GRACE_SECONDS = 30 * 60
-NO_CODE_OUTPUT_INACTIVITY_SECONDS = 15 * 60
-NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS = 2 * 60 * 60
-NO_CODE_OUTPUT_PROBE_INTERVAL_SECONDS = 5 * 60
+NO_CODE_OUTPUT_WARNING_SECONDS = 15 * 60
+NO_CODE_OUTPUT_DEADLINE_SECONDS = 25 * 60
+NO_CODE_OUTPUT_PROBE_INTERVAL_SECONDS = 60
 TERMINAL_ATTENTION_ALERT_INTERVAL_SECONDS = 60
 TERMINAL_IDLE_STABLE_SECONDS = 5 * 60
 TERMINAL_RECOVERY_IDLE_STABLE_SECONDS = 15
@@ -138,7 +137,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.81"
+APP_VERSION = "20260916.82"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -200,6 +199,7 @@ TASK_GENERATION_RETRY_LIMIT = 1
 TASK_GENERATION_MAX_PARALLEL = 3
 ITERATION_GENERATION_MODEL = REVIEW_MODEL
 ITERATION_GENERATION_ATTEMPTS = 2
+REPOSITORY_RULE_C_SATURATION_MIN_REJECTIONS = 2
 REPOSITORY_PROMPT_HISTORY_LIMIT = 40
 GLOBAL_PROMPT_DEDUP_SCAN_LIMIT = 2000
 GLOBAL_PROMPT_DEDUP_SHORTLIST_LIMIT = 24
@@ -7587,20 +7587,93 @@ def same_repository_rule_c_failure(detail: str) -> bool:
     )
 
 
+def iteration_generation_exhausted(detail: str) -> bool:
+    return bool(re.match(r"^连续 \d+ 次未生成合规迭代需求", str(detail or "")))
+
+
+def strong_same_repository_rule_c_failure(detail: str) -> bool:
+    """Treat only content rejection, never an infrastructure error, as saturation."""
+    return bool(
+        same_repository_rule_c_failure(detail)
+        and not iteration_generation_infrastructure_failure(detail)
+    )
+
+
+def same_repository_rule_c_qc_summary(value: Any) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    rule_c_hit = bool(
+        "命中查重规则 C" in text
+        or "规则 C 命中" in text
+        or ("规则 C" in text and "语义重复" in text)
+    )
+    return bool(
+        rule_c_hit
+        and "未命中" not in text
+        and any(marker in text for marker in ("同仓库", "同一个仓库"))
+    )
+
+
+def repository_semantic_saturation_reason(candidate: Dict[str, Any]) -> str:
+    """Require two durable remote Rule C returns before skipping a repository."""
+    repository_token = canonical_repository_key(
+        candidate.get("repo_url"), candidate.get("repo_name")
+    )
+    if not repository_token:
+        return ""
+    try:
+        with db_connection() as database:
+            rows = database.execute(
+                """SELECT submissions.remote_submission_id,
+                          submissions.run_id, submissions.turn_number,
+                          submissions.state, submissions.remote_status,
+                          submissions.qc_summary,
+                          runs.repo_url, runs.repo_name
+                     FROM solo_qa_submissions AS submissions
+                     JOIN runs ON runs.id = submissions.run_id
+                    WHERE submissions.qc_summary != ''
+                    ORDER BY COALESCE(submissions.remote_updated_at,
+                                      submissions.submitted_at,
+                                      submissions.updated_at) DESC"""
+            ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    evidence_keys: set[str] = set()
+    for row in rows:
+        if not repository_keys_match(
+            canonical_repository_key(row["repo_url"], row["repo_name"]),
+            repository_token,
+        ):
+            continue
+        if str(row["state"] or "") not in {"needs_fix", "discarded"} and str(
+            row["remote_status"] or ""
+        ) not in {"PENDING_FIX", "DISCARDED"}:
+            continue
+        if not same_repository_rule_c_qc_summary(row["qc_summary"]):
+            continue
+        evidence_keys.add(
+            str(row["remote_submission_id"] or "").strip()
+            or f"{row['run_id']}:{int(row['turn_number'])}"
+        )
+        if len(evidence_keys) >= REPOSITORY_RULE_C_SATURATION_MIN_REJECTIONS:
+            return (
+                "同仓库已有至少 "
+                f"{REPOSITORY_RULE_C_SATURATION_MIN_REJECTIONS} 条 SOLO-QA 规则 C 退回记录"
+            )
+    return ""
+
+
 def exhausted_auto_iteration_source_should_be_blocked(job: Dict[str, Any]) -> bool:
     """Keep every exhausted deterministic candidate source out of the pool."""
     if not bool(job.get("auto_refill")):
         return False
     detail = str(job.get("error") or job.get("last_error") or "").strip()
-    exhausted = detail.startswith(
-        f"连续 {ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求"
-    )
+    exhausted = iteration_generation_exhausted(detail)
     return bool(exhausted and not iteration_generation_infrastructure_failure(detail))
 
 
 def exhausted_auto_iteration_block_stage(job: Dict[str, Any]) -> str:
     detail = str(job.get("error") or job.get("last_error") or "")
-    if same_repository_rule_c_failure(detail):
+    if strong_same_repository_rule_c_failure(detail):
         return "同仓库规则 C 命中，当前来源已永久跳过"
     return "迭代题面复核未通过，当前来源已永久跳过"
 
@@ -7678,14 +7751,11 @@ def automatic_iteration_worker(
         current_job = get_iteration_job(source_run_id)
         baseline_run_id = str(current_job.get("baseline_run_id") or "") or None
         target_sequence = current_job.get("target_sequence")
-        generation_exhausted = (
-            isinstance(exc, WorkflowError)
-            and detail.startswith(
-                f"连续 {ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求"
-            )
+        generation_exhausted = bool(
+            isinstance(exc, WorkflowError) and iteration_generation_exhausted(detail)
         )
         rule_c_failure = bool(
-            generation_exhausted and same_repository_rule_c_failure(detail)
+            generation_exhausted and strong_same_repository_rule_c_failure(detail)
         )
         if (
             auto_refill
@@ -8144,8 +8214,41 @@ def automatic_refill_once() -> Dict[str, Any]:
         if occupancy >= MAX_PARALLEL_RUNS:
             return {"action": "full", "occupancy": occupancy}
 
-        replace_saturated_source = auto_refill_new_project_backlog() > 0
+        backlog_replacement_requested = auto_refill_new_project_backlog() > 0
+        replace_saturated_source = backlog_replacement_requested
+        saturation_precheck_reason = ""
         source = None if replace_saturated_source else auto_refill_iteration_candidate()
+        if source:
+            saturation_precheck_reason = repository_semantic_saturation_reason(source)
+            if saturation_precheck_reason:
+                source_run_id = str(source["id"])
+                target_task_type = str(
+                    source.get("next_iteration_task_type") or "Feature 迭代"
+                )
+                put_iteration_job(
+                    {
+                        "status": "blocked",
+                        "source_run_id": source_run_id,
+                        "lineage_origin_run_id": source_run_id,
+                        "task_type": target_task_type,
+                        "auto_refill": True,
+                        "target_sequence": int(source["iteration_count"]) + 1,
+                        "stage": "仓库语义预检饱和，已永久跳过",
+                        "last_error": saturation_precheck_reason,
+                        "updated_at": now_text(),
+                    }
+                )
+                add_event(
+                    source_run_id,
+                    f"自动补题在生成前跳过当前仓库：{saturation_precheck_reason}",
+                    "warning",
+                )
+                record_auto_refill_candidate_skip(
+                    f"{source.get('repo_name') or source_run_id} 生成前语义预检已跳过："
+                    f"{saturation_precheck_reason}"
+                )
+                source = None
+                replace_saturated_source = True
         if source:
             source_run_id = str(source["id"])
             target_task_type = str(
@@ -8210,9 +8313,13 @@ def automatic_refill_once() -> Dict[str, Any]:
             }
         )
         if replace_saturated_source:
-            consume_auto_refill_new_project_request()
+            if backlog_replacement_requested:
+                consume_auto_refill_new_project_request()
             detail = (
-                "自动补题：迭代来源语义已饱和，已直接创建新的 "
+                f"自动补题：生成前确认仓库语义已饱和（{saturation_precheck_reason}），"
+                f"已直接创建新的 {created['project_number']} 0-1 任务"
+                if saturation_precheck_reason
+                else "自动补题：迭代来源语义已饱和，已直接创建新的 "
                 f"{created['project_number']} 0-1 任务"
             )
         else:
@@ -12601,11 +12708,14 @@ def validated_difficulty_reassessment_date(value: Any = None) -> str:
 
 
 def difficulty_reassessment_remote_locked(row: Dict[str, Any]) -> bool:
-    return (
-        str(row.get("solo_qa_state") or "not_submitted")
-        in {"submitting", "qc_pending", "qc_passed", "discarded"}
-        or str(row.get("solo_qa_remote_status") or "")
-        in {"SUBMITTED", "QC_PASSED", "DISCARDED"}
+    """Only records that have never reached Solo QA may be reassessed."""
+    remote_id = str(row.get("solo_qa_remote_submission_id") or "").strip()
+    remote_status = str(row.get("solo_qa_remote_status") or "").strip()
+    state = str(row.get("solo_qa_state") or "not_submitted").strip()
+    return bool(
+        remote_id
+        or remote_status
+        or state not in {"not_submitted", "failed"}
     )
 
 
@@ -12615,9 +12725,25 @@ def difficulty_reassessment_source_sha256(row: Dict[str, Any]) -> str:
         "turn_number": int(row.get("turn_number") or 0),
         "prompt": str(row.get("turn_prompt") or ""),
         "review_result": str(row.get("turn_review_result") or ""),
+        "manual_evaluation": str(row.get("turn_manual_evaluation") or ""),
+        "manual_evaluation_updated_at": str(
+            row.get("turn_manual_evaluation_updated_at") or ""
+        ),
+        "evaluation_confirmed_at": str(
+            row.get("turn_evaluation_confirmed_at") or ""
+        ),
+        "evaluation_confirmed_by": str(
+            row.get("turn_evaluation_confirmed_by") or ""
+        ),
+        "evaluation_confirmation_sha256": str(
+            row.get("turn_evaluation_confirmation_sha256") or ""
+        ),
         "verification": str(row.get("turn_verification") or ""),
         "commit_sha": str(row.get("turn_commit_sha") or ""),
         "trajectory_sha256": str(row.get("turn_trajectory_sha256") or ""),
+        "solo_qa_remote_submission_id": str(
+            row.get("solo_qa_remote_submission_id") or ""
+        ),
         "solo_qa_state": str(row.get("solo_qa_state") or "not_submitted"),
         "solo_qa_remote_status": str(row.get("solo_qa_remote_status") or ""),
     }
@@ -13130,8 +13256,7 @@ def apply_difficulty_reassessment(
             if proposed not in {"简单", "中等", "困难", "地狱"}:
                 skipped += 1
                 continue
-            evaluation["task_difficulty"] = proposed
-            evaluation["_difficulty_reassessment"] = {
+            reassessment_metadata = {
                 "version": 1,
                 "job_id": job_id,
                 "scope_date": str(job.get("scope_date") or ""),
@@ -13142,12 +13267,64 @@ def apply_difficulty_reassessment(
                 "evidence": json.loads(str(item["evidence"] or "[]")),
                 "assessed_at": timestamp,
             }
+            evaluation["task_difficulty"] = proposed
+            evaluation["_difficulty_reassessment"] = reassessment_metadata
             encoded = json.dumps(review, ensure_ascii=False)
-            database.execute(
-                """UPDATE run_turns SET review_result = ?
-                    WHERE run_id = ? AND turn_number = ?""",
-                (encoded, item["run_id"], int(item["turn_number"])),
+            original_manual = str(row.get("turn_manual_evaluation") or "")
+            encoded_manual: Optional[str] = original_manual or None
+            manual_updated_at = row.get("turn_manual_evaluation_updated_at")
+            if original_manual:
+                try:
+                    manual = json.loads(original_manual)
+                except (json.JSONDecodeError, TypeError):
+                    manual = {}
+                if isinstance(manual, dict) and manual.get("score_stage_version") == 2:
+                    manual["task_difficulty"] = proposed
+                    manual["_difficulty_reassessment"] = reassessment_metadata
+                    encoded_manual = json.dumps(manual, ensure_ascii=False)
+                    manual_updated_at = timestamp
+            updated = database.execute(
+                """UPDATE run_turns
+                      SET review_result = ?, manual_evaluation = ?,
+                          manual_evaluation_updated_at = ?,
+                          evaluation_confirmed_at = NULL,
+                          evaluation_confirmed_by = NULL,
+                          evaluation_confirmation_sha256 = NULL
+                    WHERE run_id = ? AND turn_number = ? AND status = 'complete'
+                      AND review_result IS ? AND manual_evaluation IS ?
+                      AND manual_evaluation_updated_at IS ?
+                      AND NOT EXISTS (
+                        SELECT 1 FROM solo_qa_submissions AS solo
+                         WHERE solo.run_id = run_turns.run_id
+                           AND solo.turn_number = run_turns.turn_number
+                           AND (
+                             COALESCE(solo.remote_submission_id, '') != ''
+                             OR COALESCE(solo.remote_status, '') != ''
+                             OR COALESCE(solo.state, 'not_submitted')
+                                NOT IN ('not_submitted', 'failed')
+                           )
+                      )""",
+                (
+                    encoded,
+                    encoded_manual,
+                    manual_updated_at,
+                    item["run_id"],
+                    int(item["turn_number"]),
+                    row.get("turn_review_result"),
+                    row.get("turn_manual_evaluation"),
+                    row.get("turn_manual_evaluation_updated_at"),
+                ),
             )
+            if updated.rowcount != 1:
+                database.execute(
+                    """UPDATE difficulty_reassessment_items
+                          SET status = 'stale',
+                              error = '写回时评分或远端状态已变化', updated_at = ?
+                        WHERE job_id = ? AND run_id = ? AND turn_number = ?""",
+                    (timestamp, job_id, item["run_id"], item["turn_number"]),
+                )
+                skipped += 1
+                continue
             database.execute(
                 "UPDATE runs SET review_result = ? WHERE id = ? AND review_result = ?",
                 (encoded, item["run_id"], str(row.get("turn_review_result") or "")),
@@ -13166,7 +13343,10 @@ def apply_difficulty_reassessment(
             affected_runs.add(str(item["run_id"]))
         for run_id in affected_runs:
             latest = database.execute(
-                """SELECT json_extract(review_result, '$.evaluation.task_difficulty')
+                """SELECT COALESCE(
+                           json_extract(manual_evaluation, '$.task_difficulty'),
+                           json_extract(review_result, '$.evaluation.task_difficulty')
+                         )
                      FROM run_turns
                     WHERE run_id = ? AND status = 'complete'
                     ORDER BY turn_number DESC LIMIT 1""",
@@ -15730,6 +15910,7 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
     inactivity_reported = False
     long_running_reported = False
     business_code_seen = False
+    no_code_warning_reported = False
     last_no_code_probe_at = 0.0
     idle_visible_since: Optional[float] = None
     completion_recovery_epoch = completion_recovery_sent_epoch(run_id, turn_number)
@@ -16175,19 +16356,12 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
                 "first" if turn_number == 1 else "second",
             ),
         )
-        no_code_deadline_reached = (
-            runtime_seconds >= NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS
-            or (
-                runtime_seconds >= NO_CODE_OUTPUT_GRACE_SECONDS
-                and inactive_seconds >= NO_CODE_OUTPUT_INACTIVITY_SECONDS
-            )
-        )
         retry_waiting = int(row["retry_not_before_epoch"] or 0) > int(time.time())
         if (
             turn_number == 1
             and not business_code_seen
             and not retry_waiting
-            and no_code_deadline_reached
+            and runtime_seconds >= NO_CODE_OUTPUT_WARNING_SECONDS
             and now - last_no_code_probe_at >= NO_CODE_OUTPUT_PROBE_INTERVAL_SECONDS
         ):
             last_no_code_probe_at = now
@@ -16195,17 +16369,24 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
             if code_paths:
                 business_code_seen = True
             elif code_paths == []:
-                if runtime_seconds >= NO_CODE_OUTPUT_HARD_TIMEOUT_SECONDS:
-                    reason = (
-                        "首轮已运行至少 2 小时，工作区相对基线仍没有源码文件变化"
+                if not no_code_warning_reported:
+                    add_event(
+                        run_id,
+                        "首轮已运行至少 15 分钟，工作区相对基线仍没有源码文件变化；"
+                        "若 25 分钟时仍无代码将自动终止",
+                        "warning",
                     )
-                else:
+                    no_code_warning_reported = True
+                if runtime_seconds >= NO_CODE_OUTPUT_DEADLINE_SECONDS:
                     reason = (
-                        "首轮已运行至少 30 分钟且连续 15 分钟没有轨迹活动，"
-                        "工作区相对基线仍没有源码文件变化"
+                        "首轮已运行至少 25 分钟，工作区相对基线仍没有源码文件变化；"
+                        "读取、思考及未改变文件的命令不计为代码产出"
                     )
-                stop_run_for_no_code_output(run_id, reason)
-                return
+                    stop_run_for_no_code_output(run_id, reason)
+                    return
+
+        if no_code_warning_reported and not business_code_seen:
+            detail = f"第 {turn_number} 轮仍在运行，已超过 15 分钟且尚无源码产出"
 
         if not long_running_reported and now - started >= RUN_TIMEOUT_SECONDS:
             add_event(

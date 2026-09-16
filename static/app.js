@@ -1,4 +1,4 @@
-const UI_VERSION = "20260916.81";
+const UI_VERSION = "20260916.82";
 const EXPORT_REFRESH_INTERVAL_MS = 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 const SOLO_QA_AUTO_REPAIR_POLL_MS = 3000;
@@ -2172,7 +2172,7 @@ function renderDifficultyReassessment() {
   if (preview) {
     const distribution = preview.distribution || {};
     summary.className = "difficulty-reassessment-summary";
-    summary.textContent = `${preview.date} 共 ${preview.total || 0} 条：简单 ${distribution["简单"] || 0}、中等 ${distribution["中等"] || 0}、困难 ${distribution["困难"] || 0}、地狱 ${distribution["地狱"] || 0}；可安全重判 ${preview.eligible || 0} 条，远端已锁定 ${preview.locked || 0} 条。`;
+    summary.textContent = `${preview.date} 共 ${preview.total || 0} 条：简单 ${distribution["简单"] || 0}、中等 ${distribution["中等"] || 0}、困难 ${distribution["困难"] || 0}、地狱 ${distribution["地狱"] || 0}；未提交且可安全重判 ${preview.eligible || 0} 条，已有远端状态 ${preview.locked || 0} 条。`;
   }
   if (job) {
     if (job.status === "running") {
@@ -2287,7 +2287,7 @@ async function startDifficultyReassessment() {
   if (state.difficultyReassessmentBusy) return;
   const preview = state.difficultyReassessmentPreview;
   if (!preview?.eligible) return;
-  if (!window.confirm(`将分析 ${preview.date} 的 ${preview.eligible} 条可修改记录。分析完成前不会改写难度，是否继续？`)) return;
+  if (!window.confirm(`将分析 ${preview.date} 的 ${preview.eligible} 条未提交记录。分析完成前不会改写难度，是否继续？`)) return;
   state.difficultyReassessmentBusy = true;
   renderDifficultyReassessment();
   try {
@@ -2325,7 +2325,7 @@ async function applySelectedDifficultyReassessment() {
     showNotice(`已写回 ${result.applied || 0} 条；跳过 ${result.skipped || 0} 条资料已变化记录`);
     await Promise.all([
       loadDifficultyReassessmentJob(job.id),
-      loadCompletedTurns({ autoRepair: false }),
+      loadCompletedTurns({ autoRepair: false, force: true }),
       loadRuns(),
     ]);
   } catch (error) {

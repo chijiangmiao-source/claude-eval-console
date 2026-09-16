@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.88"
+APP_VERSION = "20260916.89"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -29869,23 +29869,46 @@ def recover_monitors() -> None:
     recover_evaluation_repair_jobs()
 
 
+def fail_and_cleanup_recovered_container_run(
+    run_id: str,
+    status_detail: str,
+    exc: Exception,
+) -> bool:
+    """Fail a recovered runtime and close its container, screen, and Terminal UI."""
+    with run_lifecycle_lock(run_id):
+        current_phase = str(run_row(run_id)["phase"] or "")
+        if current_phase in TERMINAL_RUN_PHASES:
+            return False
+        if not update_run_if_phase(
+            run_id,
+            current_phase,
+            phase="failed",
+            status_detail=status_detail,
+            error=str(exc),
+        ):
+            return False
+        add_event(run_id, str(exc), "error")
+
+    # Cleanup runs after releasing the lifecycle lock because the export
+    # transaction acquires the same lock while persisting durable markers.
+    try:
+        export_and_remove_container(run_id, force=True, emergency=True)
+    except Exception as cleanup_exc:
+        add_event(
+            run_id,
+            f"恢复失败后的容器和终端自动清理未完成：{cleanup_exc}",
+            "warning",
+        )
+        log_workflow_exception(run_id, "recovered-runtime-cleanup", cleanup_exc)
+    return True
+
+
 def _recover_monitor(run_id: str, turn: int) -> None:
     try:
         add_event(run_id, "控制台重启，已恢复容器会话监控", "warning")
         monitor_docker_turn(run_id, turn)
     except Exception as exc:
-        with run_lifecycle_lock(run_id):
-            current_phase = str(run_row(run_id)["phase"] or "")
-            if current_phase in TERMINAL_RUN_PHASES:
-                return
-            if update_run_if_phase(
-                run_id,
-                current_phase,
-                phase="failed",
-                status_detail="恢复监控失败",
-                error=str(exc),
-            ):
-                add_event(run_id, str(exc), "error")
+        fail_and_cleanup_recovered_container_run(run_id, "恢复监控失败", exc)
 
 
 def schedule_recovered_monitor(run_id: str, turn: int) -> None:
@@ -29909,18 +29932,11 @@ def schedule_recovered_action(run_id: str, action: Any) -> None:
             add_event(run_id, "控制台重启，正在恢复容器流程", "warning")
             action(run_id)
         except Exception as exc:
-            with run_lifecycle_lock(run_id):
-                current_phase = str(run_row(run_id)["phase"] or "")
-                if current_phase in TERMINAL_RUN_PHASES:
-                    return
-                if update_run_if_phase(
-                    run_id,
-                    current_phase,
-                    phase="failed",
-                    status_detail="容器流程恢复失败",
-                    error=str(exc),
-                ):
-                    add_event(run_id, str(exc), "error")
+            fail_and_cleanup_recovered_container_run(
+                run_id,
+                "容器流程恢复失败",
+                exc,
+            )
 
     try:
         row = run_row(run_id)

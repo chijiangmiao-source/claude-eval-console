@@ -12807,6 +12807,53 @@ class RepositoryTests(unittest.TestCase):
 
         self.assertEqual(calls, [("cleanup", True), ("retry", None)])
 
+    def test_recovered_monitor_failure_closes_the_failed_runtime(self):
+        failure = app.WorkflowError("Docker 运行状态探针连续 3 次失败")
+        row = {"phase": "first_running"}
+        with mock.patch.object(
+            app, "monitor_docker_turn", side_effect=failure
+        ), mock.patch.object(
+            app, "run_row", return_value=row
+        ), mock.patch.object(
+            app, "update_run_if_phase", return_value=True
+        ) as update, mock.patch.object(
+            app, "add_event"
+        ), mock.patch.object(
+            app, "export_and_remove_container"
+        ) as cleanup:
+            app._recover_monitor("recoverfail01", 1)
+
+        update.assert_called_once_with(
+            "recoverfail01",
+            "first_running",
+            phase="failed",
+            status_detail="恢复监控失败",
+            error=str(failure),
+        )
+        cleanup.assert_called_once_with(
+            "recoverfail01",
+            force=True,
+            emergency=True,
+        )
+
+    def test_recovered_monitor_failure_does_not_clean_a_terminal_run(self):
+        failure = app.WorkflowError("late monitor failure")
+        with mock.patch.object(
+            app, "monitor_docker_turn", side_effect=failure
+        ), mock.patch.object(
+            app, "run_row", return_value={"phase": "stopped"}
+        ), mock.patch.object(
+            app, "update_run_if_phase"
+        ) as update, mock.patch.object(
+            app, "add_event"
+        ), mock.patch.object(
+            app, "export_and_remove_container"
+        ) as cleanup:
+            app._recover_monitor("recoverstop01", 1)
+
+        update.assert_not_called()
+        cleanup.assert_not_called()
+
     def test_launcher_refuses_to_erase_pending_cleanup_transaction(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

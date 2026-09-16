@@ -13065,7 +13065,7 @@ def difficulty_reassessment_worker(job_id: str) -> None:
                 (timestamp, timestamp, job_id),
             )
     except JobCancelled:
-        if not SERVER_SHUTTING_DOWN.is_set():
+        if not SERVICE_SHUTTING_DOWN.is_set():
             with db_connection() as database:
                 database.execute(
                     """UPDATE difficulty_reassessment_jobs

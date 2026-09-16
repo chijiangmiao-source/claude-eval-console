@@ -1,5 +1,5 @@
-const UI_VERSION = "20260916.78";
-const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const UI_VERSION = "20260916.79";
+const EXPORT_REFRESH_INTERVAL_MS = 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 const SOLO_QA_AUTO_REPAIR_POLL_MS = 3000;
 const SOLO_QA_AUTO_REPAIR_TIMEOUT_MS = 20 * 60 * 1000;
@@ -1184,7 +1184,7 @@ async function autoRepairSyncedSoloQaReturns() {
   let queued = 0;
 
   while (Date.now() < deadline) {
-    await loadCompletedTurns({ autoRepair: false });
+    await loadCompletedTurns({ autoRepair: false, force: true });
     const targets = pendingSoloQaFixTurns(turnKeys);
     const active = targets.filter(evaluationRepairIsActive);
     const needed = targets.filter((turn) =>
@@ -1221,7 +1221,7 @@ async function autoRepairSyncedSoloQaReturns() {
     await new Promise((resolve) => window.setTimeout(resolve, SOLO_QA_AUTO_REPAIR_POLL_MS));
   }
 
-  await loadCompletedTurns({ autoRepair: false });
+  await loadCompletedTurns({ autoRepair: false, force: true });
   const stillActive = pendingSoloQaFixTurns(turnKeys).filter(evaluationRepairIsActive);
   if (stillActive.length) {
     return {
@@ -1259,7 +1259,7 @@ async function autoRepairSyncedSoloQaReturns() {
     { turn_keys: repairable.map((turn) => turn.key) },
   );
   const outcome = soloQaBatchOutcome(result, "repaired");
-  await loadCompletedTurns({ autoRepair: false });
+  await loadCompletedTurns({ autoRepair: false, force: true });
   const parts = [`发现 ${turnKeys.length} 条待返修`, `自动提交 ${outcome.succeeded} 条`];
   if (outcome.recovered) parts.push(`找回已完成返修 ${outcome.recovered} 条`);
   if (outcome.failed) parts.push(`${outcome.failed} 条提交失败`);
@@ -1291,7 +1291,7 @@ async function syncSoloQa({ silent = false, autoRepair = true } = {}) {
         : "；当天数据超过 500 条，本次仅同步最近 500 条")
       : "";
     const syncMessage = `已同步 ${syncDate} 的远端提交 ${result.remote_total || 0} 条；匹配本地 ${result.matched || 0} 条${result.unmatched ? `，${result.unmatched} 条在本地未找到` : ""}${historyMessage}${partialMessage}`;
-    await loadCompletedTurns({ autoRepair: false });
+    await loadCompletedTurns({ autoRepair: false, force: true });
     const repair = autoRepair
       ? await autoRepairSyncedSoloQaReturns()
       : { message: "" };
@@ -1336,12 +1336,12 @@ async function submitSelectedToSoloQa() {
     const skipped = (result.results || []).filter((item) => item.outcome === "skipped").length;
     const failed = (result.results || []).filter((item) => item.outcome === "failed");
     state.soloQaLastMessage = `提交完成：新增 ${submitted} 条${recovered ? `，找回已有 ${recovered} 条` : ""}${skipped ? `，跳过 ${skipped} 条` : ""}${failed.length ? `，失败 ${failed.length} 条（${failed[0].turn_key}：${failed[0].error}）` : ""}`;
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
     showNotice(state.soloQaLastMessage);
   } catch (error) {
     state.soloQaLastMessage = error.message;
     showNotice(error.message);
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
   } finally {
     state.soloQaBusy = false;
     renderSoloQaControls();
@@ -1376,12 +1376,12 @@ async function repairSelectedInSoloQa() {
     const skipped = (result.results || []).filter((item) => item.outcome === "skipped").length;
     const failed = (result.results || []).filter((item) => item.outcome === "failed");
     state.soloQaLastMessage = `返修提交完成：更新原记录 ${repaired} 条${recovered ? `，找回已完成返修 ${recovered} 条` : ""}${skipped ? `，跳过 ${skipped} 条` : ""}${failed.length ? `，失败 ${failed.length} 条（${failed[0].turn_key}：${failed[0].error}）` : ""}`;
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
     showNotice(state.soloQaLastMessage);
   } catch (error) {
     state.soloQaLastMessage = error.message;
     showNotice(error.message);
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
   } finally {
     state.soloQaBusy = false;
     renderSoloQaControls();
@@ -1439,7 +1439,7 @@ async function watchAutomaticEvaluationRepairs(preflightKeys = null) {
     while (activeEvaluationRepairTurns().length) {
       observedActive = true;
       await new Promise((resolve) => window.setTimeout(resolve, 3000));
-      await loadCompletedTurns({ autoRepair: false });
+      await loadCompletedTurns({ autoRepair: false, force: true });
     }
     if (!observedActive) return;
     const failures = state.completedTurns.filter(
@@ -1493,7 +1493,7 @@ async function queueAutomaticEvaluationRepairs() {
         body: JSON.stringify({ turn_keys: turnKeys }),
       });
       state.exportPreflight = null;
-      await loadCompletedTurns({ autoRepair: false });
+      await loadCompletedTurns({ autoRepair: false, force: true });
       if (activeEvaluationRepairTurns().length) {
         if (window.location.hash === "#exports") {
           showNotice(`发现 ${turnKeys.length} 条评分描述问题，已开始自动修复`);
@@ -1842,7 +1842,7 @@ async function saveExportEvaluation(turnKey, reset = false) {
     state.exportEvaluationDrafts.delete(turnKey);
     state.exportPreflight = null;
     state.exportPreflightTurnKeys = null;
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
     showNotice(reset ? "已恢复自动评分，人工确认已清除" : "评分草稿已保存，人工确认已清除；复核后再确认正式提交");
   } catch (error) {
     showNotice(error.message);
@@ -1876,7 +1876,7 @@ async function confirmExportEvaluation(turnKey) {
     state.exportEvaluationDrafts.delete(turnKey);
     state.exportPreflight = null;
     state.exportPreflightTurnKeys = null;
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
     showNotice("评分与当前证据已人工确认，可在项目收尾后正式提交");
   } catch (error) {
     showNotice(error.message);
@@ -2633,7 +2633,7 @@ async function deleteExportTurns(turnKeys) {
     uniqueKeys.forEach((key) => state.selectedExportTurns.delete(key));
     state.exportPreflight = null;
     state.exportPreflightTurnKeys = null;
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
     showNotice(`已从导出列表隐藏 ${result.changed || 0} 个轮次；代码、轨迹和远端提交均未删除`);
   } catch (error) {
     showNotice(error.message);
@@ -2929,7 +2929,7 @@ async function refresh() {
     window.location.hash === "#exports"
     && Date.now() - state.exportLastLoadedAt >= EXPORT_REFRESH_INTERVAL_MS
   ) {
-    await loadCompletedTurns();
+    await loadCompletedTurns({ force: true });
   }
   if (
     window.location.hash === "#analytics"

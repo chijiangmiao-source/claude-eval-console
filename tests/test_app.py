@@ -6234,13 +6234,32 @@ class ValidationTests(unittest.TestCase):
         self.assertIn(".export-prompt-toggle", styles)
         self.assertIn(".export-prompt-content", styles)
         self.assertIn(".export-evaluation-editor", styles)
-        self.assertIn("const EXPORT_REFRESH_INTERVAL_MS = 5 * 60 * 1000", javascript)
+        self.assertIn("const EXPORT_REFRESH_INTERVAL_MS = 60 * 1000", javascript)
         self.assertIn(
             "Date.now() - state.exportLastLoadedAt >= EXPORT_REFRESH_INTERVAL_MS",
             javascript,
         )
         self.assertIn('<textarea rows="6"', javascript)
         self.assertIn("min-height: 132px", styles)
+
+    def test_export_mutations_force_refresh_while_navigation_uses_cache(self):
+        javascript = (app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+        for function_name in (
+            "autoRepairSyncedSoloQaReturns",
+            "syncSoloQa",
+            "repairSelectedInSoloQa",
+            "saveExportEvaluation",
+            "confirmExportEvaluation",
+        ):
+            fragment = javascript.split(
+                f"async function {function_name}", 1
+            )[1].split("\nasync function ", 1)[0]
+            self.assertIn("force: true", fragment, function_name)
+        export_page = javascript.split(
+            "async function showExportPage", 1
+        )[1].split("\nasync function ", 1)[0]
+        self.assertIn("loadCompletedTurns({ force: false })", export_page)
 
     def test_export_page_exposes_solo_qa_bridge_controls(self):
         html = (app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -20179,6 +20198,33 @@ class ExportTests(unittest.TestCase):
         self.assertIn(
             "没有保留 projects/-workspace 下的原始完整轨迹",
             result["results"][0]["blockers"],
+        )
+
+    def test_preflight_rereads_original_trace_after_list_cache_is_warm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                app.completed_turns()
+                row = app.completed_turn_rows()[0]
+                raw_trace = Path(row["run_trajectory_path"])
+                raw_trace.write_text(
+                    raw_trace.read_text(encoding="utf-8").replace(
+                        '"sessionId": "session-export"',
+                        '"sessionId": "session-tampered"',
+                    ),
+                    encoding="utf-8",
+                )
+                result = app.preflight_completed_turns(["abc123abc123:1"])
+
+        turn = result["results"][0]
+        self.assertEqual(turn["status"], "failed")
+        self.assertIn(
+            "原始完整轨迹中的 SessionID 不一致",
+            turn["blockers"],
         )
 
     @unittest.skipUnless(

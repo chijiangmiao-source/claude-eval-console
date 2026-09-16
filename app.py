@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.78"
+APP_VERSION = "20260916.79"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}

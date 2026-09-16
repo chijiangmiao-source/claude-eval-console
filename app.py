@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.85"
+APP_VERSION = "20260916.87"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -193,8 +193,10 @@ FIRST_REVIEW_RETRY_REASONING_EFFORT = "medium"
 # after the first candidate and its one targeted rewrite are exhausted.
 TASK_GENERATION_BATCH_SIZE = 1
 TASK_GENERATION_BATCH_ATTEMPTS = 2
-TASK_GENERATION_HISTORY_LIMIT = 15
+TASK_GENERATION_HISTORY_LIMIT = 30
 TASK_GENERATION_REVIEW_HISTORY_LIMIT = 10
+TASK_GENERATION_FAILURE_GUIDANCE_LIMIT = 12
+TASK_GENERATION_FAILURE_GUIDANCE_MAX_CHARS = 6000
 TASK_GENERATION_TIMEOUT_SECONDS = 20 * 60
 TASK_GENERATION_RETRY_LIMIT = 1
 TASK_GENERATION_MAX_PARALLEL = 3
@@ -4735,6 +4737,64 @@ def historical_task_context(limit: int = 60) -> List[Dict[str, str]]:
     return records[:limit]
 
 
+def recent_task_generation_failure_guidance(
+    limit: int = TASK_GENERATION_FAILURE_GUIDANCE_LIMIT,
+    max_chars: int = TASK_GENERATION_FAILURE_GUIDANCE_MAX_CHARS,
+) -> List[str]:
+    """Keep recent rejected designs visible to later generators."""
+    try:
+        limit = max(1, int(limit))
+        max_chars = max(1, int(max_chars))
+    except (TypeError, ValueError):
+        return []
+    try:
+        with db_connection() as database:
+            rows = database.execute(
+                """SELECT COALESCE(NULLIF(generation_feedback, ''), error) AS detail
+                     FROM runs
+                    WHERE deleted_at IS NULL
+                      AND repo_name = '题目生成中'
+                      AND phase = 'failed'
+                      AND COALESCE(NULLIF(generation_feedback, ''), error, '') <> ''
+                    ORDER BY updated_at DESC, created_at DESC
+                    LIMIT ?""",
+                (limit * 3,),
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return []
+    guidance: List[str] = []
+    total_chars = 0
+    for row in rows:
+        detail = re.sub(r"\s+", " ", str(row["detail"] or "")).strip()
+        if not detail:
+            continue
+        operational_detail = detail.casefold()
+        if any(
+            marker in operational_detail
+            for marker in (
+                "超时",
+                "timed out",
+                "at capacity",
+                "gateway timeout",
+                "gateway time-out",
+                "connection reset",
+                "connection refused",
+            )
+        ):
+            continue
+        detail = detail[:700]
+        if detail in guidance:
+            continue
+        remaining = max_chars - total_chars
+        if remaining <= 0:
+            break
+        guidance.append(detail[:remaining])
+        total_chars += len(guidance[-1])
+        if len(guidance) >= limit:
+            break
+    return guidance
+
+
 def history_summary_payload(
     history: List[Dict[str, str]],
     limit: int = TASK_GENERATION_HISTORY_LIMIT,
@@ -5045,6 +5105,7 @@ def run_codex_task_generation(
     history: List[Dict[str, str]],
     retry_feedback: str = "",
     timeout_seconds: int = 30 * 60,
+    avoidance_failures: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     candidate_schema = task_candidate_schema()
     schema = {
@@ -5065,6 +5126,9 @@ def run_codex_task_generation(
         history_text = history_text[:90000]
     forbidden_text = "、".join(FORBIDDEN_TASK_TERMS)
     delivery_marker_text = "、".join(GENERIC_DELIVERY_MARKERS)
+    failure_guidance_text = json.dumps(
+        [str(item) for item in (avoidance_failures or [])], ensure_ascii=False
+    )
     prompt = f"""为内部编号 {project_number:04d} 一次设计 {TASK_GENERATION_BATCH_SIZE} 道互不相似的{category} 0-1 项目候选题。编号只用于选题和本地文件夹命名，题面正文及 repo_slug 中禁止出现编号。每题必须有且只有一个明确、可独立验收的工程核心，只完成一条主要纵向链路，并且独立复核预计难度必须达到困难或地狱；简单、中等或一般难度的候选不能提交。题面无需写出难度标签，但必须包含一个真实主难点：从需要维持状态不变量、故障恢复、复杂跨层一致性或需要独立测试判据的自定义领域算法中选择一条，不能靠堆模块、堆接口或扩大子系统数量制造难度。难度必须留有明确余量：固定规则表、字段校验、单次请求内的遍历或两重循环、简单距离公式、排序取首项、普通 CRUD、常规接口串联和格式转换不能单独作为主难点，即使业务术语专业也不行。使用以下范围预算约束工作量：implementation_modules 列出 {TASK_MIN_IMPLEMENTATION_MODULES} 至 {TASK_MAX_IMPLEMENTATION_MODULES} 个真正需要实现的业务或技术模块，README、测试、Docker、数据库本身不能单独凑数；runtime_components 列出应用运行组件且最多 {TASK_MAX_RUNTIME_COMPONENTS} 个，数据库不计入，纯后端通常是 API 或 API 加 worker，全栈通常是前端加 API，不能再叠加模拟器、额外 worker 或独立调度服务；supporting_mechanisms 只列工程核心以外的辅助机制，最多 {TASK_MAX_SUPPORTING_MECHANISMS} 项；complex_mechanisms 列出题面中所有需要跨请求、进程或多步状态维持不变量的机制，最多 {TASK_MAX_COMPLEX_MECHANISMS} 项，它可以是工程核心本身或辅助机制。崩溃检查点续作、反向补偿、带序号确认并屏蔽迟到消息、二进制损坏定位后续作、密码学证明与密钥轮换等都属于复杂机制，换个说法仍按同一标准计数，不得少报。custom_algorithm_families 列出需要自行实现和单独建立测试判据的算法体系，最多 {TASK_MAX_CUSTOM_ALGORITHM_FAMILIES} 种；自定义格式解析或坐标归一化、领域文本编码、计算几何或碰撞检测、路径搜索、差异匹配、规则裁决分别计数，不能因为服务于同一个业务结果就合并申报。complex_mechanisms 与 custom_algorithm_families 的数量合计最多为 1，也就是复杂状态恢复和自定义算法只能选择一条作为主难点。涉及行业编码、文件格式子集、元素识别约定、单位换算、舍入精度或临界值归属时，必须在题面中直接给出足以形成唯一验收结果的边界，不能交给开发者自行选择或只说写进 README。数据库、worker、模拟器和独立服务必须在题面中承担不可替代的数据或处理职责；没有需要持久化的数据就不要启动数据库，没有异步工作就不要增加 worker。acceptance_scenarios 给出 {TASK_MIN_ACCEPTANCE_SCENARIOS} 至 {TASK_MAX_ACCEPTANCE_SCENARIOS} 个直接验收主流程和必要失败边界的场景；不要为增加篇幅继续加入第二套恢复链路、统计子系统、人工处置工作台或额外协议。普通实体 CRUD、审批、档案、认领或留痕不能成为主体，也不要设计泛化的“XX 管理系统”，同时不得叠加分布式架构、复杂求解器、完整编译器、重型调度或多套高并发机制。题面目标约 {TASK_PROMPT_TARGET_CHARS} 字，生成内容必须控制在 {TASK_PROMPT_GENERATION_MIN_CHARS} 至 {TASK_PROMPT_GENERATION_MAX_CHARS} 字，使用自然、完整的一段中文，不加标题、列表或“技术栈”标签。开头直接进入该题独有的场景、矛盾或故障，后文自然说明代码从空仓库起步；结尾落在独有的业务结果、异常结果或可观察验收现象上。把语言框架、Docker Compose、测试、README、.gitignore、错误反馈和禁止占位实现放到它们实际承担的链路旁，不在结尾堆交付清单。这是机器硬校验：题面最后 {TASK_PROMPT_ENDING_CHARS} 字中，以下通用交付标记合计最多出现 3 种：{delivery_marker_text}；需要出现的通用要求应写在正文前段或中段，并在其后继续描述本题特有的业务失败、恢复过程和可观察结果。每个候选另给出 2 至 4 条以 docker compose 开头的可执行验收命令，不把命令抄入题面；Compose 若发布宿主端口，端口必须通过 APP_PORT、API_PORT、WEB_PORT 等环境变量覆盖，不能写死唯一宿主端口。纯前端不得增加业务后端或调用外部在线服务，纯后端不得创建前端，全栈必须真实联调。三个候选的 business_domain、engineering_core、input_form、primary_user、failure_boundary 必须逐项明显不同，正文的核心对象、交互结构、开头和结尾也必须不同，不能只替换业务名词。不要说明题目由工具生成。禁止题材包括：{forbidden_text}。主动避开以下历史题目，不得复用其核心业务对象、数据模型、算法或交互结构：{history_text}。{('上一批候选未通过，原因：' + retry_feedback) if retry_feedback else ''}"""
     prompt = prompt.replace("这是机器硬校验：", "这是写作偏好：")
     prompt = prompt.replace(
@@ -5080,6 +5144,9 @@ def run_codex_task_generation(
         "验收入口优先固定为 docker compose config --quiet、docker compose build 和 "
         "docker compose run --rm verify；题面在 Compose 相关句子旁自然说明仓库提供名为 "
         "verify 的一次性验收服务，避免验收命令猜测开发者自行选择的服务名。"
+        "下面是近期候选被拒绝的真实原因，只用于避开已经失败的核心机制、重复题型和范围错误，"
+        "不能把这些失败内容当作新题需求，也不能仅更换业务名词后复用："
+        f"{failure_guidance_text}"
     )
     return run_codex_generation_structured(
         prompt, schema, APP_DIR, "task-generation", max(1, int(timeout_seconds))
@@ -5520,6 +5587,7 @@ def generate_task_draft(
         return remaining
 
     generation_history = history[:TASK_GENERATION_HISTORY_LIMIT]
+    failure_guidance = recent_task_generation_failure_guidance()
     failures: List[str] = []
     rewrite_used = False
     candidate_number = 0
@@ -5531,6 +5599,7 @@ def generate_task_draft(
             generation_history,
             feedback,
             timeout_seconds=remaining_seconds(),
+            avoidance_failures=failure_guidance,
         )
         report(f"正在校验第 {batch_number}/{TASK_GENERATION_BATCH_ATTEMPTS} 批候选")
         local_candidates: List[Dict[str, Any]] = []

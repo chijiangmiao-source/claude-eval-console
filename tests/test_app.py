@@ -14652,10 +14652,62 @@ class DraftTests(unittest.TestCase):
         payload = app.history_summary_payload(history)
         closest = app.closest_history_for_candidate(self.candidate(), history, 10)
 
-        self.assertEqual(len(payload), 15)
+        self.assertEqual(len(payload), min(len(history), app.TASK_GENERATION_HISTORY_LIMIT))
         self.assertTrue(all("prompt" not in item for item in payload))
         self.assertTrue(all(len(item["summary"]) <= 260 for item in payload))
         self.assertEqual(len(closest), 10)
+
+    def test_recent_generation_failure_guidance_is_bounded_and_generation_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                with app.db_connection() as database:
+                    for index, detail in enumerate(
+                        (
+                            "重复机制 A",
+                            "重复机制 B",
+                            "重复机制 A",
+                            "task-validation 超时，已停止",
+                        ),
+                        start=1,
+                    ):
+                        database.execute(
+                            """INSERT INTO runs(
+                                 id, repo_name, repo_path, phase, first_prompt,
+                                 verification_commands, generation_feedback,
+                                 created_at, updated_at
+                               ) VALUES (?, '题目生成中', '/tmp/generation',
+                                         'failed', '', '[]', ?, ?, ?)""",
+                            (
+                                f"failed{index:06d}",
+                                detail,
+                                f"2026-09-16 10:0{index}:00 +0800",
+                                f"2026-09-16 10:0{index}:00 +0800",
+                            ),
+                        )
+                    database.execute(
+                        """INSERT INTO runs(
+                             id, repo_name, repo_path, phase, first_prompt,
+                             verification_commands, error, created_at, updated_at
+                           ) VALUES ('execution001', 'real-project', '/tmp/real-project', 'failed',
+                                     '实现项目', '[]', 'Docker 启动失败', ?, ?)""",
+                        (
+                            "2026-09-16 10:10:00 +0800",
+                            "2026-09-16 10:10:00 +0800",
+                        ),
+                    )
+
+                guidance = app.recent_task_generation_failure_guidance(
+                    limit=2, max_chars=20
+                )
+
+        self.assertEqual(guidance, ["重复机制 A", "重复机制 B"])
+        self.assertNotIn("Docker 启动失败", " ".join(guidance))
+        self.assertNotIn("超时", " ".join(guidance))
+        self.assertLessEqual(sum(map(len, guidance)), 20)
 
     def test_task_generation_requires_difficult_scope_without_self_report(self):
         with mock.patch.object(
@@ -14691,6 +14743,25 @@ class DraftTests(unittest.TestCase):
         self.assertIn("预计难度必须达到困难或地狱", generation_prompt)
         self.assertIn("不能靠堆模块", generation_prompt)
         self.assertNotIn("复杂度控制在中等偏易", generation_prompt)
+
+    def test_task_generation_prompt_includes_recent_rejection_guidance(self):
+        rejection = "与历史题目距离多重集反演机制实质重复"
+        with mock.patch.object(
+            app,
+            "run_codex_structured",
+            return_value={"candidates": [self.candidate()]},
+        ) as codex:
+            app.run_codex_task_generation(
+                2,
+                "纯前端",
+                [],
+                avoidance_failures=[rejection],
+            )
+
+        generation_prompt = codex.call_args.args[0]
+        self.assertIn(rejection, generation_prompt)
+        self.assertIn("只用于避开", generation_prompt)
+        self.assertIn("不能把这些失败内容当作新题需求", generation_prompt)
 
     def test_task_batch_rejects_repeated_scope_dimensions(self):
         first = app.validate_generated_task(

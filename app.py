@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.76"
+APP_VERSION = "20260916.77"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -2077,6 +2077,10 @@ def initialize_database() -> None:
             "INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('auto_refill_consecutive_failures', '0', ?)",
             (now_text(),),
         )
+        database.execute(
+            "INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('auto_refill_new_project_backlog', '0', ?)",
+            (now_text(),),
+        )
         harness_version = detect_harness_version()
         if harness_version:
             database.execute(
@@ -3997,6 +4001,51 @@ def record_auto_refill_candidate_skip(detail: str) -> None:
             }
         )
     AUTO_REFILL_WAKE.set()
+
+
+def auto_refill_new_project_backlog() -> int:
+    try:
+        value = settings_values(("auto_refill_new_project_backlog",)).get(
+            "auto_refill_new_project_backlog", "0"
+        )
+    except sqlite3.OperationalError:
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def request_auto_refill_new_project(detail: str) -> None:
+    """Replace one semantically saturated iteration source with a new root."""
+    message = re.sub(r"\s+", " ", str(detail or "同仓库语义方向已饱和")).strip()
+    with AUTO_REFILL_STATE_LOCK:
+        values = settings_values(
+            ("auto_refill_enabled", "auto_refill_new_project_backlog")
+        )
+        if values.get("auto_refill_enabled", "0") != "1":
+            return
+        try:
+            pending = max(
+                0, int(values.get("auto_refill_new_project_backlog", "0") or 0)
+            )
+        except (TypeError, ValueError):
+            pending = 0
+        write_settings(
+            {
+                "auto_refill_new_project_backlog": str(pending + 1),
+                "auto_refill_detail": "同仓库语义方向已饱和，正在优先生成新项目",
+                "auto_refill_error": message[:1200],
+            }
+        )
+    AUTO_REFILL_WAKE.set()
+
+
+def consume_auto_refill_new_project_request() -> None:
+    with AUTO_REFILL_STATE_LOCK:
+        pending = auto_refill_new_project_backlog()
+        if pending > 0:
+            write_settings({"auto_refill_new_project_backlog": str(pending - 1)})
 
 
 def category_for_project_number(project_number: int) -> str:
@@ -7226,8 +7275,23 @@ def generate_iteration_candidate(
                             global_history,
                         )
                     except WorkflowError as exc:
-                        # The mandatory local and independent reviews already ran.
-                        # Preserve availability when this supplemental call fails.
+                        same_repository_review_required = any(
+                            item.get("dedup_required") is not False
+                            and bool(str(item.get("prompt") or "").strip())
+                            for item in repository_history
+                            if isinstance(item, dict)
+                        )
+                        if same_repository_review_required:
+                            # Rule C is mandatory when the repository already has
+                            # submitted history. A failed comparison must retry a
+                            # candidate instead of becoming an implicit pass.
+                            feedback = (
+                                "提交前同仓库规则 C 语义查重异常，当前候选不放行："
+                                f"{str(exc)[:700]}"
+                            )
+                            continue
+                        # Cross-repository review remains supplemental; a gateway
+                        # failure there must not stop otherwise valid generation.
                         checked_candidate["prompt_dedup_warning"] = str(exc)[:700]
                     else:
                         dedup_reason = prompt_dedup_review_reason(dedup_review)
@@ -7439,6 +7503,33 @@ def automatic_iteration_status(
     return job
 
 
+def same_repository_rule_c_failure(detail: str) -> bool:
+    """Identify exhausted candidates rejected by same-repository Rule C."""
+    text = re.sub(r"\s+", " ", str(detail or "")).strip()
+    return bool(
+        "提交前语义查重命中同仓库历史" in text
+        or ("规则 C" in text and "同仓库" in text and "查重异常" not in text)
+    )
+
+
+def exhausted_auto_iteration_source_should_be_blocked(job: Dict[str, Any]) -> bool:
+    """Keep deterministic semantic saturation out of the refill pool."""
+    if not bool(job.get("auto_refill")):
+        return False
+    detail = str(job.get("error") or job.get("last_error") or "").strip()
+    exhausted = detail.startswith(
+        f"连续 {ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求"
+    )
+    return bool(exhausted and same_repository_rule_c_failure(detail))
+
+
+def exhausted_auto_iteration_block_stage(job: Dict[str, Any]) -> str:
+    detail = str(job.get("error") or job.get("last_error") or "")
+    if same_repository_rule_c_failure(detail):
+        return "同仓库规则 C 命中，当前来源已永久跳过"
+    return "迭代题面复核未通过，当前来源已永久跳过"
+
+
 @cancellable_worker("iteration")
 def automatic_iteration_worker(
     source_run_id: str,
@@ -7448,6 +7539,8 @@ def automatic_iteration_worker(
     recovery_count: int = 0,
     generation_feedback: str = "",
 ) -> None:
+    rule_c_failure = False
+    failure_detail = ""
     try:
         ensure_job_active()
         created = generate_and_start_iteration(
@@ -7516,7 +7609,15 @@ def automatic_iteration_worker(
                 f"连续 {ITERATION_GENERATION_ATTEMPTS} 次未生成合规迭代需求"
             )
         )
-        if auto_refill and generation_exhausted and target_task_type == "0-1 代码生成":
+        rule_c_failure = bool(
+            generation_exhausted and same_repository_rule_c_failure(detail)
+        )
+        if (
+            auto_refill
+            and generation_exhausted
+            and target_task_type == "0-1 代码生成"
+            and not rule_c_failure
+        ):
             fallback_job = {
                 "status": "generating",
                 "source_run_id": source_run_id,
@@ -7610,17 +7711,24 @@ def automatic_iteration_worker(
             and target_task_type == "Bug 修复"
             and candidate_quality_failure
         )
+        block_current_source = bool(
+            block_bugfix_retry or (auto_refill and rule_c_failure)
+        )
         result = {
-            "status": "blocked" if block_bugfix_retry else "failed",
+            "status": "blocked" if block_current_source else "failed",
             "source_run_id": source_run_id,
             "error": detail,
             "task_type": target_task_type,
             "stage": (
-                "Bug 修复难度低于困难，已跳过"
-                if difficulty_skipped
-                else "当前代码基线无合规 Bug，已禁止自动重试"
-                if block_bugfix_retry
-                else "生成失败"
+                "同仓库规则 C 命中，当前来源已永久跳过"
+                if rule_c_failure
+                else (
+                    "Bug 修复难度低于困难，已跳过"
+                    if difficulty_skipped
+                    else "当前代码基线无合规 Bug，已禁止自动重试"
+                    if block_bugfix_retry
+                    else "生成失败"
+                )
             ),
             "auto_refill": auto_refill,
             "lineage_origin_run_id": source_run_id,
@@ -7628,7 +7736,7 @@ def automatic_iteration_worker(
             "target_sequence": target_sequence,
             "cooldown_until_epoch": (
                 int(time.time()) + AUTO_REFILL_SOURCE_COOLDOWN_SECONDS
-                if auto_refill and not block_bugfix_retry else None
+                if auto_refill and not block_current_source else None
             ),
             "updated_at": now_text(),
         }
@@ -7645,13 +7753,17 @@ def automatic_iteration_worker(
         except Exception as event_exc:
             log_workflow_exception(source_run_id, "iteration-failed-event", event_exc)
         if auto_refill:
-            skip_wording = "当前代码基线已禁止重试" if block_bugfix_retry else "暂时跳过"
+            skip_wording = (
+                "当前来源已永久跳过" if block_current_source else "暂时跳过"
+            )
             failure_detail = f"{source_run_id} 的{target_task_type}{skip_wording}：{detail}"
             if candidate_quality_failure:
                 record_auto_refill_candidate_skip(failure_detail)
             else:
                 record_auto_refill_failure(failure_detail)
     put_iteration_job(result)
+    if auto_refill and rule_c_failure:
+        request_auto_refill_new_project(failure_detail)
 
 
 def queue_automatic_iteration(
@@ -7857,6 +7969,18 @@ def auto_refill_iteration_candidate() -> Optional[Dict[str, Any]]:
             candidates.append(candidate)
     now_epoch = int(time.time())
     jobs = iteration_job_values()
+    for job in jobs:
+        if (
+            job.get("status") in {"failed", "generating"}
+            and exhausted_auto_iteration_source_should_be_blocked(job)
+        ):
+            job.update(
+                status="blocked",
+                stage=exhausted_auto_iteration_block_stage(job),
+                cooldown_until_epoch=None,
+                updated_at=now_text(),
+            )
+            put_iteration_job(job)
     generating_origins = {
         str(job.get("lineage_origin_run_id") or job.get("source_run_id") or "")
         for job in jobs
@@ -7872,6 +7996,7 @@ def auto_refill_iteration_candidate() -> Optional[Dict[str, Any]]:
         str(job.get("lineage_origin_run_id") or job.get("source_run_id") or ""): job
         for job in jobs
         if job.get("status") == "blocked"
+        or exhausted_auto_iteration_source_should_be_blocked(job)
     }
 
     def blocked_for_current_target(candidate: Dict[str, Any]) -> bool:
@@ -7947,7 +8072,8 @@ def automatic_refill_once() -> Dict[str, Any]:
         if occupancy >= MAX_PARALLEL_RUNS:
             return {"action": "full", "occupancy": occupancy}
 
-        source = auto_refill_iteration_candidate()
+        replace_saturated_source = auto_refill_new_project_backlog() > 0
+        source = None if replace_saturated_source else auto_refill_iteration_candidate()
         if source:
             source_run_id = str(source["id"])
             target_task_type = str(
@@ -8011,7 +8137,14 @@ def automatic_refill_once() -> Dict[str, Any]:
                 "_auto_refill": True,
             }
         )
-        detail = f"自动补题：没有可迭代项目，已创建新的 {created['project_number']} 0-1 任务"
+        if replace_saturated_source:
+            consume_auto_refill_new_project_request()
+            detail = (
+                "自动补题：迭代来源语义已饱和，已直接创建新的 "
+                f"{created['project_number']} 0-1 任务"
+            )
+        else:
+            detail = f"自动补题：没有可迭代项目，已创建新的 {created['project_number']} 0-1 任务"
         record_auto_refill_detail(detail)
         add_event(created["id"], "本任务由自动补题创建", "success")
         return {"action": "0-1", "run": created, "detail": detail}
@@ -28459,6 +28592,18 @@ class ApiHandler(BaseHTTPRequestHandler):
 
 def recover_iteration_jobs() -> None:
     for job in iteration_job_values():
+        if (
+            job.get("status") in {"failed", "generating"}
+            and exhausted_auto_iteration_source_should_be_blocked(job)
+        ):
+            job.update(
+                status="blocked",
+                stage=exhausted_auto_iteration_block_stage(job),
+                cooldown_until_epoch=None,
+                updated_at=now_text(),
+            )
+            put_iteration_job(job)
+            continue
         if job.get("status") != "generating":
             continue
         source_run_id = str(job.get("source_run_id") or "")

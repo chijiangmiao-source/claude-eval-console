@@ -15259,7 +15259,13 @@ class DraftTests(unittest.TestCase):
             self.assertEqual(exhausted["project_number"], "0001")
             self.assertEqual(exhausted["generation_retry_count"], 1)
             self.assertTrue(configuration["enabled"])
-            self.assertIn("连续 1/3", configuration["detail"])
+            self.assertIn("跳过未通过题面校验的候选", configuration["detail"])
+            self.assertEqual(
+                app.settings_values(("auto_refill_consecutive_failures",))[
+                    "auto_refill_consecutive_failures"
+                ],
+                "0",
+            )
             scheduler.assert_called_once_with(
                 created["id"],
                 "generation_queued",
@@ -15271,6 +15277,23 @@ class DraftTests(unittest.TestCase):
             self.assertEqual(
                 generate.call_args_list[1].kwargs["initial_feedback"], rejection
             )
+
+    def test_generation_timeout_remains_an_auto_refill_system_failure(self):
+        self.assertTrue(
+            app.task_generation_candidate_quality_failure(
+                "候选复核与一次定向改写后仍不合规：与历史题目重复"
+            )
+        )
+        self.assertTrue(
+            app.task_generation_candidate_quality_failure(
+                "连续 2 批未生成合规题目：验收边界不明确"
+            )
+        )
+        self.assertFalse(
+            app.task_generation_candidate_quality_failure(
+                "task-validation 超时，已停止"
+            )
+        )
 
     def test_cancelled_generation_is_stopped_without_counting_auto_refill_failure(self):
         with tempfile.TemporaryDirectory() as directory:

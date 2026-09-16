@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.87"
+APP_VERSION = "20260916.88"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -4050,11 +4050,20 @@ def record_auto_refill_candidate_skip(detail: str) -> None:
         write_settings(
             {
                 "auto_refill_consecutive_failures": "0",
-                "auto_refill_detail": "自动补题已跳过未通过题面校验的来源，正在选择其他来源",
+                "auto_refill_detail": "自动补题已跳过未通过题面校验的候选，正在继续补题",
                 "auto_refill_error": message[:1200],
             }
         )
     AUTO_REFILL_WAKE.set()
+
+
+def task_generation_candidate_quality_failure(detail: Any) -> bool:
+    """Distinguish an unsuitable 0-1 candidate from an infrastructure failure."""
+    message = re.sub(r"\s+", " ", str(detail or "")).strip()
+    return bool(
+        message.startswith("候选复核与一次定向改写后仍不合规：")
+        or re.search(r"连续\s*\d+\s*批未生成合规题目", message)
+    )
 
 
 def auto_refill_new_project_backlog() -> int:
@@ -28674,7 +28683,11 @@ def automatic_generation_worker(run_id: str) -> None:
             )
             add_event(run_id, detail, "error")
             if int(current["auto_refill"] or 0):
-                record_auto_refill_failure(f"{run_id} 的 0-1 题面生成失败：{detail}")
+                failure_detail = f"{run_id} 的 0-1 题面生成失败：{detail}"
+                if task_generation_candidate_quality_failure(detail):
+                    record_auto_refill_candidate_skip(failure_detail)
+                else:
+                    record_auto_refill_failure(failure_detail)
         except Exception:
             pass
         log_workflow_exception(run_id, "task-generation", exc)

@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.83"
+APP_VERSION = "20260916.84"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -12773,7 +12773,9 @@ def difficulty_reassessment_candidates(
         if str(row.get("turn_updated_at") or "")[:10] != scope_date:
             continue
         total += 1
-        evaluation = turn_evaluation(row, clean_description_markup=False)
+        # Difficulty reassessment reads the stored evaluation. Public description
+        # cleanup is handled separately by public_turn_evaluation().
+        evaluation = turn_evaluation(row)
         difficulty = str(evaluation.get("task_difficulty") or "未记录").strip()
         if difficulty not in distribution:
             difficulty = "未记录"

@@ -20762,6 +20762,34 @@ class ExportTests(unittest.TestCase):
 
 
 class DifficultyReassessmentTests(unittest.TestCase):
+    def test_candidates_read_the_stored_evaluation_without_public_cleanup(self):
+        evaluation = with_score_stage(sample_evaluation())
+        evaluation["task_difficulty"] = "中等"
+        description = "第 1 轮执行 `pytest` 后完成复核。"
+        evaluation["delivery"]["description"] = description
+        evaluation["descriptions"][0] = description
+        row = {
+            "run_id": "abc123abc123",
+            "turn_number": 1,
+            "turn_updated_at": "2026-09-16 12:00:00",
+            "turn_review_result": json.dumps(
+                {"evaluation": evaluation}, ensure_ascii=False
+            ),
+            "turn_manual_evaluation": "",
+        }
+
+        with mock.patch.object(app, "completed_turn_rows", return_value=[row]):
+            candidates, summary = app.difficulty_reassessment_candidates(
+                "2026-09-16", low_only=True
+            )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["current_difficulty"], "中等")
+        self.assertEqual(summary["distribution"]["中等"], 1)
+        self.assertEqual(
+            app.turn_evaluation(row)["delivery"]["description"], description
+        )
+
     def test_remote_lock_allows_only_never_submitted_or_failed_without_remote_id(self):
         self.assertFalse(app.difficulty_reassessment_remote_locked({}))
         self.assertFalse(

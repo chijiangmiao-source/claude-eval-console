@@ -1,4 +1,4 @@
-const UI_VERSION = "20260916.79";
+const UI_VERSION = "20260916.80";
 const EXPORT_REFRESH_INTERVAL_MS = 60 * 1000;
 const TABLE_PAGE_SIZE = 20;
 const SOLO_QA_AUTO_REPAIR_POLL_MS = 3000;
@@ -25,6 +25,7 @@ const state = {
   expandedExportPrompts: new Set(),
   exportEvaluationDrafts: new Map(),
   exportEvaluationBusy: new Set(),
+  exportEvaluationRegradeBusy: new Set(),
   exportFilters: {
     query: "",
     taskType: "",
@@ -1090,6 +1091,13 @@ function soloQaRepairable(turn) {
     && !evaluationRepairIsActive(turn);
 }
 
+function evaluationRegradeLocked(turn) {
+  const soloQa = turn.solo_qa || {};
+  const soloQaState = soloQa.state || "not_submitted";
+  return Boolean(soloQa.remote_id)
+    || !["not_submitted", "failed", "remote_missing"].includes(soloQaState);
+}
+
 function renderSoloQaControls() {
   const bridgeStatus = $("#solo-qa-bridge-status");
   const detail = $("#solo-qa-status-detail");
@@ -1759,7 +1767,9 @@ function exportEvaluationEditorHtml(turn) {
   }
   const draft = exportEvaluationDraft(turn);
   const repairBusy = evaluationRepairIsActive(turn);
-  const busy = state.exportEvaluationBusy.has(turn.key) || repairBusy;
+  const regradeBusy = state.exportEvaluationRegradeBusy.has(turn.key);
+  const regradeLocked = evaluationRegradeLocked(turn);
+  const busy = state.exportEvaluationBusy.has(turn.key) || repairBusy || regradeBusy;
   const dirty = state.exportEvaluationDrafts.has(turn.key);
   const confirmationLabel = evaluationConfirmationLabel(turn.evaluation_confirmation_status);
   const confirmation = turn.evaluation_confirmation || {};
@@ -1786,10 +1796,51 @@ function exportEvaluationEditorHtml(turn) {
     ${evidenceIssues.length ? `<div class="evaluation-draft-blocker"><b>证据未对齐</b><span>${escapeHtml(evidenceIssues.join("；"))}</span></div>` : ""}
     <div class="export-evaluation-grid">${exportEvaluationDimensions.map(([key, label]) => {
       const item = draft[key] || {};
-      return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数" ${repairBusy ? "disabled" : ""}>${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="6" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述" ${repairBusy ? "disabled" : ""}>${escapeHtml(item.description || "")}</textarea></label>`;
+      return `<label class="export-evaluation-item"><span>${escapeHtml(label)}</span><select data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="score" aria-label="${escapeHtml(label)}分数" ${busy ? "disabled" : ""}>${[1, 2, 3, 4, 5].map((score) => `<option value="${score}" ${Number(item.score) === score ? "selected" : ""}>${score} 分</option>`).join("")}</select><textarea rows="6" maxlength="2000" data-evaluation-key="${escapeHtml(turn.key)}" data-evaluation-dimension="${key}" data-evaluation-field="description" aria-label="${escapeHtml(label)}描述" ${busy ? "disabled" : ""}>${escapeHtml(item.description || "")}</textarea></label>`;
     }).join("")}</div>
-    <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${repairBusy ? "自动修复中…" : (state.exportEvaluationBusy.has(turn.key) ? "保存中…" : "保存评分")}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<button class="secondary-button" type="button" data-confirm-evaluation="${escapeHtml(turn.key)}" title="${escapeHtml(confirmationIssues.join("；"))}" ${busy || confirmationAccepted || !confirmationReady ? "disabled" : ""}>${confirmationAccepted ? "已通过" : "确认用于正式提交"}</button><span data-evaluation-save-reminder="${escapeHtml(turn.key)}" aria-live="polite" ${dirty ? "" : "hidden"}>${escapeHtml(EXPORT_EVALUATION_UNSAVED_MESSAGE)}</span><span>${repairBusy ? "完成前不会接受人工修改。" : "原始自动评分不会被覆盖。"}</span></div>
+    <div class="export-evaluation-actions"><button class="primary-button" type="button" data-save-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>${repairBusy ? "自动修复中…" : (state.exportEvaluationBusy.has(turn.key) ? "保存中…" : "保存评分")}</button>${turn.evaluation_overridden ? `<button class="secondary-button" type="button" data-reset-evaluation="${escapeHtml(turn.key)}" ${busy ? "disabled" : ""}>恢复自动评分</button>` : ""}<button class="secondary-button" type="button" data-regrade-evaluation="${escapeHtml(turn.key)}" title="${regradeLocked ? "已有远端提交，不能重新判断" : "重新读取本轮轨迹和产物，重新判断五维评分与任务难度"}" ${busy || regradeLocked ? "disabled" : ""}>${regradeBusy ? "重新判断中…" : "重新判断评分与难度"}</button><button class="secondary-button" type="button" data-confirm-evaluation="${escapeHtml(turn.key)}" title="${escapeHtml(confirmationIssues.join("；"))}" ${busy || confirmationAccepted || !confirmationReady ? "disabled" : ""}>${confirmationAccepted ? "已通过" : "确认用于正式提交"}</button><span data-evaluation-save-reminder="${escapeHtml(turn.key)}" aria-live="polite" ${dirty ? "" : "hidden"}>${escapeHtml(EXPORT_EVALUATION_UNSAVED_MESSAGE)}</span><span>${regradeLocked ? "已有远端提交，重新判断已锁定。" : (repairBusy ? "完成前不会接受人工修改。" : "重新判断仅用于未提交数据。")}</span></div>
   </section>`;
+}
+
+async function regradeExportEvaluation(turnKey) {
+  if (state.exportEvaluationRegradeBusy.has(turnKey)) return;
+  const turn = state.completedTurns.find((item) => item.key === turnKey);
+  if (!turn) return;
+  if (evaluationRegradeLocked(turn)) {
+    showNotice("已有 SOLO-QA 远端提交，不能重新判断");
+    return;
+  }
+  state.exportEvaluationRegradeBusy.add(turnKey);
+  renderExportPage();
+  try {
+    const queued = await api("/api/exports/regrades", {
+      method: "POST",
+      body: JSON.stringify({ turn_keys: [turnKey], manual: true }),
+    });
+    const skipped = (queued.skipped || []).find((item) => item.key === turnKey);
+    if (skipped) throw new Error(skipped.reason || "该轮不能重新判断");
+    showNotice("已开始重新读取轨迹和产物，判断五维评分与任务难度");
+    const deadline = Date.now() + 30 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      const status = await api("/api/exports/regrades");
+      const job = (status.jobs || []).find((item) => item.key === turnKey);
+      if (!job || ["queued", "running"].includes(job.status)) continue;
+      if (job.status !== "complete") throw new Error(job.error || "重新判断没有完成");
+      state.exportEvaluationDrafts.delete(turnKey);
+      state.exportPreflight = null;
+      state.exportPreflightTurnKeys = null;
+      await loadCompletedTurns({ force: true });
+      showNotice("评分与任务难度已重新判断；请复核后再提交");
+      return;
+    }
+    throw new Error("重新判断仍在后台运行，稍后刷新页面查看结果");
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    state.exportEvaluationRegradeBusy.delete(turnKey);
+    renderExportPage();
+  }
 }
 
 function showExportEvaluationUnsavedState(turnKey) {
@@ -2877,6 +2928,11 @@ $("#export-turn-list").addEventListener("click", (event) => {
   if (resetEvaluation) {
     if (!window.confirm("恢复自动评分？已保存的人工修改将被移除。")) return;
     saveExportEvaluation(resetEvaluation.dataset.resetEvaluation, true);
+    return;
+  }
+  const regradeEvaluation = event.target.closest("[data-regrade-evaluation]");
+  if (regradeEvaluation) {
+    regradeExportEvaluation(regradeEvaluation.dataset.regradeEvaluation);
     return;
   }
   const confirmEvaluation = event.target.closest("[data-confirm-evaluation]");

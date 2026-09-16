@@ -138,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.79"
+APP_VERSION = "20260916.80"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -1884,6 +1884,7 @@ def initialize_database() -> None:
               run_id TEXT NOT NULL,
               turn_number INTEGER NOT NULL,
               status TEXT NOT NULL,
+              manual_requested INTEGER NOT NULL DEFAULT 0,
               attempt_count INTEGER NOT NULL DEFAULT 0,
               error TEXT NOT NULL DEFAULT '',
               queued_at TEXT,
@@ -1910,6 +1911,17 @@ def initialize_database() -> None:
               ON evaluation_regrade_backups(run_id, turn_number, archived_at);
             """
         )
+        regrade_columns = {
+            row["name"]
+            for row in database.execute(
+                "PRAGMA table_info(evaluation_regrade_jobs)"
+            )
+        }
+        if "manual_requested" not in regrade_columns:
+            database.execute(
+                "ALTER TABLE evaluation_regrade_jobs "
+                "ADD COLUMN manual_requested INTEGER NOT NULL DEFAULT 0"
+            )
         columns = {row["name"] for row in database.execute("PRAGMA table_info(runs)")}
         if "model" not in columns:
             database.execute(
@@ -18278,14 +18290,13 @@ def normalize_evaluation(
             score,
             item["description"],
         )
-        if not evaluation_dimension_is_cap_adjusted(evaluation, key):
-            validate_nonfull_evaluation_description(
-                key,
-                score,
-                item["description"],
-                expected_turn_number,
-                enforce_generation_detail_policy=enforce_generation_detail_policy,
-            )
+        validate_nonfull_evaluation_description(
+            key,
+            score,
+            item["description"],
+            expected_turn_number,
+            enforce_generation_detail_policy=enforce_generation_detail_policy,
+        )
     evaluation["language_framework"] = normalize_frameworks(evaluation.get("language_framework"))
     evaluation["other_issues"] = re.sub(r"\s+", " ", str(evaluation.get("other_issues") or "")).strip()
     normalize_score_stage(evaluation, expected_turn_number)
@@ -20904,7 +20915,6 @@ def evaluation_trace_grounding_issues(
             score = int(item.get("score"))
         except (TypeError, ValueError):
             continue
-        cap_adjusted = evaluation_dimension_is_cap_adjusted(evaluation, key)
         description = str(item.get("description") or "")
         dimension_source_content, dimension_source_paths = (
             score_stage_source_evidence_parts(
@@ -21272,7 +21282,7 @@ def evaluation_trace_grounding_issues(
                 and len(impact_values) > dimension_index
                 else ""
             )
-            if score < 5 and not cap_adjusted:
+            if score < 5:
                 impact_phrases = evaluation_consequence_phrases(impact_text)
                 impact_uses_independent_evidence = bool(
                     EVALUATION_INDEPENDENT_REVIEW_RE.search(impact_text)
@@ -21302,7 +21312,7 @@ def evaluation_trace_grounding_issues(
                         f"{label}内部 impact 的客观后果无法在对应工具输出或引用内容中找到"
                     )
                     continue
-            elif score == 5 or cap_adjusted:
+            elif score == 5:
                 universal_claims = evaluation_universal_success_phrases(description)
                 missing_universal_claim = next(
                     (
@@ -21353,10 +21363,10 @@ def evaluation_trace_grounding_issues(
         ]
         problem_sentences = (
             description_sentences
-            if score >= 5 or cap_adjusted
+            if score >= 5
             else list(concrete_problem_sentences)
         )
-        if strict_sources and score < 5 and not cap_adjusted:
+        if strict_sources and score < 5:
             problem_sentences = list(dict.fromkeys([
                 *problem_sentences,
                 *[
@@ -21445,7 +21455,6 @@ def evaluation_trace_grounding_issues(
             if (
                 strict_sources
                 and score < 5
-                and not cap_adjusted
                 and sentence in concrete_problem_sentences
             ):
                 defect_phrases = evaluation_consequence_phrases(sentence)
@@ -23046,12 +23055,10 @@ def run_codex_evaluation_description_repair(
     if score not in range(1, 6):
         raise WorkflowError("评分描述自动修复遇到无效分数")
     label = EVALUATION_DIMENSION_LABELS[dimension_key]
-    cap_adjusted = evaluation_dimension_is_cap_adjusted(evaluation, dimension_key)
     score_description_guidance = (
-        "本维是总分上限校准项，保持当前分数，只写有证据的正向完成事实；"
-        "不得提及总分规则，也不得虚构不足、失败或负面后果。"
-        if cap_adjusted
-        else "5 分只保留正向完成事实；低于 5 分保留有证据的具体问题和已经发生的后果。"
+        "5 分只保留正向完成事实；低于 5 分必须保留有证据的具体问题、"
+        "发生位置和已经造成的后果。总分校准不能免除非满分描述的证据要求，"
+        "也不得为了凑分虚构不足。"
     )
     index = EVALUATION_DIMENSION_KEYS.index(dimension_key)
     internal_facts: Dict[str, str] = {}
@@ -23084,7 +23091,6 @@ def run_codex_evaluation_description_repair(
     repair_context = f"{repair_text}\n{qc_text}"
     deduction_feedback = bool(
         score < 5
-        and not cap_adjusted
         and solo_qa_feedback_requires_nonfull_grounding(repair_context)
     )
     similarity_feedback = solo_qa_feedback_is_similarity_rejection(repair_context)
@@ -23383,9 +23389,9 @@ def run_codex_evaluation_dimension_repair(
         "processFinding",
     ):
         repair_directive = (
-            "本维是五维总分上限校准项。保持当前分数，只使用已有证据写正向完成事实；"
-            "不得为了低于 5 分虚构遗漏、失败、返工或负面后果，也不得在公开描述中"
-            "提及总分规则。"
+            "本维是五维总分上限校准项，分数保持不变，但公开描述仍须满足非满分"
+            "要求：只从本轮轨迹或后续独立验收中选取真实发生的不足，写清具体位置、"
+            "客观证据和已经造成的后果；不得提及总分规则，也不得虚构问题。"
         )
     elif repair_target not in (*EVALUATION_SCORE_STAGE_DETAIL_FIELDS, "processFinding") and any(
         marker in validation_error
@@ -23508,12 +23514,13 @@ def run_codex_evaluation_dimension_repair(
     elif cap_adjusted:
         repair_scope = (
             f"只修正第 {turn_number} 轮‘{dimension_label}’这一项，不改其他四个维度，"
-            f"分数固定为 {current_score} 分。这是总分上限校准项，只能保留有证据的"
-            "正向完成事实，不得虚构问题或重新判断代码是否通过。"
+            f"分数固定为 {current_score} 分。这是总分上限校准项，公开描述不能只写"
+            "正向完成事实；必须使用材料中真实发生的具体不足、位置与客观后果，"
+            "不得虚构问题或重新判断代码是否通过。"
         )
         evidence_use_directive = (
-            "优先复用下面已经取得的本维内部事实，以具体文件、函数、命令、接口或"
-            "页面动作说明实际核对结果。"
+            "优先复用下面已经取得的本维内部事实，以具体步骤、文件、函数、命令、"
+            "接口、报错或页面动作定位真实不足，并说明已经发生的影响。"
         )
     else:
         repair_scope = (
@@ -24399,7 +24406,7 @@ def run_codex_split_regrade(
 {EVALUATION_FACT_ATTRIBUTION_GUIDANCE}
 {TASK_DIFFICULTY_GUIDANCE}
 
-score_plan.independent_scores 按交付完整性、指令遵循、任务规划、推理能力、执行能力的固定顺序逐维独立给 1～5 分，先按真实证据定档，不为总分上限提前压分。score_plan.strength_order 使用五个英文维度键，从证据最强排到最弱；同强度时交付完整性优先。score_plan.rationales 按固定顺序各写一条简短、可由材料核验的定分依据。后台会按 strength_order 对超过 21 分的结果做最小幅度均衡校准：例如五维独立评分都是 5 时保留最强一维 5 分，其余四维为 4 分。校准只改变分数分配，不得据此虚构缺陷。
+score_plan.independent_scores 按交付完整性、指令遵循、任务规划、推理能力、执行能力的固定顺序逐维独立给 1～5 分，先按真实证据定档，不为总分上限提前压分。score_plan.strength_order 使用五个英文维度键，从证据最强排到最弱；同强度时交付完整性优先。排在后面的维度必须优先对应材料中真实可核验的不足、返工或效率问题，score_plan.rationales 按固定顺序各写一条简短、可由材料核验的定分依据，并为可能被校准到 4 分的维度保留具体位置和实际后果。后台会按 strength_order 对超过 21 分的结果做最小幅度均衡校准：例如五维独立评分都是 5 时保留最强一维 5 分，其余四维为 4 分。校准只改变分数分配，不得据此虚构缺陷；材料没有支持某项不足时，不得把该维排在需要降分的位置。
 
 本轮评分表：
 {rubric}
@@ -24476,20 +24483,14 @@ task_type 只按本轮题面主要意图判断；language_framework 使用英文
                 plan_guidance += (
                     f"本维按评分表独立定档原为 {independent_score} 分，现因五维总分"
                     f"上限 {EVALUATION_SCORE_TOTAL_LIMIT} 分校准为 {planned_score} 分。"
-                    "这不是新缺陷：公开 description 只写有证据的正向完成事实，不提"
-                    "总分规则，也不得虚构遗漏、失败或客观后果；内部 impact 写真实正向"
-                    "结果，processFinding 可说明总分校准，并继续使用真实文件、函数、"
-                    "命令、接口或页面操作作为事实锚点。"
+                    "公开 description 不提总分规则，但仍须从本轮材料中选取一个"
+                    "真实、可核验的具体不足，写清发生位置和已经造成的后果；不得"
+                    "只写正向完成事实，也不得虚构问题。"
                 )
         public_description_rule = (
-            "公开 description 写一小段自然点评；本维属于总分校准，按上面的"
-            "校准要求只写真实正向事实。"
-            if cap_adjusted
-            else (
-                f"公开 description 写一小段自然点评；低于 5 分必须明确第 "
-                f"{turn_number} 轮的具体不足、证据和已经发生的影响，5 分只能"
-                "保留有核验依据的正向事实。"
-            )
+            f"公开 description 写一小段自然点评；低于 5 分必须明确第 "
+            f"{turn_number} 轮的具体不足、证据和已经发生的影响，5 分只能"
+            "保留有核验依据的正向事实。"
         )
         history_text = "\n".join(
             public_description_history.get(dimension_key, [])
@@ -24756,13 +24757,20 @@ def run_codex_regrade(
 
 def evaluation_regrade_candidate(
     row: Dict[str, Any],
+    *,
+    manual_requested: bool = False,
 ) -> Tuple[bool, str, List[str]]:
-    """Select only legacy turns blocked solely by evaluation evidence policy."""
-    if str(row.get("solo_qa_remote_submission_id") or "").strip():
+    """Select automatic evaluations that may be safely rebuilt before submission."""
+    remote_id = str(row.get("solo_qa_remote_submission_id") or "").strip()
+    solo_state = str(row.get("solo_qa_state") or "not_submitted").strip()
+    unsubmitted_states = {"not_submitted", "failed", "remote_missing"}
+    if remote_id or solo_state not in unsubmitted_states:
         return False, "已有 SOLO-QA 远端提交，保持原记录", []
     automatic = automatic_turn_evaluation(row)
     if not automatic:
         return False, "缺少自动评分，不能只重建 evaluation", []
+    if manual_requested:
+        return True, "人工请求重新判断评分与难度", []
     if legacy_evaluation_is_human_confirmed(row):
         return False, "旧版评分已由人工确认，保持当前记录", []
     if automatic.get("score_stage_version") != 2:
@@ -25110,14 +25118,18 @@ def evaluation_regrade_worker(run_id: str, turn_number: int) -> None:
         return
     with db_connection() as database:
         attempt_row = database.execute(
-            """SELECT attempt_count FROM evaluation_regrade_jobs
+            """SELECT attempt_count, manual_requested FROM evaluation_regrade_jobs
                  WHERE run_id = ? AND turn_number = ?""",
             (run_id, turn_number),
         ).fetchone()
     attempt_count = int(attempt_row["attempt_count"] or 0) if attempt_row else 1
+    manual_requested = bool(attempt_row["manual_requested"]) if attempt_row else False
     try:
         row = completed_turn_row(f"{run_id}:{turn_number}")
-        eligible, reason, _issues = evaluation_regrade_candidate(row)
+        eligible, reason, _issues = evaluation_regrade_candidate(
+            row,
+            manual_requested=manual_requested,
+        )
         if not eligible:
             update_evaluation_regrade_job(
                 run_id, turn_number, "skipped", error=reason
@@ -25214,11 +25226,17 @@ def schedule_evaluation_regrade(run_id: str, turn_number: int) -> bool:
     return True
 
 
-def queue_pending_evaluation_regrades(turn_keys: Any = None) -> Dict[str, Any]:
+def queue_pending_evaluation_regrades(
+    turn_keys: Any = None,
+    *,
+    manual_requested: bool = False,
+) -> Dict[str, Any]:
     rows = completed_turn_rows()
     available = {
         f"{row['run_id']}:{int(row['turn_number'])}": row for row in rows
     }
+    if manual_requested and turn_keys in (None, []):
+        raise WorkflowError("人工重新判断必须选择至少一个未提交轮次")
     if turn_keys in (None, []):
         keys = list(available)
     else:
@@ -25234,7 +25252,10 @@ def queue_pending_evaluation_regrades(turn_keys: Any = None) -> Dict[str, Any]:
     skipped: List[Dict[str, str]] = []
     for key in keys:
         row = available[key]
-        eligible, reason, issues = evaluation_regrade_candidate(row)
+        eligible, reason, issues = evaluation_regrade_candidate(
+            row,
+            manual_requested=manual_requested,
+        )
         if not eligible:
             skipped.append({"key": key, "reason": reason})
             continue
@@ -25250,17 +25271,20 @@ def queue_pending_evaluation_regrades(turn_keys: Any = None) -> Dict[str, Any]:
                 continue
             database.execute(
                 """INSERT INTO evaluation_regrade_jobs(
-                     run_id, turn_number, status, attempt_count, error,
+                     run_id, turn_number, status, manual_requested,
+                     attempt_count, error,
                      queued_at, started_at, completed_at, updated_at
-                   ) VALUES (?, ?, 'queued', 0, ?, ?, NULL, NULL, ?)
+                   ) VALUES (?, ?, 'queued', ?, 0, ?, ?, NULL, NULL, ?)
                    ON CONFLICT(run_id, turn_number) DO UPDATE SET
-                     status = 'queued', attempt_count = 0,
+                     status = 'queued', manual_requested = excluded.manual_requested,
+                     attempt_count = 0,
                      error = excluded.error,
                      queued_at = excluded.queued_at, started_at = NULL,
                      completed_at = NULL, updated_at = excluded.updated_at""",
                 (
                     row["run_id"],
                     int(row["turn_number"]),
+                    int(manual_requested),
                     "；".join(issues),
                     timestamp,
                     timestamp,
@@ -28504,7 +28528,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/exports/regrades":
                 self.send_json(
-                    queue_pending_evaluation_regrades(payload.get("turn_keys")),
+                    queue_pending_evaluation_regrades(
+                        payload.get("turn_keys"),
+                        manual_requested=bool(payload.get("manual")),
+                    ),
                     202,
                 )
                 return

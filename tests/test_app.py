@@ -176,6 +176,11 @@ class ValidationTests(unittest.TestCase):
         )
         for key in app.EVALUATION_DIMENSION_KEYS[1:]:
             capped[key]["score"] = 4
+            capped[key]["description"] = (
+                "第 1 轮在 app.py 的 build_result 函数中遗漏错误分支，"
+                "执行 npm test 时出现 AssertionError，导致该轮检查失败。"
+                "随后补充该分支并重跑才完成验证。"
+            )
         normalized = app.normalize_evaluation(capped, 1)
         self.assertEqual(
             sum(normalized[key]["score"] for key in app.EVALUATION_DIMENSION_KEYS),
@@ -7941,6 +7946,12 @@ class ReviewTests(unittest.TestCase):
             item = dict(dimensions[key])
             item["score"] = score
             label = app.EVALUATION_DIMENSION_LABELS[key]
+            if score < 5:
+                item["description"] = (
+                    f"第 1 轮在 app.py 的 build_result 函数中遗漏{label}所需的错误分支，"
+                    "执行 npm test 时出现 AssertionError，导致该轮检查失败。"
+                    "随后补充该分支并重跑才完成验证。"
+                )
             fact = f"app.py 的实现支持{label}评分"
             adjacent = "；".join(
                 f"相邻{value}分差别={fact}"
@@ -19403,6 +19414,33 @@ class ExportTests(unittest.TestCase):
         self.assertFalse(eligible)
         self.assertIn("远端提交", reason)
 
+        ready_v2 = {
+            **row,
+            "turn_review_result": json.dumps(
+                {"evaluation": with_score_stage(sample_evaluation())},
+                ensure_ascii=False,
+            ),
+        }
+        eligible, reason, issues = app.evaluation_regrade_candidate(
+            ready_v2,
+            manual_requested=True,
+        )
+        self.assertTrue(eligible)
+        self.assertIn("人工请求", reason)
+        self.assertEqual(issues, [])
+        eligible, reason, _issues = app.evaluation_regrade_candidate(
+            {**ready_v2, "solo_qa_remote_submission_id": "remote-456"},
+            manual_requested=True,
+        )
+        self.assertFalse(eligible)
+        self.assertIn("远端提交", reason)
+        eligible, reason, _issues = app.evaluation_regrade_candidate(
+            {**ready_v2, "solo_qa_state": "qc_pending"},
+            manual_requested=True,
+        )
+        self.assertFalse(eligible)
+        self.assertIn("远端提交", reason)
+
     def test_regrade_candidate_upgrades_export_ready_legacy_evaluation(self):
         row = {
             "solo_qa_remote_submission_id": "",
@@ -19678,6 +19716,26 @@ class ExportTests(unittest.TestCase):
         schedule.assert_called_once_with("abc123abc123", 1)
         self.assertEqual(status["counts"]["queued"], 1)
         self.assertEqual(status["jobs"][0]["error"], "描述证据不足")
+
+    def test_manual_regrade_queue_marks_selected_unsubmitted_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                self.insert_completed_turn(root)
+                with mock.patch.object(
+                    app, "schedule_evaluation_regrade", return_value=True
+                ):
+                    result = app.queue_pending_evaluation_regrades(
+                        ["abc123abc123:1"],
+                        manual_requested=True,
+                    )
+                job = app.evaluation_regrade_status()["jobs"][0]
+
+        self.assertEqual(result["queued"], ["abc123abc123:1"])
+        self.assertEqual(job["manual_requested"], 1)
 
     def test_regrade_scheduler_uses_continuation_gate_and_repository_key(self):
         with tempfile.TemporaryDirectory() as directory:

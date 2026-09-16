@@ -90,6 +90,7 @@ RUN_TIMEOUT_SECONDS = 6 * 60 * 60
 INACTIVITY_WARNING_SECONDS = 30 * 60
 NO_CODE_OUTPUT_WARNING_SECONDS = 15 * 60
 NO_CODE_OUTPUT_DEADLINE_SECONDS = 25 * 60
+FIRST_PROMPT_SENT_EVENT_MESSAGE = "第一轮题面已发送到 Terminal"
 NO_CODE_OUTPUT_PROBE_INTERVAL_SECONDS = 60
 TERMINAL_ATTENTION_ALERT_INTERVAL_SECONDS = 60
 TERMINAL_IDLE_STABLE_SECONDS = 5 * 60
@@ -137,7 +138,7 @@ SOLO_QA_PROJECT_REJECTION_MARKERS = (
     "题材不合格",
 )
 SUBMITTER_NAME = os.environ.get("CLAUDE_EVAL_SUBMITTER", "刘昱").strip() or "刘昱"
-APP_VERSION = "20260916.82"
+APP_VERSION = "20260916.83"
 COMPLETED_TURN_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETED_TURN_CACHE_LOCK = threading.RLock()
 _COMPLETED_TURN_RECORD_CACHE: Dict[str, Tuple[str, float, Dict[str, Any]]] = {}
@@ -194,7 +195,7 @@ TASK_GENERATION_BATCH_SIZE = 1
 TASK_GENERATION_BATCH_ATTEMPTS = 2
 TASK_GENERATION_HISTORY_LIMIT = 15
 TASK_GENERATION_REVIEW_HISTORY_LIMIT = 10
-TASK_GENERATION_TIMEOUT_SECONDS = 10 * 60
+TASK_GENERATION_TIMEOUT_SECONDS = 20 * 60
 TASK_GENERATION_RETRY_LIMIT = 1
 TASK_GENERATION_MAX_PARALLEL = 3
 ITERATION_GENERATION_MODEL = REVIEW_MODEL
@@ -15574,6 +15575,23 @@ def running_stage_elapsed_seconds(run_id: str, stage: str) -> float:
     return elapsed
 
 
+def first_prompt_elapsed_seconds(run_id: str) -> float:
+    """Measure the no-code watchdog only from the first prompt send event."""
+    try:
+        with db_connection() as database:
+            event = database.execute(
+                """SELECT created_at FROM events
+                   WHERE run_id = ? AND message = ?
+                   ORDER BY id DESC LIMIT 1""",
+                (run_id, FIRST_PROMPT_SENT_EVENT_MESSAGE),
+            ).fetchone()
+    except sqlite3.Error:
+        return 0.0
+    if not event:
+        return 0.0
+    return seconds_between(str(event["created_at"] or ""), now_text())
+
+
 def stop_run_for_no_code_output(run_id: str, reason: str) -> Dict[str, Any]:
     """Stop and clean one stalled run, then immediately expose its scheduler slot."""
     stop_run(run_id)
@@ -16349,12 +16367,13 @@ def monitor_docker_turn(run_id: str, turn_number: int) -> None:
         else:
             detail = f"第 {turn_number} 轮正在容器终端中运行"
 
-        runtime_seconds = max(
-            max(0.0, now - started),
-            running_stage_elapsed_seconds(
-                run_id,
-                "first" if turn_number == 1 else "second",
-            ),
+        runtime_seconds = (
+            first_prompt_elapsed_seconds(run_id)
+            if turn_number == 1
+            else max(
+                max(0.0, now - started),
+                running_stage_elapsed_seconds(run_id, "second"),
+            )
         )
         retry_waiting = int(row["retry_not_before_epoch"] or 0) > int(time.time())
         if (
@@ -27117,7 +27136,7 @@ def continue_first_turn_after_terminal(run_id: str, *, monitor: bool = True) -> 
                 str(row["screen_name"] or ""),
                 str(row["first_prompt"] or ""),
             )
-            add_event(run_id, "第一轮题面已发送到 Terminal")
+            add_event(run_id, FIRST_PROMPT_SENT_EVENT_MESSAGE)
         ensure_job_active()
         if not update_run_if_phase(
             run_id,

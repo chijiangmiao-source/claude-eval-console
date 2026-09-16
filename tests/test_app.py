@@ -7820,7 +7820,7 @@ class ParsingTests(unittest.TestCase):
                     return_value=[],
                 ) as code_probe, mock.patch.object(
                     app,
-                    "running_stage_elapsed_seconds",
+                    "first_prompt_elapsed_seconds",
                     return_value=app.NO_CODE_OUTPUT_DEADLINE_SECONDS + 1,
                 ), mock.patch.object(
                     app.time,
@@ -7867,7 +7867,7 @@ class ParsingTests(unittest.TestCase):
                     app, "workspace_business_code_output_paths", return_value=[]
                 ), mock.patch.object(
                     app,
-                    "running_stage_elapsed_seconds",
+                    "first_prompt_elapsed_seconds",
                     return_value=app.NO_CODE_OUTPUT_DEADLINE_SECONDS + 1,
                 ), mock.patch.object(
                     app.time,
@@ -7908,7 +7908,7 @@ class ParsingTests(unittest.TestCase):
             app, "workspace_business_code_output_paths", return_value=[]
         ), mock.patch.object(
             app,
-            "running_stage_elapsed_seconds",
+            "first_prompt_elapsed_seconds",
             return_value=app.NO_CODE_OUTPUT_WARNING_SECONDS + 1,
         ), mock.patch.object(
             app.time,
@@ -14622,7 +14622,7 @@ class DraftTests(unittest.TestCase):
         )
         self.assertEqual(draft["prompt_dedup_history_count"], 1)
 
-    def test_task_generation_has_a_ten_minute_overall_deadline(self):
+    def test_task_generation_has_a_twenty_minute_overall_deadline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
@@ -14635,7 +14635,7 @@ class DraftTests(unittest.TestCase):
                 app, "run_codex_task_generation"
             ) as generate:
                 app.initialize_database()
-                with self.assertRaisesRegex(app.WorkflowError, "10 分钟"):
+                with self.assertRaisesRegex(app.WorkflowError, "20 分钟"):
                     app.generate_task_draft(1)
 
         generate.assert_not_called()
@@ -21353,6 +21353,42 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(serialized["stage_timings"]["first"]["status"], "current")
                 self.assertEqual(serialized["stage_timings"]["first"]["elapsed_seconds"], 420)
                 self.assertEqual(serialized["stage_timings"]["review"]["status"], "pending")
+
+    def test_first_prompt_watchdog_clock_starts_at_terminal_send_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(app, "DB_PATH", root / "test.db"), mock.patch.object(
+                app, "DATA_DIR", root
+            ):
+                app.initialize_database()
+                with app.db_connection() as database:
+                    database.execute(
+                        """INSERT INTO runs(
+                          id, repo_name, repo_path, phase, first_prompt,
+                          verification_commands, created_at, updated_at
+                        ) VALUES (?, ?, ?, 'first_running', ?, '[]', ?, ?)""",
+                        (
+                            "promptclock1",
+                            "prompt-clock-demo",
+                            "/tmp/prompt-clock-demo",
+                            "需求",
+                            "2026-09-09 10:00:00 +0800",
+                            "2026-09-09 10:00:00 +0800",
+                        ),
+                    )
+
+                with mock.patch.object(
+                    app, "now_text", return_value="2026-09-09 10:05:00 +0800"
+                ):
+                    app.add_event(
+                        "promptclock1", app.FIRST_PROMPT_SENT_EVENT_MESSAGE
+                    )
+                with mock.patch.object(
+                    app, "now_text", return_value="2026-09-09 10:20:00 +0800"
+                ):
+                    self.assertEqual(
+                        app.first_prompt_elapsed_seconds("promptclock1"), 15 * 60
+                    )
 
     def test_numbered_project_paths_include_disk_and_reserved_runs(self):
         with tempfile.TemporaryDirectory() as directory:
